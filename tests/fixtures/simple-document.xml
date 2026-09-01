@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:jc w:val="center"/>
+      </w:pPr>
+      <w:r>
+        <w:rPr>
+          <w:b/>
+          <w:sz w:val="28"/>
+          <w:color w:val="FF0000"/>
+        </w:rPr>
+        <w:t>你好</w:t>
+      </w:r>
+      <w:r>
+        <w:t xml:space="preserve"> Word</w:t>
+      </w:r>
+    </w:p>
+    <w:p>
+      <w:r>
+        <w:t>第二段</w:t>
+      </w:r>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:widowControl w:val="1"/>
+      </w:pPr>
+    </w:p>
+  </w:body>
+</w:document>

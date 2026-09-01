@@ -1,0 +1,21 @@
+:root {
+  font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #1f1f1f;
+  background: #f6f6f4;
+}
+
+.ho-word-debug {
+  max-width: 880px;
+  margin: 40px auto;
+  padding: 24px;
+  background: #fff;
+  border-radius: 8px;
+}
+
+.ho-word-debug pre {
+  white-space: pre-wrap;
+  background: #111;
+  color: #e8e8e8;
+  padding: 16px;
+  border-radius: 6px;
+}

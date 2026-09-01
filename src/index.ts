@@ -1,0 +1,11 @@
+export { DocxReader } from "./io/docx/reader/DocxReader";
+export { DocxPackage } from "./io/docx/ooxml/DocxPackage";
+export { WordStreamBuilder } from "./model/flatten/WordStreamBuilder";
+export { Document } from "./model/document/Document";
+export { Paragraph } from "./model/block/Paragraph";
+export { Block } from "./model/block/Block";
+export { Word } from "./model/inline/Word";
+export { Line } from "./model/line/Line";
+export { LinkedList, LinkedNode } from "./model/list/LinkedList";
+export { EditorBase } from "./editor/EditorBase";
+export { EditorEvents } from "./editor/types/EditorEvents";

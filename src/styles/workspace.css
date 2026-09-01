@@ -1,0 +1,96 @@
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+}
+
+.ho-word-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #ececec;
+}
+
+.ho-word-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: #fff;
+  border-bottom: 1px solid #ddd;
+  flex-shrink: 0;
+}
+
+.ho-word-toolbar h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.ho-word-toolbar pre {
+  margin: 0;
+  font-size: 12px;
+  color: #666;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ho-word-workspace {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: #c5c5c5;
+  cursor: text;
+}
+
+.ho-word-scroll {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  cursor: text;
+}
+
+.ho-word-sizer {
+  pointer-events: none;
+}
+
+.ho-word-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+}
+
+.ho-word-caret {
+  position: absolute;
+  width: 1.5px;
+  margin: 0;
+  padding: 0;
+  background: #000;
+  pointer-events: none;
+  z-index: 2;
+  animation: ho-word-caret-blink 1s step-end infinite;
+}
+
+@keyframes ho-word-caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.ho-word-ime {
+  position: absolute;
+  width: 2px;
+  min-height: 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  resize: none;
+  opacity: 0;
+  z-index: 3;
+  overflow: hidden;
+}

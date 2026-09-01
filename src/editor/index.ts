@@ -1,0 +1,12 @@
+export { EditorBase } from "./EditorBase";
+export type { EditorBaseOptions } from "./EditorBase";
+export { StoryEditor } from "./StoryEditor";
+export { BodyEditor } from "./BodyEditor";
+export { HeaderEditor } from "./HeaderEditor";
+export { FooterEditor } from "./FooterEditor";
+export { CellEditor } from "./CellEditor";
+export { EditorEvents } from "./types/EditorEvents";
+export type { EditorEventName } from "./types/EditorEvents";
+export type { EditorMode } from "./types/EditorMode";
+export type { IDraw } from "./types/IDraw";
+export type { IViewport, Point } from "./types/IViewport";

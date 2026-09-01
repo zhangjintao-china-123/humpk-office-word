@@ -1,0 +1,10 @@
+export { storyEquals, storyKind, type StoryRef } from "./StoryRef";
+export { CaretPos } from "./CaretPos";
+export { SelRange, type SelMode } from "./SelRange";
+export { Selection } from "./Selection";
+export { HitTester, type CaretBox, type HitContext } from "./HitTester";
+export { PointerController } from "./PointerController";
+export { SelectionPainter } from "./SelectionPainter";
+export { SelectionText } from "./SelectionText";
+export { SelectionFragment } from "./SelectionFragment";
+export { CaretView } from "./CaretView";

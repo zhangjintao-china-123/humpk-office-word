@@ -1,0 +1,9 @@
+node_modules
+dist
+.DS_Store
+*.log
+
+# 规范 PDF/ZIP 体积大，本地用 download.sh 拉取，不进仓库
+docs/specs/*.pdf
+docs/specs/*.zip
+docs/specs/ECMA-376-1/

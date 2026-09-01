@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:t>正文</w:t>
+      </w:r>
+      <w:r>
+        <w:drawing>
+          <wp:anchor behindDoc="0" distT="0" distB="0" distL="114300" distR="114300">
+            <wp:positionH relativeFrom="page">
+              <wp:posOffset>1440000</wp:posOffset>
+            </wp:positionH>
+            <wp:positionV relativeFrom="paragraph">
+              <wp:posOffset>180000</wp:posOffset>
+            </wp:positionV>
+            <wp:extent cx="914400" cy="457200"/>
+            <wp:wrapTopAndBottom/>
+            <a:graphic>
+              <a:graphicData>
+                <a:blip r:embed="rId8"/>
+              </a:graphicData>
+            </a:graphic>
+          </wp:anchor>
+        </w:drawing>
+      </w:r>
+    </w:p>
+    <w:p>
+      <w:r>
+        <w:t>下一段</w:t>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>

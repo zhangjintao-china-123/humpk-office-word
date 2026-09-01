@@ -1,0 +1,9 @@
+export const DEFAULT_FONT_SIZE = 14;
+export const GRID_LINE_HEIGHT = 21;
+export const LINE_HEIGHT_RATIO = 1.36;
+export const CELL_PAD = 4;
+export const MIN_ROW_HEIGHT = 21;
+export const FULL_PUN_RATIO_SOFT = 0.8;
+export const FULL_PUN_RATIO_HARD = 0.5;
+export const MIX_GAP_RATIO = 0.5;
+export const INDENT_CHAR_WIDTH = DEFAULT_FONT_SIZE;
