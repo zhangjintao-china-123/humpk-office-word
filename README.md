@@ -27,6 +27,60 @@
 - **格式**：Ribbon 改字体、字号、加粗 / 倾斜 / 下划线 / 删除线、颜色、底纹、对齐；表格可选框线
 - **剪贴板**：剪切 / 复制 / 粘贴 / 删除（右键菜单，以及 `Ctrl/Cmd+C` / `X` / `V`）；内部剪贴板尽量保留文字样式和子表
 
+## 原理
+
+页面不是用 DOM / `contenteditable` 排字，而是 **一张 Canvas 按页即时绘制**。模型里存文档，排版算出每个字和每条线的坐标，绘制层用 2D Context 画出来。点选、光标、选区都对着这些坐标做命中，而不是对着 HTML 节点。
+
+这样分页、绕排、表格跨页、页眉页脚几何可以按 Word / OOXML 自己算，不受浏览器行盒限制。输入用一层隐藏 textarea 接 IME，改的是模型，再局部重排、整帧重画。
+
+```mermaid
+flowchart LR
+  docx[docx 包] --> reader[DocxReader]
+  reader --> model[Document 模型]
+  model --> flatten[按字拆成 Word 链表]
+  flatten --> layout[测宽 / 断行 / 分页]
+  layout --> canvas[Canvas 2D 绘制]
+  input[键盘鼠标] --> model
+```
+
+一次绘制大致是：清屏 → 按滚动平移 → 画白纸和版心角标 → 正文行（及衬于文字后的浮动图）→ 页眉页脚 → 选区高亮 → 同步光标。字宽用同一套 Canvas `measureText` 量，避免量和画不一致。
+
+### 故事（Story）
+
+一份打开的文档里有多条可独立排版的故事，结构相同，都是 `Document`：
+
+| 故事 | 作用 |
+| --- | --- |
+| 正文 `body` | 主文档，分页 |
+| 页眉 / 页脚 | 每节可有 default / first / even 多套，画在纸张上下带 |
+| 单元格 | 格子里再嵌一套 `Document`，按列宽排，不单独分页 |
+
+选区和编辑用 `StoryRef` 标明当前在哪条故事上。
+
+### 数据结构
+
+持久内容（读 docx / 编辑改的）和排版结果（画布用的）分开。
+
+**内容层**
+
+- **`Document`**：一段故事。`paragraphs` 是段落双向链表；`words` 是拆开后的字流；`sections` 存纸张、边距、页眉页脚引用；`styles` / `numbering` 来自样式和编号部件。
+- **`Paragraph`**：一段。`blocks` 对应 OOXML 的 run（一段连续同样式文字，或一张图）；表格段 `isTable`，挂 `Table`。`lines` 是排版算出来的行，不是文件里的。
+- **`Block`**：一个 run。`text` + `RunStyle`（字体、字号、加粗、颜色等）；浮动/嵌入图挂 `Drawing`。
+- **`Section`**：节属性。纸张宽高、页边距、`titlePg`、文档网格；以及该节的页眉页脚故事。
+- **`Table` / `TableRow` / `TableCell`**：列宽、合并（`colSpan` / `rowSpan`）、边框。每个单元格自带 `document`。
+- **`Drawing`**：图片尺寸、嵌入或锚点、绕排类型。排完后变成 `PlacedAnchor`（页面坐标）。
+
+**字流与排版层**
+
+- **`Word`**：字流上的一个节点。多数是单个字符；也可以是嵌入图、整表、分页符。带测得的 `width` / `kernedWidth` 和行内 `left`。样式从所属 `Block` 取。
+- **`LinkedList` / `LinkedNode`**：段落表和字流都是双向链表。插入删除是 O(1) 改指针；光标 `CaretPos` 直接指向某个 `Word` 节点（`after` 表示在字前还是字后）。
+- **`Line`**：字流上的一段切片（`startNode` + `length`），加上行高、缩进、段前段后、是否段首/段末。表格跨页时一条 table 线只覆盖部分行（`tableRowFrom` / `tableRowTo`）。
+- **`PageSetup`**：当前纸张几何（CSS 像素）。正文框由 `pgMar` 的 top/bottom 与页眉页脚距纸边、内容高度算出。
+
+打开文档时 `WordStreamBuilder` 把每个 `Block.text` **按字**拆进 `document.words`，段末补 `\n`，不改 Block 原文。`StoryLayout` 测宽、中西文间隔、断行、标点压缩、表格排版、分页、浮动图绕排，写出每条 `Line` 和每个 `Word.left`。`StoryPainter` 按行 `fillText` / `drawImage`，表格另画框线。
+
+编辑改 `Paragraph.blocks`（或删段、插表），再把脏段落重新拆字、局部 `reflow`，最后整张 Canvas 重画。选区是 `StoryRef` + 字节点范围；表格选区是格子矩形，不跟正文范围拼在一起。
+
 ## 环境
 
 - Node.js 20 或更高
