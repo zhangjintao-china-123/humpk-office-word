@@ -130,3 +130,7 @@ npm run build     # 类型检查并打包
 - 未做插删行列、单元格合并拆分、PAGE 域、双击进入页眉编辑
 
 排版对照规范见 [`docs/specs/README.md`](docs/specs/README.md)。
+
+## 许可
+
+[MIT](LICENSE)
