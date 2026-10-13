@@ -10,6 +10,7 @@ import { MixSpacing } from "./measure/MixSpacing";
 import { Paginator } from "./page/Paginator";
 import { TableLayouter } from "./table/TableLayouter";
 import { TokenBuilder } from "./token/TokenBuilder";
+import { assignTocPages } from "../model/toc/Toc";
 import { AnchorLayout } from "./anchor/AnchorLayout";
 
 export class StoryLayout {
@@ -40,6 +41,7 @@ export class StoryLayout {
         : this.paginator.paginate(lines, constraints.contentHeight);
     this.assignParagraphLines(document, placed);
     document.anchors = this.anchors.run(document, placed, constraints);
+    this.refreshToc(document, constraints);
     return placed;
   }
 
@@ -69,7 +71,15 @@ export class StoryLayout {
       constraints.paginate === false ? this.stack(assembled) : this.paginator.paginate(assembled, constraints.contentHeight);
     this.assignParagraphLines(document, placed);
     document.anchors = this.anchors.run(document, placed, constraints);
+    this.refreshToc(document, constraints);
     return placed;
+  }
+
+  private refreshToc(document: Document, constraints: LayoutConstraints): void {
+    if (constraints.paginate === false) {
+      return;
+    }
+    assignTocPages(document, constraints.contentHeight);
   }
 
   private applyTableHeights(lines: Line[]): void {

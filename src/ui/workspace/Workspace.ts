@@ -3,11 +3,14 @@ import { BodyEditor } from "../../editor/BodyEditor";
 import { FooterEditor } from "../../editor/FooterEditor";
 import { HeaderEditor } from "../../editor/HeaderEditor";
 import { EditorEvents } from "../../editor/types/EditorEvents";
+import { HeaderFooterCommand } from "../../edit/HeaderFooterCommand";
 import { HeaderFooterResolver } from "../../layout/page/HeaderFooterResolver";
 import { Block } from "../../model/block/Block";
 import { Paragraph } from "../../model/block/Paragraph";
 import { Document } from "../../model/document/Document";
 import type { HeaderFooterType } from "../../model/document/DocumentKind";
+import { labelPages, type PageLabel } from "../../model/document/PageLabel";
+import { Section } from "../../model/document/Section";
 import { WordStreamBuilder } from "../../model/flatten/WordStreamBuilder";
 import type { Table, TableCell } from "../../model/table/Table";
 import { DEFAULT_FONT_SIZE } from "../../layout/LayoutConstants";
@@ -18,6 +21,8 @@ import { DeleteCommand } from "../../edit/DeleteCommand";
 import { FormatCommand, type FormatAction } from "../../edit/FormatCommand";
 import { InsertCommand } from "../../edit/InsertCommand";
 import { TableBorderCommand } from "../../edit/TableBorderCommand";
+import { TableStructureCommand } from "../../edit/TableStructureCommand";
+import { TocCommand } from "../../edit/TocCommand";
 import { TableBorderApplier, type TableBorderMode, type TableBorderPen } from "../../edit/TableBorderApplier";
 import { DocxWriter } from "../../io/docx/writer/DocxWriter";
 import type { RibbonState } from "../ribbon/Ribbon";
@@ -34,7 +39,7 @@ import { SelectionPainter } from "../../selection/SelectionPainter";
 import { SelectionFragment } from "../../selection/SelectionFragment";
 import { SelectionText } from "../../selection/SelectionText";
 import { CaretPos } from "../../selection/CaretPos";
-import { storyKind, type StoryRef } from "../../selection/StoryRef";
+import { storyKind, storySection, type StoryRef } from "../../selection/StoryRef";
 import { ContextMenuController } from "../contextmenu/ContextMenuController";
 import { EditImpact } from "../../edit/EditImpact";
 import { History } from "../../edit/History";
@@ -75,8 +80,9 @@ export class Workspace {
   private readonly borderApplier = new TableBorderApplier();
   private borderPen: TableBorderPen = { type: "single", size: "12", color: "#000000" };
   private body?: BodyEditor;
-  private headers?: BandEditors;
-  private footers?: BandEditors;
+  private headerBands: BandEditors[] = [];
+  private footerBands: BandEditors[] = [];
+  private pageLabels: PageLabel[] = [];
   private readonly stopImages: () => void;
 
   constructor(host: HTMLElement, pageSetup = PageSetup.a4()) {
@@ -112,6 +118,7 @@ export class Workspace {
       selection: this.selection,
       hitClient: (x, y) => this.hitClient(x, y),
       cellsInRect: (from, to) => this.cellsInRect(from, to),
+      followLink: (pos) => this.followToc(pos),
       onChange: () => {
         this.input.resetColumn();
         this.input.clearPending();
@@ -119,6 +126,7 @@ export class Workspace {
       },
     });
     this.pointer.attach(this.root);
+    this.root.addEventListener("dblclick", this.onDoubleClick);
     this.contextMenu = new ContextMenuController({
       selection: this.selection,
       hitClient: (x, y) => this.hitClient(x, y),
@@ -143,27 +151,41 @@ export class Workspace {
 
   load(document: Document): void {
     this.body?.dispose();
-    this.headers?.dispose();
-    this.footers?.dispose();
+    this.disposeBands();
     this.selection.clear();
     this.history.clear();
     this.applyPageSetup(document);
 
     const shared = { draw: this.draw, viewport: this.viewport, pageSetup: this.pageSetup };
-    const section = document.lastSection();
-    this.headers = new BandEditors(() => new HeaderEditor(shared));
-    this.footers = new BandEditors(() => new FooterEditor(shared));
-    this.headers.load(section?.headers ?? new Map());
-    this.footers.load(section?.footers ?? new Map());
+    this.mountBands(document);
     this.syncBandExtents();
 
     this.body = new BodyEditor(shared);
     this.body.attach().load(document).flush();
 
+    this.refreshPageLabels(this.body.pageCount());
     this.setPageCount(this.body.pageCount());
     this.input.clearPending();
     this.placeCaret();
     this.onSelectionChange();
+  }
+
+  bodyDocument(): Document | null {
+    return this.body?.document ?? null;
+  }
+
+  reloadBands(): void {
+    const document = this.body?.document;
+    if (!document) {
+      return;
+    }
+    this.disposeBands();
+    this.mountBands(document);
+    if (this.syncBandExtents()) {
+      this.relayout.layoutStory({ slot: "body" });
+    } else {
+      this.refreshPageLabels();
+    }
   }
 
   newBlank(): void {
@@ -227,6 +249,70 @@ export class Workspace {
     this.borderPen = { ...this.borderPen, ...pen };
   }
 
+  insertTableRow(): void {
+    this.runTableOp((target) => ({
+      type: "insertRow",
+      index: Math.max(...target.cells.map((cell) => cell.rowIndex)) + 1,
+    }));
+  }
+
+  deleteTableRow(): void {
+    this.runTableOp((target) => ({
+      type: "deleteRow",
+      index: Math.min(...target.cells.map((cell) => cell.rowIndex)),
+    }));
+  }
+
+  insertTableColumn(): void {
+    this.runTableOp((target) => ({
+      type: "insertColumn",
+      index: Math.max(...target.cells.map((cell) => cell.colIndex + cell.colSpan - 1)) + 1,
+    }));
+  }
+
+  deleteTableColumn(): void {
+    this.runTableOp((target) => ({
+      type: "deleteColumn",
+      index: Math.min(...target.cells.map((cell) => cell.colIndex)),
+    }));
+  }
+
+  mergeTableCells(): void {
+    this.runTableOp((target) => ({ type: "merge", cells: target.cells }));
+  }
+
+  splitTableCell(): void {
+    this.runTableOp((target) => ({ type: "split", cell: target.cells[0] }));
+  }
+
+  insertToc(): void {
+    if (!this.body?.document) {
+      return;
+    }
+    this.history.do(new TocCommand(this));
+  }
+
+  insertPageNumber(): void {
+    if (!this.body?.document) {
+      return;
+    }
+    this.history.do(new HeaderFooterCommand(this, "page"));
+  }
+
+  toggleTitlePage(): void {
+    if (!this.body?.document) {
+      return;
+    }
+    this.history.do(new HeaderFooterCommand(this, "title"));
+  }
+
+  toggleEvenOdd(): void {
+    if (!this.body?.document) {
+      return;
+    }
+    this.history.do(new HeaderFooterCommand(this, "even"));
+  }
+
   formatState(caption: string): RibbonState {
     const pos = this.selection.caret();
     const pending = this.input.pendingStyle();
@@ -251,8 +337,51 @@ export class Workspace {
       inTable: !!selected,
       borderPen: { ...this.borderPen },
       borderFlags: selected ? this.borderApplier.inspect(selected.cells, selected.table) : undefined,
+      titlePg: this.currentSection()?.titlePg ?? false,
+      evenAndOdd: this.body?.document?.evenAndOddHeaders ?? false,
     };
   }
+
+  private runTableOp(
+    op: (target: { table: Table; cells: TableCell[]; story: StoryRef }) => ConstructorParameters<typeof TableStructureCommand>[4],
+  ): void {
+    const target = this.selectedTable();
+    if (!target) {
+      return;
+    }
+    this.history.do(new TableStructureCommand(this, target.table, target.story, target.cells[0], op(target)));
+  }
+
+  private onDoubleClick = (event: MouseEvent): void => {
+    const rect = this.root.getBoundingClientRect();
+    const world = this.viewport.cssToWorld(event.clientX - rect.left, event.clientY - rect.top);
+    const band = this.hit.locateBand(world.x, world.y, this.hitContext());
+    if (!band || !this.body?.document) {
+      return;
+    }
+    const info = this.bandAt(band.slot, band.pageIndex);
+    const editors = this.editorsFor(band.slot, info.sectionIndex);
+    let editor = editors.editor(info.type);
+    if (!editor) {
+      const section = this.ensureSection(info.sectionIndex);
+      const story = new Document();
+      story.kind = band.slot;
+      const paragraph = new Paragraph(1);
+      paragraph.addBlock(new Block());
+      story.addParagraph(paragraph);
+      new WordStreamBuilder().buildStoryOnly(story);
+      const map = band.slot === "header" ? section.headers : section.footers;
+      map.set(info.type, story);
+      editor = editors.open(info.type, story);
+    }
+    const head = editor.document?.words.head;
+    if (!head) {
+      return;
+    }
+    this.selection.collapse(new CaretPos({ slot: band.slot, kind: info.type, sectionIndex: info.sectionIndex }, head, false));
+    this.input.focus();
+    this.onSelectionChange();
+  };
 
   private selectedTable(): { table: Table; cells: TableCell[]; story: StoryRef } | null {
     const cells: TableCell[] = [];
@@ -332,9 +461,14 @@ export class Workspace {
     for (let i = 0; i < origins.length; i += 1) {
       this.painter.paint(draw, pageSetup, origins[i].x, origins[i].y, i);
     }
-    this.body?.paintOnPages(origins);
-    this.headers?.paintOnPages(origins, (index) => this.bandType(index));
-    this.footers?.paintOnPages(origins, (index) => this.bandType(index));
+    this.body?.paintOnPages(origins, this.pageLabels);
+    for (let i = 0; i < origins.length; i += 1) {
+      const label = this.labelAt(i);
+      const header = this.bandAt("header", i);
+      const footer = this.bandAt("footer", i);
+      this.headerBands[header.sectionIndex]?.paintPage(origins[i], header.type, label);
+      this.footerBands[footer.sectionIndex]?.paintPage(origins[i], footer.type, label);
+    }
     const ctx = this.hitContext(origins);
     this.selectionPainter.paint(draw, this.selection, ctx);
     draw.restore();
@@ -346,10 +480,10 @@ export class Workspace {
       return this.body?.document ?? null;
     }
     if (story.slot === "header") {
-      return this.headers?.editor(storyKind(story))?.document ?? null;
+      return this.headerBands[storySection(story)]?.editor(storyKind(story))?.document ?? null;
     }
     if (story.slot === "footer") {
-      return this.footers?.editor(storyKind(story))?.document ?? null;
+      return this.footerBands[storySection(story)]?.editor(storyKind(story))?.document ?? null;
     }
     return story.cell.document;
   }
@@ -359,10 +493,10 @@ export class Workspace {
       return this.body;
     }
     if (story.slot === "header") {
-      return this.headers?.editor(storyKind(story));
+      return this.headerBands[storySection(story)]?.editor(storyKind(story));
     }
     if (story.slot === "footer") {
-      return this.footers?.editor(storyKind(story));
+      return this.footerBands[storySection(story)]?.editor(storyKind(story));
     }
     return undefined;
   }
@@ -372,22 +506,24 @@ export class Workspace {
     if (this.body?.document) {
       items.push({ story: { slot: "body" }, document: this.body.document });
     }
-    for (const type of ["default", "first", "even"] as const) {
-      const header = this.headers?.editor(type)?.document;
-      if (header) {
-        items.push({ story: { slot: "header", kind: type }, document: header });
-      }
-      const footer = this.footers?.editor(type)?.document;
-      if (footer) {
-        items.push({ story: { slot: "footer", kind: type }, document: footer });
+    for (let index = 0; index < Math.max(this.headerBands.length, this.footerBands.length); index += 1) {
+      for (const type of ["default", "first", "even"] as const) {
+        const header = this.headerBands[index]?.editor(type)?.document;
+        if (header) {
+          items.push({ story: { slot: "header", kind: type, sectionIndex: index }, document: header });
+        }
+        const footer = this.footerBands[index]?.editor(type)?.document;
+        if (footer) {
+          items.push({ story: { slot: "footer", kind: type, sectionIndex: index }, document: footer });
+        }
       }
     }
     return items;
   }
 
   syncBandExtents(): boolean {
-    const headerExtent = this.headers?.maxExtent() ?? 0;
-    const footerExtent = this.footers?.maxExtent() ?? 0;
+    const headerExtent = Math.max(0, ...this.headerBands.map((bands) => bands.maxExtent()));
+    const footerExtent = Math.max(0, ...this.footerBands.map((bands) => bands.maxExtent()));
     if (headerExtent === this.pageSetup.headerExtent && footerExtent === this.pageSetup.footerExtent) {
       return false;
     }
@@ -397,6 +533,7 @@ export class Workspace {
   }
 
   afterBodyLayout(pageCount: number): void {
+    this.refreshPageLabels(pageCount);
     if (pageCount !== this.pageCount) {
       this.setPageCount(pageCount);
     }
@@ -418,11 +555,12 @@ export class Workspace {
       pageSetup: this.pageSetup,
       origins,
       body: this.body,
-      header: this.headers?.editor("default"),
-      footer: this.footers?.editor("default"),
-      headers: this.headers?.asRecord(),
-      footers: this.footers?.asRecord(),
-      bandType: (_slot, pageIndex) => this.bandType(pageIndex),
+      header: this.headerBands[0]?.editor("default"),
+      footer: this.footerBands[0]?.editor("default"),
+      headers: this.headerBands[0]?.asRecord(),
+      footers: this.footerBands[0]?.asRecord(),
+      bandType: (slot, pageIndex) => this.bandAt(slot, pageIndex).type,
+      bandAt: (slot, pageIndex) => this.bandAt(slot, pageIndex),
     };
   }
 
@@ -447,8 +585,7 @@ export class Workspace {
     this.caret.remove();
     this.stopImages();
     this.body?.dispose();
-    this.headers?.dispose();
-    this.footers?.dispose();
+    this.disposeBands();
     const host = this.canvas.parentElement;
     host?.replaceChildren();
     host?.classList.remove("ho-word-workspace");
@@ -456,6 +593,29 @@ export class Workspace {
 
   private cellsInRect(from: TableCell, to: TableCell): TableCell[] {
     return this.hit.cellsInRect(from, to, this.hitContext());
+  }
+
+  private followToc(pos: CaretPos): boolean {
+    if (pos.story.slot !== "body") {
+      return false;
+    }
+    const toc = pos.node?.data.paragraph?.toc;
+    if (!toc || toc.role !== "entry" || !toc.targetId) {
+      return false;
+    }
+    const document = this.body?.document;
+    if (!document) {
+      return false;
+    }
+    let node = document.words.head;
+    while (node) {
+      if (node.data.paragraph?.id === toc.targetId) {
+        this.selection.collapse(new CaretPos({ slot: "body" }, node, false));
+        return true;
+      }
+      node = node.next;
+    }
+    return false;
   }
 
   private placeCaret(): void {
@@ -528,12 +688,90 @@ export class Workspace {
     });
   }
 
-  private bandType(pageIndex: number): HeaderFooterType {
-    return HeaderFooterResolver.typeForPage(
-      this.body?.document?.lastSection(),
-      pageIndex + 1,
+  private currentSection(): Section | undefined {
+    const pos = this.selection.caret();
+    const index =
+      pos && (pos.story.slot === "header" || pos.story.slot === "footer")
+        ? storySection(pos.story)
+        : (pos?.node?.data.paragraph?.sectionIndex ?? 0);
+    return this.body?.document?.sections[index] ?? this.body?.document?.lastSection();
+  }
+
+  private mountBands(document: Document): void {
+    const shared = { draw: this.draw, viewport: this.viewport, pageSetup: this.pageSetup };
+    const count = Math.max(1, document.sections.length);
+    for (let index = 0; index < count; index += 1) {
+      const headers = new BandEditors(() => new HeaderEditor(shared));
+      const footers = new BandEditors(() => new FooterEditor(shared));
+      headers.load(document.sections[index]?.headers ?? new Map());
+      footers.load(document.sections[index]?.footers ?? new Map());
+      this.headerBands.push(headers);
+      this.footerBands.push(footers);
+    }
+  }
+
+  private disposeBands(): void {
+    for (const bands of [...this.headerBands, ...this.footerBands]) {
+      bands.dispose();
+    }
+    this.headerBands = [];
+    this.footerBands = [];
+  }
+
+  private editorsFor(slot: "header" | "footer", sectionIndex: number): BandEditors {
+    const list = slot === "header" ? this.headerBands : this.footerBands;
+    const shared = { draw: this.draw, viewport: this.viewport, pageSetup: this.pageSetup };
+    while (list.length <= sectionIndex) {
+      const section = this.ensureSection(list.length);
+      const bands = new BandEditors(() => (slot === "header" ? new HeaderEditor(shared) : new FooterEditor(shared)));
+      bands.load(slot === "header" ? section.headers : section.footers);
+      list.push(bands);
+    }
+    return list[sectionIndex];
+  }
+
+  private ensureSection(index: number): Section {
+    const document = this.body?.document;
+    if (!document) {
+      return new Section();
+    }
+    while (document.sections.length <= index) {
+      document.sections.push(new Section());
+    }
+    return document.sections[index];
+  }
+
+  private refreshPageLabels(count = Math.max(this.pageCount, this.body?.pageCount() ?? 1)): void {
+    this.pageLabels = labelPages(
+      this.body?.lines ?? [],
+      this.pageSetup.contentHeight,
+      Math.max(1, count),
+      this.body?.document?.sections ?? [],
+    );
+  }
+
+  private labelAt(pageIndex: number): PageLabel {
+    return (
+      this.pageLabels[pageIndex] ?? {
+        sectionIndex: 0,
+        pageInSection: pageIndex + 1,
+        pageNumber: pageIndex + 1,
+        sectionPages: this.pageCount,
+        totalPages: this.pageCount,
+      }
+    );
+  }
+
+  private bandAt(slot: "header" | "footer", pageIndex: number): { type: HeaderFooterType; sectionIndex: number; editor?: StoryEditor } {
+    const label = this.labelAt(pageIndex);
+    const section = this.body?.document?.sections[label.sectionIndex] ?? this.body?.document?.lastSection();
+    const type = HeaderFooterResolver.typeForPage(
+      section,
+      label.pageInSection,
       this.body?.document?.evenAndOddHeaders ?? false,
     );
+    const bands = slot === "header" ? this.headerBands[label.sectionIndex] : this.footerBands[label.sectionIndex];
+    return { type, sectionIndex: label.sectionIndex, editor: bands?.editor(type) };
   }
 
   private pageOrigins() {

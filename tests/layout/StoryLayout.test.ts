@@ -290,4 +290,24 @@ describe("StoryLayout", () => {
     expect(textLine).toBeTruthy();
     expect(textLine!.getWord(0)?.left ?? 0).toBeGreaterThan(8);
   });
+
+  it("段首大纲编号占住悬挂宽度", () => {
+    const document = new Document();
+    const first = paragraph("正文", 1);
+    first.attrs.titleSerial = {
+      start: 1,
+      numFmt: "decimal",
+      lvlText: "%1.",
+      serial: 1,
+      ilvl: 0,
+      label: "1. ",
+    };
+    document.addParagraph(first);
+    new WordStreamBuilder().buildStoryOnly(document);
+    const lines = layout(document, 300, 400);
+    expect(lines[0].outlineLabel).toBe("1. ");
+    expect(lines[0].isFirst).toBe(true);
+    expect(lines[0].leftBlankWidth).toBeGreaterThan(10);
+    expect(lines[0].getWord(0)?.left ?? 0).toBeGreaterThanOrEqual(lines[0].leftBlankWidth);
+  });
 });

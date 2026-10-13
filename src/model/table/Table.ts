@@ -40,6 +40,7 @@ export class TableCell {
   colSpan = 1;
   rowSpan = 1;
   borders?: TableBorders;
+  fill?: string;
 
   constructor(public document: Document) {}
 }

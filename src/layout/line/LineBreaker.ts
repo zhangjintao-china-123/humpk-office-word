@@ -1,8 +1,9 @@
+import { outlineLabelWidth } from "../../model/style/OutlineLabel";
+import { DEFAULT_FONT_SIZE } from "../LayoutConstants";
 import { Line } from "../../model/line/Line";
 import type { LinkedNode } from "../../model/list/LinkedList";
 import type { Word } from "../../model/inline/Word";
 import { LayoutToken } from "../token/LayoutToken";
-import { DEFAULT_FONT_SIZE } from "../LayoutConstants";
 import { fontSizeOf } from "../measure/FontSpec";
 import { LineMetrics } from "./LineMetrics";
 import { LinePositioner } from "./LinePositioner";
@@ -115,6 +116,18 @@ export class LineBreaker {
     line.isFirst = isFirst;
     line.leftBlankWidth = this.metrics.leftBlank(line.paragraph, isFirst, token.start.data);
     line.rightBlankWidth = this.metrics.rightBlank(line.paragraph);
+    if (isFirst) {
+      const label = line.paragraph?.attrs.titleSerial?.label ?? "";
+      if (label) {
+        line.outlineLabel = label;
+        const need = outlineLabelWidth(label, token.start.data.height || DEFAULT_FONT_SIZE) + 6;
+        const textStart = this.metrics.leftBlank(line.paragraph, false, token.start.data);
+        const hanging = Math.max(0, textStart - line.leftBlankWidth);
+        if (hanging < need) {
+          line.leftBlankWidth += need - hanging;
+        }
+      }
+    }
     return line;
   }
 

@@ -6,6 +6,7 @@ export class Block {
   style: RunStyle = {};
   drawing?: Drawing;
   charType?: string;
+  field?: "PAGE" | "NUMPAGES" | "SECTIONPAGES";
 
   get isDrawing(): boolean {
     return this.drawing != null;

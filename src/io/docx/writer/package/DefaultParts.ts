@@ -44,15 +44,24 @@ export function stylesXml(): string {
 </w:styles>`;
 }
 
-export function wrapDocumentXml(body: string): string {
+const DRAW_NS = `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"`;
+
+export function wrapDocumentXml(body: string, sectPr?: string): string {
+  const section =
+    sectPr ??
+    `<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/></w:sectPr>`;
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="${W_NS}">
+<w:document xmlns:w="${W_NS}" ${DRAW_NS}>
   <w:body>
 ${body}
-    <w:sectPr>
-      <w:pgSz w:w="11906" w:h="16838"/>
-      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/>
-    </w:sectPr>
+    ${section}
   </w:body>
 </w:document>`;
+}
+
+export function wrapStoryXml(tag: "w:hdr" | "w:ftr", body: string): string {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<${tag} xmlns:w="${W_NS}" ${DRAW_NS}>
+${body}
+</${tag}>`;
 }

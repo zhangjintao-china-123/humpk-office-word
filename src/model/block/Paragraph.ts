@@ -3,6 +3,8 @@ import type { Line } from "../line/Line";
 import type { Table } from "../table/Table";
 import type { ParagraphAttrs } from "../style/ParagraphAttrs";
 import type { RunStyle } from "../style/RunStyle";
+import type { SectionBreak } from "../document/PageLabel";
+import type { TocHint, TocMark } from "../toc/Toc";
 import { Block } from "./Block";
 
 export class Paragraph {
@@ -15,6 +17,12 @@ export class Paragraph {
   hasAnchor = false;
   inheritedRunStyle?: RunStyle;
   changed = true;
+  bookmarks: string[] = [];
+  sectionIndex = 0;
+  /** 本段结束后换节；nextPage 会把后面的内容推到下一页。 */
+  sectionBreak?: SectionBreak;
+  toc?: TocMark;
+  tocHint?: TocHint;
 
   constructor(public id: number) {}
 

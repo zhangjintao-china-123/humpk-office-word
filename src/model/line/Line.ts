@@ -11,6 +11,8 @@ export class Line {
   type: "" | "table" | "page" = "";
   top = 0;
   width = 0;
+  /** 排版时的内容区宽度，目录页码靠它右对齐。 */
+  contentWidth = 0;
   height = 0;
   fullHeight = 0;
   leftBlankWidth = 0;
@@ -25,6 +27,8 @@ export class Line {
   intervalWidth = 0;
   overflowPun = false;
   visible = true;
+  /** 段首大纲编号，例如 1.、（一）、①。 */
+  outlineLabel = "";
   tableRowFrom = 0;
   tableRowTo = 0;
 

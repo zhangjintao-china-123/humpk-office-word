@@ -26,6 +26,7 @@ export class Paginator {
       }
       if (line.type === "table") {
         y = this.splitTable(line, y, height, result);
+        y = this.afterSection(line, y, height);
         continue;
       }
 
@@ -49,8 +50,31 @@ export class Paginator {
       line.top = y;
       result.push(line);
       y += line.height;
+      y = this.afterSection(line, y, height);
     }
     return result;
+  }
+
+  private afterSection(line: Line, y: number, height: number): number {
+    const kind = line.paragraph?.sectionBreak;
+    if (!line.isLast || !kind || kind === "continuous" || line.type === "page") {
+      return y;
+    }
+    const skip = () => {
+      const rest = height - (y % height);
+      if (rest < height) {
+        y += rest;
+      }
+    };
+    skip();
+    if (kind === "evenPage" || kind === "oddPage") {
+      const next = Math.floor(y / height) + 1;
+      const even = next % 2 === 0;
+      if (kind === "evenPage" ? !even : even) {
+        skip();
+      }
+    }
+    return y;
   }
 
   private widowPushes(line: Line, next: Line | undefined, rem: number, pageHeight: number): boolean {

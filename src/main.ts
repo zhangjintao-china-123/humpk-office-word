@@ -47,6 +47,16 @@ const ribbon = new Ribbon(ribbonHost, {
   saveFile: () => {
     void downloadDocx();
   },
+  insertTableRow: () => workspace.insertTableRow(),
+  deleteTableRow: () => workspace.deleteTableRow(),
+  insertTableColumn: () => workspace.insertTableColumn(),
+  deleteTableColumn: () => workspace.deleteTableColumn(),
+  mergeTableCells: () => workspace.mergeTableCells(),
+  splitTableCell: () => workspace.splitTableCell(),
+  insertToc: () => workspace.insertToc(),
+  insertPageNumber: () => workspace.insertPageNumber(),
+  toggleTitlePage: () => workspace.toggleTitlePage(),
+  toggleEvenOdd: () => workspace.toggleEvenOdd(),
   formatState: () => workspace.formatState(caption),
 });
 workspace.onUi(() => ribbon.sync());
@@ -54,6 +64,13 @@ workspace.onSave(() => {
   void downloadDocx();
 });
 workspace.newBlank();
+
+const demoName = new URLSearchParams(location.search).get("demo");
+if (demoName === "toc") {
+  void openNamedDocx("/toc-demo.docx", "toc-demo.docx");
+} else if (demoName === "header") {
+  void openNamedDocx("/header-demo.docx", "header-demo.docx");
+}
 
 async function downloadDocx(): Promise<void> {
   const data = await workspace.exportDocx();
@@ -85,10 +102,13 @@ fileInput.addEventListener("change", async () => {
   if (!file) {
     return;
   }
-  const data = await file.arrayBuffer();
-  const documentModel = await new DocxReader().read(data);
-  workspace.load(documentModel);
-  caption = file.name;
-  ribbon.sync();
+  await openNamedDocx(await file.arrayBuffer(), file.name);
   fileInput.value = "";
 });
+
+async function openNamedDocx(source: ArrayBuffer | string, name: string): Promise<void> {
+  const data = typeof source === "string" ? await (await fetch(source)).arrayBuffer() : source;
+  workspace.load(await new DocxReader().read(data));
+  caption = name;
+  ribbon.sync();
+}

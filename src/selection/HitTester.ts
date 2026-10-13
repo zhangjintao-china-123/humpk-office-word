@@ -10,7 +10,7 @@ import type { PageSetup } from "../render/page/PageSetup";
 import { TableGeometry, type TableCellBox } from "../render/table/TableGeometry";
 import { CELL_PAD } from "../layout/LayoutConstants";
 import { CaretPos } from "./CaretPos";
-import { storyKind, type StoryRef } from "./StoryRef";
+import { storyKind, storySection, type StoryRef } from "./StoryRef";
 
 export interface HitContext {
   pageSetup: PageSetup;
@@ -21,6 +21,13 @@ export interface HitContext {
   headers?: Partial<Record<HeaderFooterType, StoryEditor>>;
   footers?: Partial<Record<HeaderFooterType, StoryEditor>>;
   bandType?: (slot: "header" | "footer", pageIndex: number) => HeaderFooterType;
+  bandAt?: (slot: "header" | "footer", pageIndex: number) => BandHit;
+}
+
+export interface BandHit {
+  type: HeaderFooterType;
+  sectionIndex: number;
+  editor?: StoryEditor;
 }
 
 export interface CaretBox {
@@ -40,6 +47,38 @@ export class HitTester {
       this.hitBand(worldX, worldY, ctx, "footer") ??
       this.hitNearestBody(worldX, worldY, ctx)
     );
+  }
+
+  locateBand(
+    worldX: number,
+    worldY: number,
+    ctx: HitContext,
+  ): { slot: "header" | "footer"; pageIndex: number; type: HeaderFooterType; sectionIndex: number } | null {
+    for (let pageIndex = 0; pageIndex < ctx.origins.length; pageIndex += 1) {
+      const origin = ctx.origins[pageIndex];
+      const localX = worldX - origin.x;
+      const localY = worldY - origin.y;
+      if (localX < 0 || localX > ctx.pageSetup.width || localY < 0 || localY > ctx.pageSetup.height) {
+        continue;
+      }
+      let slot: "header" | "footer" | null = null;
+      if (localY >= ctx.pageSetup.headerFromEdge && localY < ctx.pageSetup.contentTop()) {
+        slot = "header";
+      } else if (localY > ctx.pageSetup.contentBottom() && localY <= ctx.pageSetup.height) {
+        slot = "footer";
+      }
+      if (!slot) {
+        return null;
+      }
+      const at = ctx.bandAt?.(slot, pageIndex);
+      return {
+        slot,
+        pageIndex,
+        type: at?.type ?? ctx.bandType?.(slot, pageIndex) ?? "default",
+        sectionIndex: at?.sectionIndex ?? 0,
+      };
+    }
+    return null;
   }
 
   wordBox(pos: CaretPos, ctx: HitContext): CaretBox & { width: number } | null {
@@ -74,7 +113,7 @@ export class HitTester {
       return ctx.body?.lines ?? [];
     }
     if (story.slot === "header" || story.slot === "footer") {
-      return this.bandEditor(ctx, story.slot, storyKind(story))?.lines ?? [];
+      return this.resolveBand(ctx, story)?.lines ?? [];
     }
     return story.cell.document.paragraphs.toArray().flatMap((paragraph) => paragraph.lines);
   }
@@ -108,8 +147,15 @@ export class HitTester {
       };
     }
     const kind = storyKind(story);
+    const sectionIndex = storySection(story);
     const slot = story.slot === "footer" ? "footer" : "header";
-    let pageIndex = ctx.origins.findIndex((_, index) => (ctx.bandType?.(slot, index) ?? "default") === kind);
+    let pageIndex = ctx.origins.findIndex((_, index) => {
+      const at = ctx.bandAt?.(slot, index);
+      if (at) {
+        return at.type === kind && at.sectionIndex === sectionIndex;
+      }
+      return (ctx.bandType?.(slot, index) ?? "default") === kind;
+    });
     if (pageIndex < 0) {
       pageIndex = 0;
     }
@@ -309,15 +355,16 @@ export class HitTester {
 
   private hitBand(worldX: number, worldY: number, ctx: HitContext, slot: "header" | "footer"): CaretPos | null {
     for (let i = 0; i < ctx.origins.length; i += 1) {
-      const type = ctx.bandType?.(slot, i) ?? "default";
-      const editor = this.bandEditor(ctx, slot, type);
+      const at = ctx.bandAt?.(slot, i);
+      const type = at?.type ?? ctx.bandType?.(slot, i) ?? "default";
+      const editor = at?.editor ?? this.bandEditor(ctx, slot, type);
       if (!editor) {
         continue;
       }
       const origin = ctx.origins[i];
       const left = origin.x + ctx.pageSetup.contentLeft();
       const top = origin.y + ctx.pageSetup.bandTop(slot);
-      const story: StoryRef = { slot, kind: type };
+      const story: StoryRef = { slot, kind: type, sectionIndex: at?.sectionIndex ?? 0 };
       for (const line of editor.lines) {
         if (!this.contains(worldX, worldY, left, top + line.top, ctx.pageSetup.contentWidth, line.height)) {
           continue;
@@ -326,6 +373,23 @@ export class HitTester {
       }
     }
     return null;
+  }
+
+  private resolveBand(ctx: HitContext, story: StoryRef): StoryEditor | undefined {
+    if (story.slot !== "header" && story.slot !== "footer") {
+      return undefined;
+    }
+    const kind = storyKind(story);
+    const sectionIndex = storySection(story);
+    if (ctx.bandAt) {
+      for (let i = 0; i < ctx.origins.length; i += 1) {
+        const at = ctx.bandAt(story.slot, i);
+        if (at.type === kind && at.sectionIndex === sectionIndex && at.editor) {
+          return at.editor;
+        }
+      }
+    }
+    return this.bandEditor(ctx, story.slot, kind);
   }
 
   private bandEditor(

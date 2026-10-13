@@ -3,6 +3,7 @@ import { mergeRunStyle, type RunStyle } from "./RunStyle";
 
 export interface StyleDefinition {
   styleId: string;
+  name?: string;
   type?: string;
   basedOn?: string;
   paragraphAttrs?: ParagraphAttrs;
@@ -19,6 +20,10 @@ export class StyleSheet {
 
   add(style: StyleDefinition): void {
     this.styles.set(style.styleId, style);
+  }
+
+  list(): StyleDefinition[] {
+    return [...this.styles.values()];
   }
 
   get(styleId: string): StyleDefinition | undefined {

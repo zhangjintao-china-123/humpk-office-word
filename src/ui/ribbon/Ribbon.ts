@@ -12,6 +12,16 @@ export interface RibbonHost {
   formatState(): RibbonState;
   openFile(): void;
   saveFile(): void;
+  insertTableRow(): void;
+  deleteTableRow(): void;
+  insertTableColumn(): void;
+  deleteTableColumn(): void;
+  mergeTableCells(): void;
+  splitTableCell(): void;
+  insertToc(): void;
+  insertPageNumber(): void;
+  toggleTitlePage(): void;
+  toggleEvenOdd(): void;
 }
 
 export interface RibbonState {
@@ -31,6 +41,8 @@ export interface RibbonState {
   inTable: boolean;
   borderPen: TableBorderPen;
   borderFlags?: TableBorderFlags;
+  titlePg: boolean;
+  evenAndOdd: boolean;
 }
 
 const FONTS = ["宋体", "黑体", "楷体", "仿宋", "微软雅黑", "Times New Roman", "Arial", "Calibri"];
@@ -70,6 +82,8 @@ export class Ribbon {
     this.toggle("align-center", state.align === "center");
     this.toggle("align-right", state.align === "right" || state.align === "end");
     this.toggle("align-both", state.align === "both" || state.align === "justify");
+    this.toggle("title-page", state.titlePg);
+    this.toggle("even-odd", state.evenAndOdd);
     this.setDisabled("undo", !state.canUndo);
     this.setDisabled("redo", !state.canRedo);
     const font = this.el.querySelector<HTMLSelectElement>("[data-select=font]");
@@ -160,6 +174,26 @@ export class Ribbon {
       this.actions.openFile();
     } else if (act === "save") {
       this.actions.saveFile();
+    } else if (act === "insert-row") {
+      this.actions.insertTableRow();
+    } else if (act === "delete-row") {
+      this.actions.deleteTableRow();
+    } else if (act === "insert-col") {
+      this.actions.insertTableColumn();
+    } else if (act === "delete-col") {
+      this.actions.deleteTableColumn();
+    } else if (act === "merge-cells") {
+      this.actions.mergeTableCells();
+    } else if (act === "split-cell") {
+      this.actions.splitTableCell();
+    } else if (act === "insert-toc") {
+      this.actions.insertToc();
+    } else if (act === "page-number") {
+      this.actions.insertPageNumber();
+    } else if (act === "title-page") {
+      this.actions.toggleTitlePage();
+    } else if (act === "even-odd") {
+      this.actions.toggleEvenOdd();
     } else if (act === "bold" || act === "italic" || act === "underline" || act === "strike" || act === "clear") {
       this.actions.applyFormat({ type: act });
     } else if (act === "align-left") {
@@ -225,7 +259,7 @@ export class Ribbon {
             <button type="button" data-act="redo" title="重做 (Ctrl+Y)">↷</button>
             <button type="button" data-act="new" title="新建">新建</button>
             <button type="button" data-act="open" title="打开">打开</button>
-            <button type="button" data-act="save" title="保存（当前仅保存正文）">保存</button>
+            <button type="button" data-act="save" title="保存">保存</button>
           </div>
           <span>剪贴板</span>
         </section>
@@ -260,6 +294,31 @@ export class Ribbon {
             ${this.borders.markup()}
           </div>
           <span>段落</span>
+        </section>
+        <section class="ho-word-group">
+          <div class="ho-word-group-body">
+            <button type="button" data-act="page-number" title="在页眉或页脚插入页码">页码</button>
+            <button type="button" data-act="title-page" title="首页使用不同的页眉页脚">首页</button>
+            <button type="button" data-act="even-odd" title="奇偶页使用不同的页眉页脚">奇偶</button>
+          </div>
+          <span>页眉</span>
+        </section>
+        <section class="ho-word-group">
+          <div class="ho-word-group-body">
+            <button type="button" data-act="insert-toc" title="按标题生成目录">目录</button>
+          </div>
+          <span>引用</span>
+        </section>
+        <section class="ho-word-group">
+          <div class="ho-word-group-body">
+            <button type="button" data-act="insert-row" title="在下方插入行">行+</button>
+            <button type="button" data-act="delete-row" title="删除行">行-</button>
+            <button type="button" data-act="insert-col" title="在右侧插入列">列+</button>
+            <button type="button" data-act="delete-col" title="删除列">列-</button>
+            <button type="button" data-act="merge-cells" title="合并单元格">合并</button>
+            <button type="button" data-act="split-cell" title="拆分单元格">拆分</button>
+          </div>
+          <span>表格</span>
         </section>
       </div>
     `;

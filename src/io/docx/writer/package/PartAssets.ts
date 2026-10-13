@@ -1,0 +1,62 @@
+export interface WrittenRel {
+  id: string;
+  type: string;
+  target: string;
+}
+
+export interface WrittenImage {
+  path: string;
+  base64: string;
+  ext: string;
+}
+
+export class PartAssets {
+  readonly rels: WrittenRel[] = [];
+  readonly images: WrittenImage[] = [];
+
+  constructor(
+    private readonly relSeq: { n: number } = { n: 1 },
+    private readonly imageSeq: { n: number } = { n: 1 },
+  ) {}
+
+  nextRelId(): string {
+    const id = `rId${this.relSeq.n}`;
+    this.relSeq.n += 1;
+    return id;
+  }
+
+  embedImage(url: string | undefined): string | undefined {
+    const parsed = parseDataUrl(url);
+    if (!parsed) {
+      return undefined;
+    }
+    const index = this.imageSeq.n;
+    this.imageSeq.n += 1;
+    const filename = `image${index}.${parsed.ext}`;
+    this.images.push({
+      path: `word/media/${filename}`,
+      base64: parsed.base64,
+      ext: parsed.ext,
+    });
+    const id = this.nextRelId();
+    this.rels.push({
+      id,
+      type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+      target: `media/${filename}`,
+    });
+    return id;
+  }
+}
+
+function parseDataUrl(url: string | undefined): { ext: string; base64: string } | undefined {
+  if (!url) {
+    return undefined;
+  }
+  const match = /^data:image\/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/.exec(url);
+  if (!match) {
+    return undefined;
+  }
+  const subtype = match[1].toLowerCase();
+  const ext = subtype === "jpeg" ? "jpg" : subtype;
+  return { ext, base64: match[2] };
+}

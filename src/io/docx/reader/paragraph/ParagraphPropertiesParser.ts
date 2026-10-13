@@ -1,8 +1,11 @@
-import { parseNumber } from "../../../../shared/units";
+import type { SectionBreak } from "../../../../model/document/PageLabel";
+import type { ParagraphBorder, TabStop } from "../../../../model/style/ParagraphAttrs";
+import { parseNumber, twipToPx } from "../../../../shared/units";
 import type { ParagraphAttrs } from "../../../../model/style/ParagraphAttrs";
 import { mergeParagraphAttrs } from "../../../../model/style/ParagraphAttrs";
-import type { TitleSerial } from "../../../../model/style/Numbering";
-import { attr, first } from "../../ooxml/XmlQuery";
+import type { NumberingLevel, TitleSerial } from "../../../../model/style/Numbering";
+import { formatOutlineLabel } from "../../../../model/style/OutlineLabel";
+import { attr, children, first } from "../../ooxml/XmlQuery";
 import type { ParseContext } from "../ParseContext";
 
 export class ParagraphPropertiesParser {
@@ -62,16 +65,46 @@ export class ParagraphPropertiesParser {
       attrs.snapToGrid = attr(snap, "w:val") ?? "1";
     }
 
+    const outline = first(pPr, "w:outlineLvl");
+    if (outline) {
+      const raw = Number(attr(outline, "w:val"));
+      if (Number.isFinite(raw) && raw >= 0 && raw <= 8) {
+        attrs.outlineLevel = raw + 1;
+      } else {
+        delete attrs.outlineLevel;
+      }
+    }
+
+    const tabs = first(pPr, "w:tabs");
+    if (tabs) {
+      attrs.tabs = tabStops(tabs);
+    }
+    const border = first(first(pPr, "w:pBdr"), "w:bottom");
+    if (border) {
+      attrs.borderBottom = paragraphBorder(border);
+    }
+    const sectPr = first(pPr, "w:sectPr");
+    if (sectPr) {
+      attrs.endsSection = true;
+      attrs.sectionBreak = sectionBreak(attr(first(sectPr, "w:type"), "w:val"));
+    }
+
     const numPr = first(pPr, "w:numPr");
     if (numPr) {
+      attrs.ilvl = attr(first(numPr, "w:ilvl"), "w:val") ?? "0";
+      attrs.numId = attr(first(numPr, "w:numId"), "w:val");
       const serial = this.parseTitleSerial(numPr, ctx);
       if (serial) {
         attrs.titleSerial = serial;
       }
     } else if (styleId) {
-      const style = ctx.styles.get(styleId);
-      if (style?.paragraphAttrs?.titleSerial) {
-        attrs.titleSerial = this.advanceSerial(style.paragraphAttrs.titleSerial, ctx, styleId);
+      const linked = ctx.styles.get(styleId)?.paragraphAttrs;
+      const level = linked?.titleSerial ?? (linked?.numId ? ctx.numbering.getLevel(linked.numId, linked.ilvl ?? "0") : undefined);
+      if (level) {
+        const ilvl = Number(linked?.ilvl ?? level.ilvl ?? 0) || 0;
+        attrs.titleSerial = this.advanceSerial(level, ctx, styleId, linked?.numId, ilvl);
+        attrs.numId = linked?.numId;
+        attrs.ilvl = linked?.ilvl ?? String(ilvl);
       }
     }
 
@@ -92,36 +125,73 @@ export class ParagraphPropertiesParser {
     if (!level) {
       return undefined;
     }
-    return this.advanceSerial(level, ctx, `${numId}#${ilvl}`, numId, Number(ilvl));
+    return this.advanceSerial(level, ctx, `${numId}#${ilvl}`, numId, Number(ilvl) || 0);
   }
 
   private advanceSerial(
-    level: { start: number; numFmt: string; lvlText: string; lvlJc?: string },
+    level: NumberingLevel,
     ctx: ParseContext,
     key: string,
     numId?: string,
-    ilvl?: number,
+    ilvl = 0,
   ): TitleSerial {
-    const serialKey = numId != null && ilvl != null ? `n:${numId}#${ilvl}` : `s:${key}`;
-    const current = ctx.titleSerial.get(serialKey) ?? 0;
-    const serial = current + 1;
+    const serialKey = numId != null ? `n:${numId}#${ilvl}` : `s:${key}`;
+    const serial = ctx.titleSerial.has(serialKey) ? (ctx.titleSerial.get(serialKey) ?? level.start) + 1 : level.start;
     ctx.titleSerial.set(serialKey, serial);
-    if (numId != null && ilvl != null) {
-      ctx.titleSerial.set(`n:${numId}#${ilvl + 1}`, 0);
-    }
-
-    const result: TitleSerial = {
-      start: level.start,
-      numFmt: level.numFmt,
-      lvlText: level.lvlText,
-      lvlJc: level.lvlJc,
-      serial,
-    };
-    if (numId != null && ilvl != null && ilvl > 0) {
-      for (let i = 0; i < ilvl; i += 1) {
-        result[`lvl_${i}`] = ctx.titleSerial.get(`n:${numId}#${i}`) ?? 1;
+    if (numId != null) {
+      for (let deeper = ilvl + 1; deeper <= 8; deeper += 1) {
+        ctx.titleSerial.delete(`n:${numId}#${deeper}`);
       }
     }
+
+    const parents: number[] = [];
+    const parentFmts: string[] = [];
+    const result: TitleSerial = {
+      ...level,
+      ilvl,
+      serial,
+      label: "",
+    };
+    if (numId != null && ilvl > 0) {
+      for (let i = 0; i < ilvl; i += 1) {
+        const parent = ctx.numbering.getLevel(numId, String(i));
+        const value = ctx.titleSerial.get(`n:${numId}#${i}`) ?? parent?.start ?? 1;
+        parents[i] = value;
+        parentFmts[i] = parent?.numFmt ?? "decimal";
+        result[`lvl_${i}`] = value;
+      }
+    }
+    result.label = formatOutlineLabel(level, ilvl, serial, parents, parentFmts);
     return result;
   }
+}
+
+function tabStops(tabs: Element): TabStop[] {
+  const stops: TabStop[] = [];
+  for (const tab of children(tabs, "w:tab")) {
+    const pos = parseNumber(attr(tab, "w:pos"));
+    const raw = attr(tab, "w:val") ?? "left";
+    if (pos == null || raw === "clear" || raw === "bar" || raw === "num") {
+      continue;
+    }
+    const val = raw === "center" || raw === "right" || raw === "decimal" ? raw : "left";
+    stops.push({ posPx: twipToPx(pos), val, leader: attr(tab, "w:leader") });
+  }
+  return stops.sort((a, b) => a.posPx - b.posPx);
+}
+
+function paragraphBorder(border: Element): ParagraphBorder {
+  return {
+    val: attr(border, "w:val"),
+    sz: attr(border, "w:sz"),
+    color: attr(border, "w:color"),
+    space: attr(border, "w:space"),
+  };
+}
+
+function sectionBreak(value: string | undefined): SectionBreak {
+  if (value === "continuous" || value === "evenPage" || value === "oddPage") {
+    return value;
+  }
+  return "nextPage";
 }

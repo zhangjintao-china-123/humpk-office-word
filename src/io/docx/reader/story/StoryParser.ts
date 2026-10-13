@@ -1,6 +1,7 @@
 import { Document } from "../../../../model/document/Document";
 import type { DocumentKind } from "../../../../model/document/DocumentKind";
 import { first, matchesName } from "../../ooxml/XmlQuery";
+import { bindDocumentToc } from "../../../../model/toc/Toc";
 import { ParagraphParser } from "../paragraph/ParagraphParser";
 import type { ParseContext } from "../ParseContext";
 import { TableParser } from "../table/TableParser";
@@ -27,6 +28,7 @@ export class StoryParser {
     if (root) {
       this.parseChildren(root, ctx, document);
     }
+    bindDocumentToc(document);
     return document;
   }
 

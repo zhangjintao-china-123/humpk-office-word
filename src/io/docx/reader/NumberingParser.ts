@@ -20,12 +20,7 @@ export class NumberingParser {
       const levels = new Map<string, NumberingLevel>();
       for (const lvl of children(abstract, "w:lvl")) {
         const ilvl = attr(lvl, "w:ilvl") ?? "0";
-        levels.set(ilvl, {
-          start: parseNumber(attr(first(lvl, "w:start"), "w:val")) ?? 1,
-          numFmt: attr(first(lvl, "w:numFmt"), "w:val") ?? "decimal",
-          lvlText: attr(first(lvl, "w:lvlText"), "w:val") ?? "",
-          lvlJc: attr(first(lvl, "w:lvlJc"), "w:val"),
-        });
+        levels.set(ilvl, readLevel(lvl, Number(ilvl) || 0));
       }
       abstracts.set(abstractId, levels);
     }
@@ -40,10 +35,46 @@ export class NumberingParser {
       if (!levels) {
         continue;
       }
+      const copied = new Map<string, NumberingLevel>();
       for (const [ilvl, level] of levels) {
+        copied.set(ilvl, { ...level });
+      }
+      for (const override of children(num, "w:lvlOverride")) {
+        const ilvl = attr(override, "w:ilvl") ?? "0";
+        const base = copied.get(ilvl) ?? {
+          start: 1,
+          numFmt: "decimal",
+          lvlText: `%${(Number(ilvl) || 0) + 1}`,
+          ilvl: Number(ilvl) || 0,
+        };
+        const replaced = first(override, "w:lvl");
+        const next = replaced ? readLevel(replaced, Number(ilvl) || 0) : { ...base };
+        const startOverride = parseNumber(attr(first(override, "w:startOverride"), "w:val"));
+        if (startOverride != null) {
+          next.start = startOverride;
+        }
+        copied.set(ilvl, next);
+      }
+      for (const [ilvl, level] of copied) {
         numbering.setLevel(numId, ilvl, level);
       }
     }
     return numbering;
   }
+}
+
+function readLevel(lvl: Element, ilvl: number): NumberingLevel {
+  const rPr = first(lvl, "w:rPr");
+  const fonts = first(rPr, "w:rFonts");
+  const legal = first(lvl, "w:isLgl");
+  return {
+    start: parseNumber(attr(first(lvl, "w:start"), "w:val")) ?? 1,
+    numFmt: attr(first(lvl, "w:numFmt"), "w:val") ?? "decimal",
+    lvlText: attr(first(lvl, "w:lvlText"), "w:val") ?? "",
+    lvlJc: attr(first(lvl, "w:lvlJc"), "w:val"),
+    legal: legal != null && attr(legal, "w:val") !== "0" && attr(legal, "w:val") !== "false",
+    suff: attr(first(lvl, "w:suff"), "w:val"),
+    font: attr(fonts, "w:ascii") || attr(fonts, "w:hAnsi"),
+    ilvl,
+  };
 }

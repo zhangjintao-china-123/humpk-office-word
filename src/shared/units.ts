@@ -20,6 +20,14 @@ export function pxToPt(px: number): number {
   return px * (72 / 96);
 }
 
+export function pxToTwip(px: number): number {
+  return Math.round(px * 15);
+}
+
+export function pxToEmu(px: number): number {
+  return Math.round(px * 9525);
+}
+
 export function parseNumber(value: string | undefined): number | undefined {
   if (value == null || value === "") {
     return undefined;

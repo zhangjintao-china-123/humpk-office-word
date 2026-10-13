@@ -1,3 +1,4 @@
+import type { SectionBreak } from "../../../../model/document/PageLabel";
 import { parseNumber, twipToPx } from "../../../../shared/units";
 import type { Section } from "../../../../model/document/Section";
 import { attr, first } from "../../ooxml/XmlQuery";
@@ -46,6 +47,14 @@ export class SectionPropertiesParser {
       section.titlePg = value == null || value === "1" || value === "on" || value === "true";
     }
 
+    section.breakType = sectionBreak(attr(first(sectPr, "w:type"), "w:val"));
+    const numbering = first(sectPr, "w:pgNumType");
+    section.pageNumFmt = attr(numbering, "w:fmt");
+    const start = parseNumber(attr(numbering, "w:start"));
+    if (start != null) {
+      section.pageNumStart = start;
+    }
+
     const grid = first(sectPr, "w:docGrid");
     section.docGridType = attr(grid, "w:type");
     const pitch = parseNumber(attr(grid, "w:linePitch"));
@@ -53,4 +62,11 @@ export class SectionPropertiesParser {
       section.linePitchPx = twipToPx(pitch);
     }
   }
+}
+
+function sectionBreak(value: string | undefined): SectionBreak {
+  if (value === "continuous" || value === "evenPage" || value === "oddPage") {
+    return value;
+  }
+  return "nextPage";
 }

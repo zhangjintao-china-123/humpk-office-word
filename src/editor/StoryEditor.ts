@@ -1,3 +1,4 @@
+import { fieldValues, type PageLabel } from "../model/document/PageLabel";
 import type { Line } from "../model/line/Line";
 import type { Paragraph } from "../model/block/Paragraph";
 import type { PlacedAnchor } from "../model/inline/PlacedAnchor";
@@ -43,17 +44,18 @@ export class StoryEditor extends EditorBase {
     return Math.max(1, Math.ceil(total / this.pageSetup.contentHeight) || 1);
   }
 
-  paintOnPages(origins: PageOrigin[]): void {
+  paintOnPages(origins: PageOrigin[], labels?: PageLabel[]): void {
     if (!(this.draw instanceof Draw) || origins.length === 0) {
       return;
     }
+    const draw = this.draw;
     if (this.slot === "body") {
-      this.paintBody(this.draw, origins);
+      this.paintBody(draw, origins, labels);
       return;
     }
-    for (const origin of origins) {
-      this.paintBand(this.draw, origin);
-    }
+    origins.forEach((origin, index) => {
+      this.paintBand(draw, origin, labels?.[index] ?? fallbackLabel(index, origins.length));
+    });
   }
 
   reflow(dirty: Paragraph[]): void {
@@ -86,7 +88,7 @@ export class StoryEditor extends EditorBase {
 
   protected override onRender(): void {}
 
-  private paintBody(draw: Draw, origins: PageOrigin[]): void {
+  private paintBody(draw: Draw, origins: PageOrigin[], labels?: PageLabel[]): void {
     const pageH = this.pageSetup.contentHeight;
     const contentX = (origin: PageOrigin) => origin.x + this.pageSetup.contentLeft();
     const contentY = (origin: PageOrigin, storyY: number) => {
@@ -104,7 +106,8 @@ export class StoryEditor extends EditorBase {
       draw.beginPath();
       draw.rect(origin.x, origin.y, this.pageSetup.width, this.pageSetup.height);
       draw.clip();
-      this.painter.paintLine(draw, line, contentX(origin), contentY(origin, line.top));
+      const label = labels?.[pageIndex] ?? fallbackLabel(pageIndex, origins.length);
+      this.painter.paintLine(draw, line, contentX(origin), contentY(origin, line.top), label.pageNumber, fieldValues(label));
       draw.restore();
     }
     this.paintAnchors(draw, origins, false, (anchor, origin) => ({
@@ -113,12 +116,12 @@ export class StoryEditor extends EditorBase {
     }));
   }
 
-  private paintBand(draw: Draw, origin: PageOrigin): void {
+  private paintBand(draw: Draw, origin: PageOrigin, label: PageLabel): void {
     const left = origin.x + this.pageSetup.contentLeft();
     const top = origin.y + this.pageSetup.bandTop(this.slot === "footer" ? "footer" : "header");
     this.paintAnchors(draw, [origin], true, (anchor) => ({ x: left + anchor.x, y: top + anchor.y }));
     for (const line of this.lines) {
-      this.painter.paintLine(draw, line, left, top + line.top);
+      this.painter.paintLine(draw, line, left, top + line.top, label.pageNumber, fieldValues(label));
     }
     this.paintAnchors(draw, [origin], false, (anchor) => ({ x: left + anchor.x, y: top + anchor.y }));
   }
@@ -143,4 +146,14 @@ export class StoryEditor extends EditorBase {
       this.painter.paintDrawing(draw, anchor.drawing, at.x, at.y);
     }
   }
+}
+
+function fallbackLabel(pageIndex: number, total: number): PageLabel {
+  return {
+    sectionIndex: 0,
+    pageInSection: pageIndex + 1,
+    pageNumber: pageIndex + 1,
+    sectionPages: total,
+    totalPages: total,
+  };
 }

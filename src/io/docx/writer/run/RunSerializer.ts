@@ -2,18 +2,27 @@ import { pxToPt } from "../../../../shared/units";
 import type { Block } from "../../../../model/block/Block";
 import type { RunStyle } from "../../../../model/style/RunStyle";
 import { escapeXml, hexColor } from "../../ooxml/XmlEscape";
+import { DrawingSerializer } from "../drawing/DrawingSerializer";
+import type { PartAssets } from "../package/PartAssets";
 
 export class RunSerializer {
-  serialize(block: Block): string {
-    if (block.drawing || block.charType === "page") {
-      return "";
+  private readonly drawings = new DrawingSerializer();
+
+  serialize(block: Block, assets?: PartAssets): string {
+    if (block.drawing) {
+      return this.drawings.serialize(block.drawing, assets) ?? "";
     }
     const rPr = this.properties(block.style);
     const text = this.text(block.text);
-    if (!text && !rPr) {
+    const br = block.charType === "page" ? `<w:br w:type="page"/>` : "";
+    if (!text && !rPr && !br) {
       return "";
     }
-    return `<w:r>${rPr}${text || "<w:t></w:t>"}</w:r>`;
+    return `<w:r>${rPr}${br}${text || (br ? "" : "<w:t></w:t>")}</w:r>`;
+  }
+
+  propertiesOf(style: RunStyle | undefined): string {
+    return style ? this.properties(style) : "";
   }
 
   private text(value: string): string {

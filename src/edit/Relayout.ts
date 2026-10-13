@@ -33,6 +33,21 @@ export class Relayout {
 
   constructor(private readonly host: RelayoutHost) {}
 
+  layoutStory(story: StoryRef): void {
+    const document = this.host.documentOf(story);
+    const editor = this.host.editorOf(story);
+    if (!document) {
+      return;
+    }
+    const lines = this.layout.layout(document, editor ? editor.constraints() : this.constraints(story));
+    if (editor) {
+      editor.lines = lines;
+    }
+    if (story.slot === "body") {
+      this.host.afterBodyLayout(editor?.pageCount() ?? 1);
+    }
+  }
+
   apply(impact: EditImpact): boolean {
     let story = impact.story;
     let dirty = [...impact.dirty];

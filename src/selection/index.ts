@@ -1,4 +1,4 @@
-export { storyEquals, storyKind, type StoryRef } from "./StoryRef";
+export { storyEquals, storyKind, storySection, type StoryRef } from "./StoryRef";
 export { CaretPos } from "./CaretPos";
 export { SelRange, type SelMode } from "./SelRange";
 export { Selection } from "./Selection";

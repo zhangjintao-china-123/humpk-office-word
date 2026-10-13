@@ -1,3 +1,4 @@
+import type { SectionBreak } from "./PageLabel";
 import type { Document } from "./Document";
 import type { HeaderFooterType } from "./DocumentKind";
 
@@ -13,6 +14,9 @@ export class Section {
   headerFromEdgePx?: number;
   footerFromEdgePx?: number;
   titlePg = false;
+  breakType: SectionBreak = "nextPage";
+  pageNumStart?: number;
+  pageNumFmt?: string;
   linePitchPx?: number;
   docGridType?: string;
 }

@@ -9,6 +9,7 @@ export interface PointerHost {
   hitClient(clientX: number, clientY: number): CaretPos | null;
   cellsInRect(from: TableCell, to: TableCell): TableCell[];
   onChange(): void;
+  followLink?(pos: CaretPos): boolean;
 }
 
 export class PointerController {
@@ -45,6 +46,10 @@ export class PointerController {
     }
     const pos = this.host.hitClient(event.clientX, event.clientY);
     if (!pos) {
+      return;
+    }
+    if (!event.shiftKey && !event.metaKey && !event.ctrlKey && this.host.followLink?.(pos)) {
+      this.host.onChange();
       return;
     }
     this.dragging = true;

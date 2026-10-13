@@ -1,3 +1,4 @@
+import type { PageLabel } from "../model/document/PageLabel";
 import type { Document } from "../model/document/Document";
 import type { HeaderFooterType } from "../model/document/DocumentKind";
 import { StoryEditor, type PageOrigin } from "./StoryEditor";
@@ -21,6 +22,17 @@ export class BandEditors {
     return this.editors.get(type);
   }
 
+  open(type: HeaderFooterType, document: Document): StoryEditor {
+    const existing = this.editors.get(type);
+    if (existing) {
+      return existing;
+    }
+    const editor = this.create();
+    editor.attach().load(document).flush();
+    this.editors.set(type, editor);
+    return editor;
+  }
+
   asRecord(): Partial<Record<HeaderFooterType, StoryEditor>> {
     return Object.fromEntries(this.editors);
   }
@@ -36,10 +48,8 @@ export class BandEditors {
     return max;
   }
 
-  paintOnPages(origins: PageOrigin[], typeAt: (pageIndex: number) => HeaderFooterType): void {
-    origins.forEach((origin, index) => {
-      this.editor(typeAt(index))?.paintOnPages([origin]);
-    });
+  paintPage(origin: PageOrigin, type: HeaderFooterType, label: PageLabel): void {
+    this.editor(type)?.paintOnPages([origin], [label]);
   }
 
   dispose(): void {

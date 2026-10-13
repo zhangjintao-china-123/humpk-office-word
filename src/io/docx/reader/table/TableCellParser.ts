@@ -1,6 +1,6 @@
 import { Document } from "../../../../model/document/Document";
 import { TableCell } from "../../../../model/table/Table";
-import { first } from "../../ooxml/XmlQuery";
+import { attr, first } from "../../ooxml/XmlQuery";
 import type { ParseContext } from "../ParseContext";
 import { TableBordersParser } from "./TableBordersParser";
 import { TableMergeParser } from "./TableMergeParser";
@@ -25,6 +25,10 @@ export class TableCellParser {
     cell.colSpan = merge.colSpan;
     cell.rowSpan = merge.rowSpan;
     cell.borders = this.borders.parse(tcPr, "w:tcBorders");
+    const fill = attr(first(tcPr, "w:shd"), "w:fill");
+    if (fill && fill !== "auto") {
+      cell.fill = fill.startsWith("#") ? fill : `#${fill}`;
+    }
     return cell;
   }
 

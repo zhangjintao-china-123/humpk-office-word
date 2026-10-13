@@ -9,6 +9,10 @@ export class TableBorderPainter {
 
   paint(draw: Draw, box: TableCellBox, table: Table): void {
     const { cell, x, y, width, height } = box;
+    if (cell.fill) {
+      draw.setFill(cell.fill);
+      draw.fillRect(x, y, width, height);
+    }
     this.stroke(draw, this.resolve.cellEdge(table, cell, "top"), x, y, x + width, y);
     this.stroke(draw, this.resolve.cellEdge(table, cell, "right"), x + width, y, x + width, y + height);
     this.stroke(draw, this.resolve.cellEdge(table, cell, "bottom"), x, y + height, x + width, y + height);

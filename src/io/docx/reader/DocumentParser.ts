@@ -1,3 +1,4 @@
+import { assignSections } from "../../../model/document/PageLabel";
 import { Document } from "../../../model/document/Document";
 import { first, parseXml } from "../ooxml/XmlQuery";
 import { HeaderFooterParser } from "./header-footer/HeaderFooterParser";
@@ -17,6 +18,7 @@ export class DocumentParser {
     if (body) {
       this.headerFooter.attach(body, ctx, document);
     }
+    assignSections(document);
     return document;
   }
 }

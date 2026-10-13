@@ -22,6 +22,7 @@ export class StyleParser {
       }
       const definition: StyleDefinition = {
         styleId,
+        name: attr(first(style, "w:name"), "w:val"),
         type: attr(style, "w:type"),
         basedOn: attr(first(style, "w:basedOn"), "w:val"),
       };
