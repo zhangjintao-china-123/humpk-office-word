@@ -21,7 +21,7 @@ export class TableLayouter {
           words.buildStoryOnly(cell.document);
         }
         const lines = this.layoutCell(cell.document, Math.max(20, width - CELL_PAD * 2));
-        const content = lines.reduce((sum, line) => sum + line.height, 0);
+        const content = lines.reduce((sum, line) => sum + (line.sharesBand ? 0 : line.height), 0);
         const spanned = Math.max(1, cell.rowSpan);
         const extra = Math.max(0, content + CELL_PAD * 2 - this.sumRange(rowHeights, cell.rowIndex, spanned));
         if (extra > 0) {

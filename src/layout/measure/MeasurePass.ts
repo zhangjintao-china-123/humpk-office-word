@@ -23,18 +23,21 @@ export class MeasurePass {
     if (word.kind === "drawing" && word.drawing) {
       word.width = word.drawing.width;
       word.height = word.drawing.height;
+      word.spacingAfter = 0;
       word.kernedWidth = word.width;
       return;
     }
     if (word.kind === "table" || word.kind === "page") {
       word.width = 0;
       word.height = 0;
+      word.spacingAfter = 0;
       word.kernedWidth = 0;
       return;
     }
     if (word.isEnterChar()) {
       word.width = 0;
       word.height = size;
+      word.spacingAfter = 0;
       word.kernedWidth = 0;
       return;
     }
@@ -43,6 +46,7 @@ export class MeasurePass {
       word.width = Math.max(word.width, size);
     }
     word.height = size;
+    word.spacingAfter = 0;
     word.kernedWidth = word.width;
   }
 }

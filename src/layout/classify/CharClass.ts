@@ -52,16 +52,35 @@ export function classifyChar(char: string, code = char.codePointAt(0) ?? 0): Cha
   if (OPEN_PUN.has(char)) {
     return "openPun";
   }
-  if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) {
+  if (isLatinLetter(char, code)) {
     return "latin";
   }
-  if (code >= 48 && code <= 57) {
+  if (isAsciiDigit(char, code)) {
     return "number";
   }
-  if (isCjk(code)) {
+  if (isCjk(code) || isFullwidthForm(code)) {
     return "cjk";
   }
   return "other";
+}
+
+/** 西文字母，含带音符的拉丁字母。全角英文字母不在这里。 */
+export function isLatinLetter(char: string, code = char.codePointAt(0) ?? 0): boolean {
+  if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) {
+    return true;
+  }
+  if (code >= 0x00c0 && code <= 0x024f) {
+    return true;
+  }
+  return code >= 0x1e00 && code <= 0x1eff;
+}
+
+export function isAsciiDigit(char: string, code = char.codePointAt(0) ?? 0): boolean {
+  return code >= 48 && code <= 57;
+}
+
+function isFullwidthForm(code: number): boolean {
+  return code >= 0xff01 && code <= 0xff60;
 }
 
 export function isCjk(code: number): boolean {
@@ -85,9 +104,12 @@ export function isOpenPunChar(char: string): boolean {
   return OPEN_PUN.has(char);
 }
 
+/** 汉字和全角字符。半角标点、西文字母不算东亚，宽度也不撑成整字。 */
 export function isEastAsiaWord(wordChar: string, code: number): boolean {
-  const category = classifyChar(wordChar, code);
-  return category === "cjk" || category === "fullPun" || category === "openPun" || category === "closePun";
+  if (isCjk(code) || isFullwidthForm(code)) {
+    return true;
+  }
+  return FULL_PUN.has(wordChar);
 }
 
 export function isLatinOrNumber(wordChar: string, code: number): boolean {

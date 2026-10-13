@@ -1,8 +1,10 @@
+import { parseNumber } from "../../../shared/units";
 import { attr, descendants, parseXml } from "../ooxml/XmlQuery";
 
 export interface SettingsFlags {
   adjustLineHeightInTable: boolean;
   evenAndOddHeaders: boolean;
+  defaultTabStopTwip?: number;
 }
 
 export class SettingsParser {
@@ -14,6 +16,7 @@ export class SettingsParser {
     return {
       adjustLineHeightInTable: this.onOff(descendants(doc.documentElement, "w:adjustLineHeightInTable")[0]),
       evenAndOddHeaders: this.onOff(descendants(doc.documentElement, "w:evenAndOddHeaders")[0]),
+      defaultTabStopTwip: parseNumber(attr(descendants(doc.documentElement, "w:defaultTabStop")[0], "w:val")),
     };
   }
 

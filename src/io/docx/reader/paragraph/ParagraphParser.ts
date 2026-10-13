@@ -2,7 +2,7 @@ import { Paragraph } from "../../../../model/block/Paragraph";
 import { mergeRunStyle } from "../../../../model/style/RunStyle";
 import { fieldKind, type FieldKind } from "../../../../model/document/PageLabel";
 import type { TocHint } from "../../../../model/toc/Toc";
-import { attr, children, first, matchesName, textOf } from "../../ooxml/XmlQuery";
+import { attr, children, descendants, first, matchesName, textOf } from "../../ooxml/XmlQuery";
 import type { ParseContext } from "../ParseContext";
 import { RunParser } from "../run/RunParser";
 import { RunPropertiesParser } from "../run/RunPropertiesParser";
@@ -18,9 +18,9 @@ export class ParagraphParser {
     const pPr = first(pNode, "w:pPr");
     paragraph.attrs = this.properties.parse(pPr, ctx);
 
-    if (paragraph.attrs.styleId) {
-      paragraph.inheritedRunStyle = ctx.styles.getResolved(paragraph.attrs.styleId).runStyle;
-    }
+    const styleId = paragraph.attrs.styleId ?? (ctx.applyDefaults ? ctx.styles.defaultParagraphStyleId : undefined);
+    const fromStyle = styleId ? ctx.styles.getResolved(styleId).runStyle : undefined;
+    paragraph.inheritedRunStyle = ctx.applyDefaults ? mergeRunStyle(ctx.styles.docDefaultRun, fromStyle) : fromStyle;
     const pPrRun = this.properties.parseDirectRun(pPr);
     if (pPrRun) {
       paragraph.inheritedRunStyle = mergeRunStyle(
@@ -85,6 +85,13 @@ export class ParagraphParser {
           continue;
         }
         runs.push({ node: child, field: inResult ? active : undefined });
+        continue;
+      }
+      if (matchesName(child, "mc:AlternateContent")) {
+        const branch = first(child, "mc:Choice") ?? first(child, "mc:Fallback");
+        for (const run of descendants(branch, "w:r")) {
+          runs.push({ node: run });
+        }
         continue;
       }
       if (matchesName(child, "w:hyperlink") || matchesName(child, "w:ins") || matchesName(child, "w:sdt")) {

@@ -9,6 +9,14 @@ export interface NumberingLevel {
   suff?: string;
   font?: string;
   ilvl?: number;
+  leftTwip?: number;
+  leftChars?: number;
+  rightTwip?: number;
+  rightChars?: number;
+  firstLineTwip?: number;
+  firstLineChars?: number;
+  hangingTwip?: number;
+  hangingChars?: number;
 }
 
 export interface TitleSerial extends NumberingLevel {

@@ -6,6 +6,8 @@ import type { Block } from "../../model/block/Block";
 import type { Word } from "../../model/inline/Word";
 import { CELL_PAD } from "../../layout/LayoutConstants";
 import { fillColorOf, fontCss } from "../../layout/measure/FontSpec";
+import type { ParagraphBorder, ParagraphShading } from "../../model/style/ParagraphAttrs";
+import { ptToPx } from "../../shared/units";
 import { imageCache, type ImageCache } from "../image/ImageCache";
 import { TableBorderPainter } from "../table/TableBorderPainter";
 import { TableGeometry } from "../table/TableGeometry";
@@ -23,6 +25,7 @@ export class StoryPainter {
       this.paintTable(draw, line, x, top);
       return;
     }
+    this.paintShading(draw, line, x, top);
     const exact = line.paragraph?.attrs.lineRule === "exact";
     if (exact) {
       const box = Math.max(0, line.height - line.beforeHeight - line.afterHeight);
@@ -46,23 +49,29 @@ export class StoryPainter {
     if (line.isLast && line.paragraph?.toc?.role === "entry") {
       this.paintTocPage(draw, line, x, top);
     }
-    if (line.isLast) {
-      this.paintBottomBorder(draw, line, x, top);
-    }
     if (exact) {
       draw.restore();
     }
+    this.paintParagraphBorders(draw, line, x, top);
   }
 
   paintDrawing(draw: Draw, drawing: Drawing, x: number, y: number): void {
     const { width, height, url } = drawing;
     const img = this.images.ensure(url);
+    const boxW = Math.max(width, 24);
+    const boxH = Math.max(height, 16);
     if (img && width > 0 && height > 0) {
       draw.drawImage(img, x, y, width, height);
       return;
     }
-    draw.setFill("#dddddd");
-    draw.fillRect(x, y, Math.max(width, 24), Math.max(height, 16));
+    draw.setFill("#e6e6e6");
+    draw.fillRect(x, y, boxW, boxH);
+    const label = formatLabel(drawing.sourceUrl);
+    if (label && boxW >= 36 && boxH >= 16) {
+      draw.setFill("#666666");
+      draw.setFont("12px sans-serif");
+      draw.fillText(label, x + 4, y + 14);
+    }
   }
 
   private paintOutline(draw: Draw, line: Line, x: number, top: number): void {
@@ -97,7 +106,11 @@ export class StoryPainter {
       this.paintDrawing(draw, word.drawing, x + word.left, top + line.beforeHeight + line.contentOffsetY);
       return;
     }
-    if (word.kind !== "text" || word.isEnterChar() || word.char === "\t") {
+    if (word.kind !== "text" || word.isEnterChar()) {
+      return;
+    }
+    if (word.char === "\t") {
+      this.paintTabLeader(draw, word, line, x, top);
       return;
     }
     const style = word.getStyle();
@@ -139,20 +152,82 @@ export class StoryPainter {
     }
   }
 
-  private paintBottomBorder(draw: Draw, line: Line, x: number, top: number): void {
-    const border = line.paragraph?.attrs.borderBottom;
+  private paintShading(draw: Draw, line: Line, x: number, top: number): void {
+    const color = shadeColor(line.paragraph?.attrs.shading);
     const width = line.contentWidth;
-    if (!border || border.val === "nil" || border.val === "none" || width <= 0) {
+    if (!color || width <= 0 || line.type) {
+      return;
+    }
+    const y = top + line.beforeHeight;
+    const height = Math.max(1, line.height - line.beforeHeight - line.afterHeight);
+    draw.setFill(color);
+    draw.fillRect(x, y, width, height);
+  }
+
+  private paintTabLeader(draw: Draw, word: Word, line: Line, x: number, top: number): void {
+    const leader = tabLeader(line, word.left + word.kernedWidth);
+    if (!leader || word.kernedWidth < 4) {
+      return;
+    }
+    const mark = leaderMark(leader);
+    if (!mark) {
+      return;
+    }
+    this.applyStyle(draw, word);
+    const height = Math.max(line.maxCharHeight, 14);
+    const baseline = top + line.beforeHeight + line.contentOffsetY + height * 0.85;
+    const markWidth = Math.max(1, draw.measureText(mark));
+    let cursor = x + word.left;
+    const end = cursor + word.kernedWidth - markWidth * 0.25;
+    while (cursor + markWidth <= end) {
+      draw.fillText(mark, cursor, baseline);
+      cursor += markWidth;
+    }
+  }
+
+  private paintParagraphBorders(draw: Draw, line: Line, x: number, top: number): void {
+    const attrs = line.paragraph?.attrs;
+    const width = line.contentWidth;
+    if (!attrs || width <= 0 || line.type) {
+      return;
+    }
+    const contentTop = top + line.beforeHeight;
+    const contentBottom = top + line.height - line.afterHeight;
+    if (line.isFirst) {
+      this.strokeBorder(draw, attrs.borderTop, x, contentTop, x + width, contentTop, -1);
+    }
+    if (line.isLast) {
+      this.strokeBorder(draw, attrs.borderBottom, x, contentBottom, x + width, contentBottom, 1);
+      this.strokeBorder(draw, attrs.borderBetween, x, contentBottom, x + width, contentBottom, 1);
+    }
+    this.strokeBorder(draw, attrs.borderLeft, x, contentTop, x, contentBottom, -1);
+    this.strokeBorder(draw, attrs.borderRight, x + width, contentTop, x + width, contentBottom, 1);
+  }
+
+  private strokeBorder(
+    draw: Draw,
+    border: ParagraphBorder | undefined,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    outward: number,
+  ): void {
+    if (!border || border.val === "nil" || border.val === "none") {
       return;
     }
     const eighths = Number(border.sz);
     const thickness = Number.isFinite(eighths) && eighths > 0 ? Math.max(1, (eighths / 8) * (96 / 72)) : 1;
     const color = !border.color || border.color === "auto" ? "#000000" : border.color.startsWith("#") ? border.color : `#${border.color}`;
-    const y = top + line.height - thickness;
+    const space = Number(border.space);
+    const pad = Number.isFinite(space) && space > 0 ? ptToPx(space) : 0;
+    const horizontal = Math.abs(y1 - y2) < 0.5;
+    const dx = horizontal ? 0 : outward * pad;
+    const dy = horizontal ? outward * pad : 0;
     draw.setStroke(color, thickness);
     draw.beginPath();
-    draw.moveTo(x, y);
-    draw.lineTo(x + width, y);
+    draw.moveTo(x1 + dx, y1 + dy);
+    draw.lineTo(x2 + dx, y2 + dy);
     draw.stroke();
   }
 
@@ -194,11 +269,12 @@ export class StoryPainter {
     const from = line.tableRowFrom;
     const to = line.tableRowTo || table.rows.length;
     const sliceH = line.height || this.tables.sliceHeight(table, from, to);
-    const boxes = this.tables.boxesInSlice(table, from, to, x, top);
+    const originX = x + line.leftBlankWidth;
+    const boxes = this.tables.boxesInSlice(table, from, to, originX, top);
 
     draw.save();
     draw.beginPath();
-    draw.rect(x - 0.5, top, this.tableWidth(table) + 1, sliceH);
+    draw.rect(originX - 0.5, top, this.tableWidth(table) + 1, sliceH);
     draw.clip();
 
     for (const box of boxes) {
@@ -233,5 +309,55 @@ export class StoryPainter {
     draw.setFont(fontCss(style, word.intChar));
     draw.setFill(fillColorOf(style));
   }
+}
+
+function shadeColor(shading: ParagraphShading | undefined): string | null {
+  if (!shading || shading.val === "nil" || shading.val === "none") {
+    return null;
+  }
+  const fill = shading.fill;
+  if (!fill || fill === "auto") {
+    return null;
+  }
+  return fill.startsWith("#") ? fill : `#${fill}`;
+}
+
+function tabLeader(line: Line, stopX: number): string | undefined {
+  const stops = line.paragraph?.attrs.tabs ?? [];
+  let leader: string | undefined;
+  for (const stop of stops) {
+    if (stop.posPx <= stopX + 0.5) {
+      leader = stop.leader;
+    }
+  }
+  return leader;
+}
+
+function leaderMark(leader: string): string {
+  if (leader === "dot" || leader === "middleDot") {
+    return "·";
+  }
+  if (leader === "hyphen") {
+    return "-";
+  }
+  if (leader === "underscore" || leader === "heavy") {
+    return "_";
+  }
+  return "";
+}
+
+function formatLabel(url: string | undefined): string {
+  const match = /^data:image\/([a-zA-Z0-9.+-]+)/.exec(url ?? "");
+  if (!match) {
+    return "";
+  }
+  const subtype = match[1].toLowerCase();
+  if (subtype === "png" || subtype === "jpeg" || subtype === "gif" || subtype === "bmp" || subtype === "webp" || subtype === "svg+xml") {
+    return "";
+  }
+  if (subtype === "tiff" || subtype === "tif") {
+    return "TIFF";
+  }
+  return subtype.replace(/^x-/, "").toUpperCase();
 }
 

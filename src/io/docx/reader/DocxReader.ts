@@ -27,6 +27,7 @@ export class DocxReader {
     const ctx = new ParseContext(pack);
     ctx.relationships = this.relationships.parse(pack.xml("word/_rels/document.xml.rels"));
     ctx.styles = this.styles.parse(pack.xml("word/styles.xml"));
+    ctx.applyDefaults = true;
     ctx.numbering = this.numbering.parse(pack.xml("word/numbering.xml"));
     ctx.storyParser = this.story;
 
@@ -38,6 +39,7 @@ export class DocxReader {
     const settings = this.settings.parse(pack.xml("word/settings.xml"));
     document.adjustLineHeightInTable = settings.adjustLineHeightInTable;
     document.evenAndOddHeaders = settings.evenAndOddHeaders;
+    document.defaultTabStopTwip = settings.defaultTabStopTwip;
     HeaderFooterResolver.inherit(document);
     return document;
   }

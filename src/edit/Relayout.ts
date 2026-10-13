@@ -148,7 +148,7 @@ export class Relayout {
     return document.paragraphs
       .toArray()
       .flatMap((paragraph) => paragraph.lines)
-      .reduce((sum, line) => sum + line.height, 0);
+      .reduce((sum, line) => sum + (line.sharesBand ? 0 : line.height), 0);
   }
 
   private sumRange(heights: number[], start: number, count: number): number {

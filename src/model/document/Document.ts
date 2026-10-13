@@ -18,6 +18,8 @@ export class Document {
   anchors: PlacedAnchor[] = [];
   adjustLineHeightInTable = false;
   evenAndOddHeaders = false;
+  /** settings.xml 的 w:defaultTabStop，单位 twip。缺省按 Word 的 720。 */
+  defaultTabStopTwip?: number;
 
   addParagraph(paragraph: Paragraph): void {
     paragraph.node = this.paragraphs.append(paragraph);

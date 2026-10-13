@@ -1,9 +1,9 @@
-import { outlineLabelWidth } from "../../model/style/OutlineLabel";
+import { flagOff } from "../../model/style/ParagraphAttrs";
 import { DEFAULT_FONT_SIZE } from "../LayoutConstants";
 import { Line } from "../../model/line/Line";
 import type { LinkedNode } from "../../model/list/LinkedList";
 import type { Word } from "../../model/inline/Word";
-import { LayoutToken } from "../token/LayoutToken";
+import { LayoutToken, gluedWidth } from "../token/LayoutToken";
 import { fontSizeOf } from "../measure/FontSpec";
 import { LineMetrics } from "./LineMetrics";
 import { LinePositioner } from "./LinePositioner";
@@ -16,6 +16,10 @@ export class LineBreaker {
 
   setGridPitch(px?: number): void {
     this.metrics.gridPitchPx = px;
+  }
+
+  setDefaultTab(px?: number): void {
+    this.positioner.setDefaultTab(px);
   }
 
   break(tokens: LayoutToken[], contentWidth: number): Line[] {
@@ -75,10 +79,14 @@ export class LineBreaker {
       const overflow = target.length > 0 && target.width + groupWidth > available;
 
       if (overflow) {
-        const need = target.width + token.width - available;
-        if (this.compressor.tryCompress(target, need) && target.width + token.width <= available) {
-          this.append(target, token);
-          continue;
+        const need = target.width + groupWidth - available;
+        const kinsoku = !flagOff(target.paragraph?.attrs.kinsoku);
+        if (kinsoku && need > 0 && this.compressor.tryCompress(target, need)) {
+          this.syncWidth(target);
+          if (target.width + groupWidth <= available) {
+            this.append(target, token);
+            continue;
+          }
         }
         if (token.canOverflow) {
           this.append(target, token);
@@ -114,18 +122,14 @@ export class LineBreaker {
     line.startNode = token.start;
     line.paragraph = token.start.data.paragraph;
     line.isFirst = isFirst;
-    line.leftBlankWidth = this.metrics.leftBlank(line.paragraph, isFirst, token.start.data);
-    line.rightBlankWidth = this.metrics.rightBlank(line.paragraph);
+    const word = token.start.data;
+    line.leftBlankWidth = this.metrics.leftBlank(line.paragraph, isFirst, word);
+    line.rightBlankWidth = this.metrics.rightBlank(line.paragraph, word);
     if (isFirst) {
       const label = line.paragraph?.attrs.titleSerial?.label ?? "";
       if (label) {
         line.outlineLabel = label;
-        const need = outlineLabelWidth(label, token.start.data.height || DEFAULT_FONT_SIZE) + 6;
-        const textStart = this.metrics.leftBlank(line.paragraph, false, token.start.data);
-        const hanging = Math.max(0, textStart - line.leftBlankWidth);
-        if (hanging < need) {
-          line.leftBlankWidth += need - hanging;
-        }
+        line.leftBlankWidth = this.metrics.textStartWithLabel(line.paragraph, word, line.leftBlankWidth, label);
       }
     }
     return line;
@@ -227,6 +231,19 @@ export class LineBreaker {
     return width;
   }
 
+  private syncWidth(line: Line): void {
+    let width = 0;
+    let node = line.startNode;
+    for (let i = 0; i < line.length; i += 1) {
+      if (!node) {
+        break;
+      }
+      width += node.data.kernedWidth;
+      node = node.next;
+    }
+    line.width = width;
+  }
+
   private append(line: Line, token: LayoutToken): void {
     if (!line.startNode) {
       line.startNode = token.start;
@@ -237,12 +254,7 @@ export class LineBreaker {
   }
 
   private lookaheadWidth(tokens: LayoutToken[], index: number): number {
-    const token = tokens[index];
-    const next = tokens[index + 1];
-    if (token.glueNext && next && next.kind !== "break" && next.kind !== "page" && next.kind !== "table") {
-      return token.width + next.width;
-    }
-    return token.width;
+    return gluedWidth(tokens, index);
   }
 
   private applyHeights(line: Line): void {
@@ -265,7 +277,7 @@ export class LineBreaker {
     const content = this.metrics.lineHeight(line.paragraph, maxFont);
     const rule = line.paragraph?.attrs.lineRule;
     const box = rule === "exact" ? content : Math.max(content, maxFont);
-    line.contentOffsetY = rule === "exact" ? this.metrics.exactOffset(content, maxFont) : 0;
+    line.contentOffsetY = this.metrics.contentOffset(box, maxFont, line.paragraph?.attrs.textAlignment);
     line.height = box + line.beforeHeight + line.afterHeight;
     line.fullHeight = line.height;
   }

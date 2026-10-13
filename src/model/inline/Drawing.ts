@@ -1,5 +1,5 @@
 export type WrapType = "none" | "square" | "tight" | "through" | "nowrap";
-export type WrapSide = "both" | "left" | "right";
+export type WrapSide = "both" | "left" | "right" | "largest";
 
 export interface WrapPoint {
   x: number;
@@ -26,7 +26,10 @@ export interface DrawingAnchor {
 export class Drawing {
   width = 0;
   height = 0;
+  /** 浏览器用来绘制的 data URL。 */
   url?: string;
+  /** 写回用的原始字节。EMF、WMF、TIFF 画布上用的是抽出来的位图，这里仍保留原件。 */
+  sourceUrl?: string;
   position: "inline" | "anchor" = "inline";
   anchorSet?: DrawingAnchor;
 }

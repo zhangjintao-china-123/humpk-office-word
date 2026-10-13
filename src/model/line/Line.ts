@@ -29,6 +29,8 @@ export class Line {
   visible = true;
   /** 段首大纲编号，例如 1.、（一）、①。 */
   outlineLabel = "";
+  /** 与前一条同一基线的绕排片段，不另占行高。 */
+  sharesBand = false;
   tableRowFrom = 0;
   tableRowTo = 0;
 

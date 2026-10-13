@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { Block } from "../../src/model/block/Block";
 import { Paragraph } from "../../src/model/block/Paragraph";
+import { Word } from "../../src/model/inline/Word";
 import { Line } from "../../src/model/line/Line";
 import { LineMetrics } from "../../src/layout/line/LineMetrics";
 import { LINE_HEIGHT_RATIO } from "../../src/layout/LayoutConstants";
@@ -41,10 +43,11 @@ describe("LineMetrics 行距", () => {
     expect(metrics.lineHeight(paragraph("240", "exact"), 28)).toBeCloseTo(twipToPx(240), 5);
   });
 
-  it("atLeast 不低于指定 twip，也不低于 auto", () => {
+  it("atLeast 用字面 twip，自动行高按单倍", () => {
     const font = 18.666;
-    const auto = font * LINE_HEIGHT_RATIO * 1.5;
-    expect(metrics.lineHeight(paragraph("360", "atLeast"), font)).toBeCloseTo(Math.max(twipToPx(360), auto), 5);
+    const single = font * LINE_HEIGHT_RATIO;
+    expect(metrics.lineHeight(paragraph("360", "atLeast"), font)).toBeCloseTo(Math.max(twipToPx(360), single), 5);
+    expect(metrics.lineHeight(paragraph("100", "atLeast"), font)).toBeCloseTo(single, 5);
   });
 
   it("网格上 14 磅占 2 行，1.5 倍行距不生效", () => {
@@ -53,6 +56,12 @@ describe("LineMetrics 行距", () => {
     const height = withGrid.lineHeight(paragraph("360", "auto"), 18.666);
     expect(height).toBeCloseTo(twipToPx(312) * 2, 5);
     expect(height).not.toBeCloseTo(twipToPx(312) * 1.5, 5);
+  });
+
+  it("小四在 15.6 磅网格上只占一行", () => {
+    const withGrid = new LineMetrics();
+    withGrid.gridPitchPx = twipToPx(312);
+    expect(withGrid.lineHeight(paragraph("240", "auto"), 16)).toBeCloseTo(twipToPx(312), 5);
   });
 
   it("网格上小字号仍可用 1.5 倍", () => {
@@ -99,9 +108,28 @@ describe("LineMetrics 行距", () => {
     expect(metrics.collapsedGap(first, second, twipToPx(240), twipToPx(240))).toBe(0);
   });
 
-  it("exact 太高居中，太矮贴底", () => {
-    expect(metrics.exactOffset(40, 20)).toBeCloseTo(10, 5);
-    expect(metrics.exactOffset(20, 30)).toBeCloseTo(-10, 5);
+  it("默认按基线排，居中才把字放在行框中间", () => {
+    expect(metrics.contentOffset(40, 20, undefined)).toBe(0);
+    expect(metrics.contentOffset(40, 20, "center")).toBeCloseTo(10, 5);
+    expect(metrics.contentOffset(20, 30, "bottom")).toBeCloseTo(-10, 5);
+  });
+
+  it("左缩进认磅，悬挂缩进让首行往回退", () => {
+    const item = paragraph();
+    item.attrs.leftTwip = 420;
+    item.attrs.hangingTwip = 420;
+    expect(metrics.leftBlank(item, false, null)).toBeCloseTo(twipToPx(420), 5);
+    expect(metrics.leftBlank(item, true, null)).toBeCloseTo(0, 5);
+  });
+
+  it("字符缩进按字号，不按固定 14 像素", () => {
+    const item = paragraph();
+    item.attrs.firstLineChars = 200;
+    const block = new Block();
+    block.style = { fontSizePx: 21.333 };
+    const word = new Word();
+    word.block = block;
+    expect(metrics.leftBlank(item, true, word)).toBeCloseTo(42.666, 2);
   });
 
   it("相邻段 collapse 后间距只留较大者", () => {

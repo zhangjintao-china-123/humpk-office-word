@@ -76,8 +76,21 @@ export function moveVertical(
     return pos;
   }
   const index = lines.indexOf(current);
-  const next = index < 0 ? undefined : lines[index + dir];
-  return next ? caretOnLine(next, pos, preferX, hit, ctx) : pos;
+  if (index < 0) {
+    return pos;
+  }
+  let cursor = index;
+  while (cursor >= 0 && cursor < lines.length) {
+    cursor += dir;
+    const next = lines[cursor];
+    if (!next) {
+      return pos;
+    }
+    if (Math.abs(next.top - current.top) > 0.5) {
+      return caretOnLine(next, pos, preferX, hit, ctx);
+    }
+  }
+  return pos;
 }
 
 /** 按正文页高跳到最近的一行，仍保持 preferX。 */

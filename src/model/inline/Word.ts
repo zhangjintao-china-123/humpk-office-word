@@ -16,6 +16,8 @@ export class Word {
   table?: Table;
   width = 0;
   kernedWidth = 0;
+  /** 写在本字 kernedWidth 里、留给下一个字的中西文间距。换行后从行尾去掉。 */
+  spacingAfter = 0;
   left = 0;
   top = 0;
   height = 0;

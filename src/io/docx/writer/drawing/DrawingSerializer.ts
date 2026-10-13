@@ -6,7 +6,7 @@ export class DrawingSerializer {
   private docPr = 1;
 
   serialize(drawing: Drawing, assets: PartAssets | undefined): string | undefined {
-    const relId = assets?.embedImage(drawing.url);
+    const relId = assets?.embedImage(drawing.sourceUrl ?? drawing.url);
     if (!relId) {
       return undefined;
     }
@@ -44,7 +44,7 @@ export class DrawingSerializer {
     if (type === "nowrap") {
       return "<wp:wrapTopAndBottom/>";
     }
-    const wrapText = side === "left" || side === "right" ? side : "bothSides";
+    const wrapText = side === "left" || side === "right" || side === "largest" ? side : "bothSides";
     if (type === "tight" || type === "through") {
       const tag = type === "tight" ? "wp:wrapTight" : "wp:wrapThrough";
       return `<${tag} wrapText="${wrapText}">${this.polygon(polygon)}</${tag}>`;

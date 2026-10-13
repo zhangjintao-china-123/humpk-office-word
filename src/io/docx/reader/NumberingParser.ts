@@ -1,6 +1,7 @@
 import { Numbering, type NumberingLevel } from "../../../model/style/Numbering";
 import { parseNumber } from "../../../shared/units";
 import { attr, children, first, parseXml } from "../ooxml/XmlQuery";
+import { readIndent } from "./paragraph/ParagraphPropertiesParser";
 
 export class NumberingParser {
   parse(xml: string | undefined): Numbering {
@@ -67,6 +68,8 @@ function readLevel(lvl: Element, ilvl: number): NumberingLevel {
   const rPr = first(lvl, "w:rPr");
   const fonts = first(rPr, "w:rFonts");
   const legal = first(lvl, "w:isLgl");
+  const ind = first(first(lvl, "w:pPr"), "w:ind");
+  const indent = ind ? readIndent(ind) : {};
   return {
     start: parseNumber(attr(first(lvl, "w:start"), "w:val")) ?? 1,
     numFmt: attr(first(lvl, "w:numFmt"), "w:val") ?? "decimal",
@@ -76,5 +79,13 @@ function readLevel(lvl: Element, ilvl: number): NumberingLevel {
     suff: attr(first(lvl, "w:suff"), "w:val"),
     font: attr(fonts, "w:ascii") || attr(fonts, "w:hAnsi"),
     ilvl,
+    leftTwip: indent.leftTwip,
+    leftChars: indent.leftChars,
+    rightTwip: indent.rightTwip,
+    rightChars: indent.rightChars,
+    firstLineTwip: indent.firstLineTwip,
+    firstLineChars: indent.firstLineChars,
+    hangingTwip: indent.hangingTwip,
+    hangingChars: indent.hangingChars,
   };
 }

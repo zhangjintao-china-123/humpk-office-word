@@ -70,6 +70,12 @@ if (demoName === "toc") {
   void openNamedDocx("/toc-demo.docx", "toc-demo.docx");
 } else if (demoName === "header") {
   void openNamedDocx("/header-demo.docx", "header-demo.docx");
+} else if (demoName === "wrap") {
+  void openNamedDocx("/wrap-demo.docx", "wrap-demo.docx");
+} else if (demoName === "paragraph") {
+  void openNamedDocx("/paragraph-demo.docx", "paragraph-demo.docx");
+} else if (demoName === "mix") {
+  void openNamedDocx("/mix-demo.docx", "mix-demo.docx");
 }
 
 async function downloadDocx(): Promise<void> {

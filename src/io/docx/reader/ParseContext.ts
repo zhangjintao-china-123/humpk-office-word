@@ -14,6 +14,8 @@ export class ParseContext {
   titleSerial = new Map<string, number>();
   nextParagraphId = 1;
   storyParser?: StoryParser;
+  /** 正文段落套用 docDefaults 和默认段落样式。样式表自身的 pPr 不套。 */
+  applyDefaults = false;
 
   constructor(public readonly pack?: DocxPackage) {}
 
@@ -33,6 +35,7 @@ export class ParseContext {
     next.numbering = this.numbering;
     next.units = this.units;
     next.storyParser = this.storyParser;
+    next.applyDefaults = this.applyDefaults;
     const relsXml = this.pack?.xml(relsPathFor(partPath));
     const partRels = new RelationshipParser().parse(relsXml);
     next.relationships = partRels.size > 0 ? partRels : new Map(this.relationships);

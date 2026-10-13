@@ -39,8 +39,10 @@ export class StoryEditor extends EditorBase {
     if (this.slot !== "body") {
       return 1;
     }
-    const last = this.lines.at(-1);
-    const total = last ? last.top + last.height : 0;
+    let total = 0;
+    for (const line of this.lines) {
+      total = Math.max(total, line.top + line.height);
+    }
     return Math.max(1, Math.ceil(total / this.pageSetup.contentHeight) || 1);
   }
 

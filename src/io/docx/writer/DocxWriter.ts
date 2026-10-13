@@ -6,7 +6,7 @@ import type { StyleDefinition } from "../../../model/style/StyleSheet";
 import { pxToTwip } from "../../../shared/units";
 import { DocxPackage } from "../ooxml/DocxPackage";
 import { escapeXml } from "../ooxml/XmlEscape";
-import { paragraphPropertiesXml } from "./paragraph/ParagraphPropertiesWriter";
+import { paragraphIndentXml, paragraphPropertiesXml } from "./paragraph/ParagraphPropertiesWriter";
 import { PartAssets, type WrittenImage, type WrittenRel } from "./package/PartAssets";
 import { rootRelsXml, stylesXml, wrapDocumentXml, wrapStoryXml } from "./package/DefaultParts";
 import { RunSerializer } from "./run/RunSerializer";
@@ -38,8 +38,9 @@ export class DocxWriter {
     const stylesId = nextId(relSeq);
     const numbering = document.numbering.entries();
     const numberingId = numbering.length ? nextId(relSeq) : undefined;
+    const customTab = document.defaultTabStopTwip != null && document.defaultTabStopTwip !== 720;
     const settingsId =
-      document.evenAndOddHeaders || document.adjustLineHeightInTable ? nextId(relSeq) : undefined;
+      document.evenAndOddHeaders || document.adjustLineHeightInTable || customTab ? nextId(relSeq) : undefined;
 
     const bands = this.collectBands(document, imageSeq);
     const relByPath = new Map<string, string>();
@@ -74,7 +75,10 @@ export class DocxWriter {
       pack.setXml("word/numbering.xml", this.numberingXml(numbering));
     }
     if (settingsId) {
-      pack.setXml("word/settings.xml", this.settingsXml(document.evenAndOddHeaders, document.adjustLineHeightInTable));
+      pack.setXml(
+        "word/settings.xml",
+        this.settingsXml(document.evenAndOddHeaders, document.adjustLineHeightInTable, document.defaultTabStopTwip),
+      );
     }
     const written = new Set<string>();
     for (const part of bands) {
@@ -284,7 +288,18 @@ export class DocxWriter {
           const font = item.level.font
             ? `<w:rPr><w:rFonts w:ascii="${escapeXml(item.level.font)}" w:hAnsi="${escapeXml(item.level.font)}"/></w:rPr>`
             : "";
-          return `<w:lvl w:ilvl="${escapeXml(item.ilvl)}"><w:start w:val="${item.level.start}"/>${legal}<w:numFmt w:val="${escapeXml(item.level.numFmt)}"/><w:lvlText w:val="${escapeXml(item.level.lvlText)}"/>${jc}${suff}${font}</w:lvl>`;
+          const ind = paragraphIndentXml({
+            leftTwip: item.level.leftTwip,
+            leftChars: item.level.leftChars,
+            rightTwip: item.level.rightTwip,
+            rightChars: item.level.rightChars,
+            firstLineTwip: item.level.firstLineTwip,
+            firstLineChars: item.level.firstLineChars,
+            hangingTwip: item.level.hangingTwip,
+            hangingChars: item.level.hangingChars,
+          });
+          const pPr = ind ? `<w:pPr>${ind}</w:pPr>` : "";
+          return `<w:lvl w:ilvl="${escapeXml(item.ilvl)}"><w:start w:val="${item.level.start}"/>${legal}<w:numFmt w:val="${escapeXml(item.level.numFmt)}"/><w:lvlText w:val="${escapeXml(item.level.lvlText)}"/>${jc}${suff}${pPr}${font}</w:lvl>`;
         })
         .join("");
       abstracts.push(`<w:abstractNum w:abstractNumId="${abstractId}">${lvls}</w:abstractNum>`);
@@ -295,10 +310,15 @@ export class DocxWriter {
 <w:numbering xmlns:w="${W_NS}">${abstracts.join("")}${nums.join("")}</w:numbering>`;
   }
 
-  private settingsXml(evenAndOdd: boolean, adjustTable: boolean): string {
+  private settingsXml(evenAndOdd: boolean, adjustTable: boolean, defaultTabStopTwip?: number): string {
+    const tab =
+      defaultTabStopTwip != null && defaultTabStopTwip !== 720
+        ? `<w:defaultTabStop w:val="${Math.round(defaultTabStopTwip)}"/>`
+        : "";
     const flags = [
       evenAndOdd ? "<w:evenAndOddHeaders/>" : "",
       adjustTable ? "<w:adjustLineHeightInTable/>" : "",
+      tab,
     ].join("");
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="${W_NS}">${flags}</w:settings>`;
   }
@@ -351,6 +371,18 @@ function imageContentType(ext: string): string {
   }
   if (ext === "webp") {
     return "image/webp";
+  }
+  if (ext === "svg") {
+    return "image/svg+xml";
+  }
+  if (ext === "emf") {
+    return "image/x-emf";
+  }
+  if (ext === "wmf") {
+    return "image/x-wmf";
+  }
+  if (ext === "tif" || ext === "tiff") {
+    return "image/tiff";
   }
   return "image/png";
 }

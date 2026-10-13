@@ -1,6 +1,6 @@
 import { Block } from "../../../../model/block/Block";
 import { mergeRunStyle, type RunStyle } from "../../../../model/style/RunStyle";
-import { attr, first, textOf } from "../../ooxml/XmlQuery";
+import { attr, descendants, first, textOf } from "../../ooxml/XmlQuery";
 import { DrawingParser } from "../drawing/DrawingParser";
 import type { ParseContext } from "../ParseContext";
 import { RunPropertiesParser } from "./RunPropertiesParser";
@@ -28,11 +28,20 @@ export class RunParser {
       block.charType = attr(br, "w:type") ?? "textWrapping";
     }
 
-    const drawingNode = first(rNode, "w:drawing");
+    const drawingNode = first(rNode, "w:drawing") ?? descendants(rNode, "w:drawing")[0];
     if (drawingNode) {
       const drawing = this.drawings.parse(drawingNode, ctx);
       if (drawing) {
         block.drawing = drawing;
+      }
+    }
+    if (!block.drawing) {
+      const pict = first(rNode, "w:pict") ?? descendants(rNode, "w:pict")[0];
+      if (pict) {
+        const drawing = this.drawings.parsePict(pict, ctx);
+        if (drawing) {
+          block.drawing = drawing;
+        }
       }
     }
 

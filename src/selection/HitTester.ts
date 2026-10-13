@@ -287,7 +287,7 @@ export class HitTester {
       if (paginate) {
         const pageIndex = Math.min(ctx.origins.length - 1, Math.floor(line.top / pageH));
         const origin = ctx.origins[pageIndex];
-        x = origin.x + ctx.pageSetup.contentLeft();
+        x = origin.x + ctx.pageSetup.contentLeft() + line.leftBlankWidth;
         y = origin.y + ctx.pageSetup.contentTop() + (line.top - pageIndex * pageH);
       }
       placed.push({
@@ -310,6 +310,7 @@ export class HitTester {
     }
     const pageH = ctx.pageSetup.contentHeight;
     const story: StoryRef = { slot: "body" };
+    const hits: { line: Line; localX: number }[] = [];
     for (const line of ctx.body.lines) {
       if (line.type === "table" || line.type === "page") {
         continue;
@@ -321,9 +322,10 @@ export class HitTester {
       if (!this.contains(worldX, worldY, x, y, ctx.pageSetup.contentWidth, line.height)) {
         continue;
       }
-      return this.hitWords(line, worldX - x, story);
+      hits.push({ line, localX: worldX - x });
     }
-    return null;
+    const hit = this.closestSpan(hits);
+    return hit ? this.hitWords(hit.line, hit.localX, story) : null;
   }
 
   private hitNearestBody(worldX: number, worldY: number, ctx: HitContext): CaretPos | null {
@@ -333,24 +335,25 @@ export class HitTester {
     }
     const pageH = ctx.pageSetup.contentHeight;
     const storyY = page.index * pageH + (worldY - page.origin.y - ctx.pageSetup.contentTop());
-    let best: Line | null = null;
-    let dist = Number.POSITIVE_INFINITY;
+    const localX = worldX - page.origin.x - ctx.pageSetup.contentLeft();
+    let bestDist = Number.POSITIVE_INFINITY;
+    const hits: { line: Line; localX: number }[] = [];
     for (const line of ctx.body.lines) {
       if (line.type === "table" || line.type === "page") {
         continue;
       }
       const mid = line.top + line.height / 2;
       const d = Math.abs(mid - storyY);
-      if (d < dist) {
-        dist = d;
-        best = line;
+      if (d < bestDist - 0.5) {
+        bestDist = d;
+        hits.length = 0;
+        hits.push({ line, localX });
+      } else if (Math.abs(d - bestDist) <= 0.5) {
+        hits.push({ line, localX });
       }
     }
-    if (!best) {
-      return null;
-    }
-    const localX = worldX - page.origin.x - ctx.pageSetup.contentLeft();
-    return this.hitWords(best, localX, { slot: "body" });
+    const hit = this.closestSpan(hits);
+    return hit ? this.hitWords(hit.line, hit.localX, { slot: "body" }) : null;
   }
 
   private hitBand(worldX: number, worldY: number, ctx: HitContext, slot: "header" | "footer"): CaretPos | null {
@@ -365,11 +368,16 @@ export class HitTester {
       const left = origin.x + ctx.pageSetup.contentLeft();
       const top = origin.y + ctx.pageSetup.bandTop(slot);
       const story: StoryRef = { slot, kind: type, sectionIndex: at?.sectionIndex ?? 0 };
+      const hits: { line: Line; localX: number }[] = [];
       for (const line of editor.lines) {
         if (!this.contains(worldX, worldY, left, top + line.top, ctx.pageSetup.contentWidth, line.height)) {
           continue;
         }
-        return this.hitWords(line, worldX - left, story);
+        hits.push({ line, localX: worldX - left });
+      }
+      const hit = this.closestSpan(hits);
+      if (hit) {
+        return this.hitWords(hit.line, hit.localX, story);
       }
     }
     return null;
@@ -418,12 +426,48 @@ export class HitTester {
   }
 
   private hitLines(lines: Line[], localX: number, localY: number, story: StoryRef): CaretPos | null {
+    const hits: { line: Line; localX: number }[] = [];
     for (const line of lines) {
       if (localY >= line.top && localY <= line.top + line.height) {
-        return this.hitWords(line, localX, story);
+        hits.push({ line, localX });
       }
     }
-    return null;
+    const hit = this.closestSpan(hits);
+    return hit ? this.hitWords(hit.line, hit.localX, story) : null;
+  }
+
+  /** 同一基线上有左右两段时，取横坐标更近的那一段。 */
+  private closestSpan(hits: { line: Line; localX: number }[]): { line: Line; localX: number } | null {
+    if (hits.length === 0) {
+      return null;
+    }
+    let best = hits[0];
+    let bestDist = this.spanDistance(best.line, best.localX);
+    for (let i = 1; i < hits.length; i += 1) {
+      const dist = this.spanDistance(hits[i].line, hits[i].localX);
+      if (dist < bestDist) {
+        best = hits[i];
+        bestDist = dist;
+      }
+    }
+    return best;
+  }
+
+  private spanDistance(line: Line, x: number): number {
+    const first = line.getWord(0);
+    const last = line.getWord(Math.max(0, line.length - 1));
+    if (!first || !last) {
+      return 0;
+    }
+    const left = first.left;
+    const right = last.left + last.kernedWidth;
+    if (x < left) {
+      return left - x;
+    }
+    if (x > right) {
+      return x - right;
+    }
+    return 0;
   }
 
   private fallbackLine(lines: Line[], localY: number, story: StoryRef): CaretPos | null {

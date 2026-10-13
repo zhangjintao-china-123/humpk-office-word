@@ -37,3 +37,23 @@ export class LayoutToken {
     return node;
   }
 }
+
+/** 把 glueNext 串起来的宽度算进去，这样括号、连字符、字母和数字不会拆到行的两侧。 */
+export function gluedWidth(tokens: LayoutToken[], index: number): number {
+  const token = tokens[index];
+  if (!token) {
+    return 0;
+  }
+  let width = token.width;
+  let cursor = index;
+  for (let hop = 0; hop < 3; hop += 1) {
+    const current = tokens[cursor];
+    const next = tokens[cursor + 1];
+    if (!current?.glueNext || !next || next.kind === "break" || next.kind === "page" || next.kind === "table") {
+      break;
+    }
+    width += next.width;
+    cursor += 1;
+  }
+  return width;
+}

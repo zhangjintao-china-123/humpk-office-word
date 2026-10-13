@@ -17,6 +17,9 @@ export interface ResolvedStyle {
 
 export class StyleSheet {
   private styles = new Map<string, StyleDefinition>();
+  docDefaults: ParagraphAttrs = {};
+  docDefaultRun: RunStyle = {};
+  defaultParagraphStyleId?: string;
 
   add(style: StyleDefinition): void {
     this.styles.set(style.styleId, style);

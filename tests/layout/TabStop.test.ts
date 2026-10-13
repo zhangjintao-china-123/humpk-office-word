@@ -31,6 +31,24 @@ describe("制表位", () => {
     expect(chars[2].left).toBeCloseTo(266, 0);
     expect(chars[4].left + chars[4].kernedWidth).toBeCloseTo(553, 0);
   });
+
+  it("分散对齐把不是最后一行的字也拉开", () => {
+    const chars = [word("甲", 10), word("乙", 10), word("丙", 10)];
+    const list = new LinkedList<Word>();
+    for (const item of chars) {
+      list.append(item);
+    }
+    const line = new Line();
+    line.startNode = list.head;
+    line.length = chars.length;
+    line.isLast = false;
+    const paragraph = new Paragraph(1);
+    paragraph.attrs.textAlign = "distribute";
+    line.paragraph = paragraph;
+    new LinePositioner().place(line, 100);
+    expect(chars[1].left).toBeCloseTo(45, 0);
+    expect(chars[2].left).toBeCloseTo(90, 0);
+  });
 });
 
 function word(char: string, width: number): Word {

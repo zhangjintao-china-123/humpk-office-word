@@ -3,6 +3,7 @@ import type { Paragraph } from "../model/block/Paragraph";
 import { Line } from "../model/line/Line";
 import type { LinkedNode } from "../model/list/LinkedList";
 import type { Word } from "../model/inline/Word";
+import { twipToPx } from "../shared/units";
 import type { LayoutConstraints } from "./LayoutConstraints";
 import { LineBreaker } from "./line/LineBreaker";
 import { MeasurePass } from "./measure/MeasurePass";
@@ -23,6 +24,7 @@ export class StoryLayout {
 
   layout(document: Document, constraints: LayoutConstraints): Line[] {
     this.breaker.setGridPitch(constraints.linePitchPx);
+    this.breaker.setDefaultTab(twipToPx(document.defaultTabStopTwip ?? 720));
     this.measure.run(document, constraints.measurer);
     this.mix.apply(document);
     const tokens = this.tokens.build(document.words.head);
@@ -40,13 +42,17 @@ export class StoryLayout {
         ? this.stack(lines)
         : this.paginator.paginate(lines, constraints.contentHeight);
     this.assignParagraphLines(document, placed);
-    document.anchors = this.anchors.run(document, placed, constraints);
+    this.layoutFloatingTables(document, constraints);
+    const flowed = this.anchors.finish(document, placed, constraints);
+    this.assignParagraphLines(document, flowed.lines);
+    document.anchors = flowed.anchors;
     this.refreshToc(document, constraints);
-    return placed;
+    return flowed.lines;
   }
 
   reflow(document: Document, constraints: LayoutConstraints, dirty: Paragraph[]): Line[] {
     this.breaker.setGridPitch(constraints.linePitchPx);
+    this.breaker.setDefaultTab(twipToPx(document.defaultTabStopTwip ?? 720));
     const unique = [...new Set(dirty)];
     const tables = this.tableLayouter(constraints);
     for (const paragraph of unique) {
@@ -70,9 +76,12 @@ export class StoryLayout {
     const placed =
       constraints.paginate === false ? this.stack(assembled) : this.paginator.paginate(assembled, constraints.contentHeight);
     this.assignParagraphLines(document, placed);
-    document.anchors = this.anchors.run(document, placed, constraints);
+    this.layoutFloatingTables(document, constraints);
+    const flowed = this.anchors.finish(document, placed, constraints);
+    this.assignParagraphLines(document, flowed.lines);
+    document.anchors = flowed.anchors;
     this.refreshToc(document, constraints);
-    return placed;
+    return flowed.lines;
   }
 
   private refreshToc(document: Document, constraints: LayoutConstraints): void {
@@ -122,6 +131,16 @@ export class StoryLayout {
       lines.push(...paragraph.lines);
     });
     return lines;
+  }
+
+  private layoutFloatingTables(document: Document, constraints: LayoutConstraints): void {
+    const tables = this.tableLayouter(constraints);
+    document.paragraphs.each((node) => {
+      const paragraph = node.data;
+      if (paragraph.isTable && paragraph.hasAnchor && paragraph.table) {
+        tables.layout(paragraph.table, constraints);
+      }
+    });
   }
 
   private tableLayouter(constraints: LayoutConstraints): TableLayouter {

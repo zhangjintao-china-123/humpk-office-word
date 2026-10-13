@@ -29,14 +29,14 @@ export class PunctCompressor {
     let saved = 0;
     this.eachFullPun(line, (word) => {
       const target = fontSizeOf(word.getStyle()) * ratio;
-      saved += Math.max(0, word.kernedWidth - target);
+      saved += Math.max(0, word.kernedWidth - word.spacingAfter - target);
     });
     return saved;
   }
 
   private apply(line: Line, ratio: number): void {
     this.eachFullPun(line, (word) => {
-      word.kernedWidth = fontSizeOf(word.getStyle()) * ratio;
+      word.kernedWidth = fontSizeOf(word.getStyle()) * ratio + word.spacingAfter;
     });
     line.width = this.sumWidth(line);
     line.fullPunCount += 1;

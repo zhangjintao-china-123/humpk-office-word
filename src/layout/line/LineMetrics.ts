@@ -1,12 +1,16 @@
 import type { Paragraph } from "../../model/block/Paragraph";
 import type { Line } from "../../model/line/Line";
 import type { Word } from "../../model/inline/Word";
+import { flagOff } from "../../model/style/ParagraphAttrs";
+import { outlineLabelWidth } from "../../model/style/OutlineLabel";
 import { parseNumber, twipToPx } from "../../shared/units";
+import { fontSizeOf } from "../measure/FontSpec";
 import { DEFAULT_FONT_SIZE, INDENT_CHAR_WIDTH, LINE_HEIGHT_RATIO } from "../LayoutConstants";
 import { snappedLineMultiple } from "./FontGrid";
 
-function flagOff(value: string | undefined): boolean {
-  return value === "0" || value === "off" || value === "false";
+export function indentUnit(word: Word | null | undefined): number {
+  const size = word ? fontSizeOf(word.getStyle()) : 0;
+  return size > 0 ? size : INDENT_CHAR_WIDTH;
 }
 
 export class LineMetrics {
@@ -16,26 +20,35 @@ export class LineMetrics {
     if (!paragraph) {
       return 0;
     }
-    const attrs = paragraph.attrs;
-    const leftChars = ((attrs.leftChars ?? 0) / 100) * INDENT_CHAR_WIDTH;
+    const unit = indentUnit(firstWord);
+    const left = sideIndent(paragraph.attrs.leftChars, paragraph.attrs.leftTwip, unit);
     if (!isFirst) {
-      return leftChars;
+      return left;
     }
-    if (attrs.firstLineTwip != null && attrs.firstLineTwip !== 0) {
-      return leftChars + twipToPx(attrs.firstLineTwip);
+    const hanging = sideIndent(paragraph.attrs.hangingChars, paragraph.attrs.hangingTwip, unit);
+    if (hanging > 0) {
+      return left - hanging;
     }
-    if (attrs.firstLineChars != null && attrs.firstLineChars !== 0) {
-      const unit = firstWord && firstWord.kernedWidth > 0 ? firstWord.kernedWidth : INDENT_CHAR_WIDTH;
-      return leftChars + (attrs.firstLineChars / 100) * unit;
-    }
-    return leftChars;
+    const firstLine = sideIndent(paragraph.attrs.firstLineChars, paragraph.attrs.firstLineTwip, unit);
+    return left + firstLine;
   }
 
-  rightBlank(paragraph: Paragraph | null): number {
+  /** 编号画在悬挂区里，正文和后续行对齐。悬挂不够时才把首行再往右推。 */
+  textStartWithLabel(paragraph: Paragraph | null, word: Word, firstLineLeft: number, label: string): number {
+    const body = this.leftBlank(paragraph, false, word);
+    const need = outlineLabelWidth(label, word.height || DEFAULT_FONT_SIZE) + 6;
+    const gutter = body - firstLineLeft;
+    if (gutter >= need) {
+      return body;
+    }
+    return body + (need - Math.max(0, gutter));
+  }
+
+  rightBlank(paragraph: Paragraph | null, firstWord: Word | null = null): number {
     if (!paragraph) {
       return 0;
     }
-    return ((paragraph.attrs.rightChars ?? 0) / 100) * INDENT_CHAR_WIDTH;
+    return sideIndent(paragraph.attrs.rightChars, paragraph.attrs.rightTwip, indentUnit(firstWord));
   }
 
   snapsToGrid(paragraph: Paragraph | null): boolean {
@@ -47,9 +60,10 @@ export class LineMetrics {
     const attrs = paragraph?.attrs;
     const line = parseNumber(attrs?.line);
     const rule = attrs?.lineRule;
-    const multiple = line != null && line > 0 ? line / 240 : 1;
+    const autoRule = rule == null || rule === "" || rule === "auto";
+    const multiple = autoRule && line != null && line > 0 ? line / 240 : 1;
     const fromTwip = line != null && line > 0 ? twipToPx(line) : 0;
-    const snap = this.snapsToGrid(paragraph);
+    const snap = autoRule && this.snapsToGrid(paragraph);
     const rows = snap ? snappedLineMultiple(multiple, size, this.gridPitchPx!) : multiple;
     const auto = snap ? this.gridPitchPx! * rows : size * LINE_HEIGHT_RATIO * multiple;
 
@@ -57,20 +71,23 @@ export class LineMetrics {
       return fromTwip > 0 ? fromTwip : auto;
     }
     if (rule === "atLeast" && fromTwip > 0) {
-      return Math.max(fromTwip, auto);
+      return Math.max(fromTwip, size * LINE_HEIGHT_RATIO);
     }
     return auto;
   }
 
-  /** exact：太高居中，太矮贴底（从上裁）。 */
-  exactOffset(boxHeight: number, glyphHeight: number): number {
+  /** auto/baseline/top 贴着行框上沿；center 居中；bottom 贴底。字高出框时从下边裁。 */
+  contentOffset(boxHeight: number, glyphHeight: number, align: string | undefined): number {
     if (boxHeight <= 0) {
       return 0;
     }
-    if (glyphHeight <= boxHeight) {
-      return (boxHeight - glyphHeight) / 2;
+    if (align === "center") {
+      return glyphHeight <= boxHeight ? (boxHeight - glyphHeight) / 2 : 0;
     }
-    return boxHeight - glyphHeight;
+    if (align === "bottom") {
+      return boxHeight - glyphHeight;
+    }
+    return 0;
   }
 
   beforeHeight(paragraph: Paragraph | null, isFirst: boolean): number {
@@ -116,7 +133,8 @@ export class LineMetrics {
   }
 
   private sameStyle(a: Paragraph, b: Paragraph): boolean {
-    return (a.attrs.styleId ?? "") === (b.attrs.styleId ?? "");
+    const key = (paragraph: Paragraph) => paragraph.attrs.styleId || paragraph.attrs.resolvedStyleId || "";
+    return key(a) === key(b);
   }
 
   private hasContextual(paragraph: Paragraph): boolean {
@@ -150,4 +168,14 @@ export class LineMetrics {
     }
     return DEFAULT_FONT_SIZE * LINE_HEIGHT_RATIO;
   }
+}
+
+function sideIndent(chars: number | undefined, twip: number | undefined, unit: number): number {
+  if (chars != null && chars !== 0) {
+    return (chars / 100) * unit;
+  }
+  if (twip != null && twip !== 0) {
+    return twipToPx(twip);
+  }
+  return 0;
 }

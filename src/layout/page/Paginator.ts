@@ -1,4 +1,6 @@
 import { Line } from "../../model/line/Line";
+import type { Paragraph } from "../../model/block/Paragraph";
+import { flagOn } from "../../model/style/ParagraphAttrs";
 
 export class Paginator {
   paginate(lines: Line[], pageHeight: number): Line[] {
@@ -30,16 +32,31 @@ export class Paginator {
         continue;
       }
 
+      if (flagOn(line.paragraph?.attrs.pageBreakBefore) && line.isFirst && y > 0 && !atPageTop(y, height)) {
+        skipToNextPage();
+      }
+      if (flagOn(line.paragraph?.attrs.keepLines) && line.isFirst && !line.type) {
+        const span = this.spanHeight(lines, index, atPageTop(y, height));
+        if (span <= height && remaining() < span && !atPageTop(y, height)) {
+          skipToNextPage();
+        }
+      }
+      y = this.holdWithPrevious(line, y, height, result);
+
       if (this.widowPushes(line, lines[index + 1], remaining(), height)) {
         skipToNextPage();
       }
 
-      if (line.height <= height && remaining() < line.height) {
+      const needed = this.placeHeight(line, y, height);
+      if (needed <= height && remaining() < needed) {
         if (this.isOrphan(line, result.at(-1), remaining())) {
           skipToNextPage();
           const prev = result.at(-1);
           if (prev) {
             prev.top = y;
+            if (atPageTop(y, height)) {
+              this.stripBefore(prev);
+            }
             y += prev.height;
           }
         } else {
@@ -47,6 +64,9 @@ export class Paginator {
         }
       }
 
+      if (atPageTop(y, height)) {
+        this.stripBefore(line);
+      }
       line.top = y;
       result.push(line);
       y += line.height;
@@ -75,6 +95,88 @@ export class Paginator {
       }
     }
     return y;
+  }
+
+  private placeHeight(line: Line, y: number, pageHeight: number): number {
+    if (atPageTop(y, pageHeight) && line.isFirst) {
+      return line.height - line.beforeHeight;
+    }
+    return line.height;
+  }
+
+  private stripBefore(line: Line): void {
+    if (!line.isFirst || line.beforeHeight <= 0 || line.type) {
+      return;
+    }
+    line.height -= line.beforeHeight;
+    line.fullHeight = line.height;
+    line.beforeHeight = 0;
+  }
+
+  private spanHeight(lines: Line[], index: number, atTop: boolean): number {
+    let sum = 0;
+    const paragraph = lines[index]?.paragraph;
+    for (let i = index; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line.paragraph !== paragraph || line.type) {
+        break;
+      }
+      sum += i === index && atTop ? line.height - line.beforeHeight : line.height;
+      if (line.isLast) {
+        break;
+      }
+    }
+    return sum;
+  }
+
+  /** 上一段要求与下段同页，而下一行放不下时，把上一段整段推到下一页。 */
+  private holdWithPrevious(line: Line, y: number, pageHeight: number, result: Line[]): number {
+    if (!line.isFirst || line.type || !Number.isFinite(pageHeight)) {
+      return y;
+    }
+    const prev = result.at(-1);
+    if (!prev?.isLast || prev.paragraph === line.paragraph || !flagOn(prev.paragraph?.attrs.keepNext)) {
+      return y;
+    }
+    const start = paragraphStart(result, prev.paragraph);
+    if (!start || atPageTop(start.top, pageHeight)) {
+      return y;
+    }
+    if (Math.floor(start.top / pageHeight) !== Math.floor(y / pageHeight)) {
+      return y;
+    }
+    if (remainingAt(y, pageHeight) >= this.placeHeight(line, y, pageHeight)) {
+      return y;
+    }
+    const nextTop = (Math.floor(start.top / pageHeight) + 1) * pageHeight;
+    const shift = nextTop - start.top;
+    for (let i = result.length - 1; i >= 0; i -= 1) {
+      const item = result[i];
+      if (item.paragraph !== prev.paragraph) {
+        break;
+      }
+      item.top += shift;
+    }
+    const moved = paragraphStart(result, prev.paragraph);
+    let dropped = 0;
+    if (moved && atPageTop(moved.top, pageHeight)) {
+      dropped = moved.beforeHeight;
+      this.stripBefore(moved);
+      if (dropped > 0) {
+        let seen = false;
+        for (const item of result) {
+          if (item.paragraph !== prev.paragraph) {
+            continue;
+          }
+          if (!seen) {
+            seen = true;
+            continue;
+          }
+          item.top -= dropped;
+        }
+      }
+    }
+    return y + shift - dropped;
   }
 
   private widowPushes(line: Line, next: Line | undefined, rem: number, pageHeight: number): boolean {
@@ -152,4 +254,27 @@ export class Paginator {
     line.tableRowTo = to;
     return line;
   }
+}
+
+function atPageTop(y: number, pageHeight: number): boolean {
+  if (!Number.isFinite(pageHeight) || pageHeight <= 0) {
+    return false;
+  }
+  const rem = pageHeight - (y % pageHeight);
+  return rem >= pageHeight - 0.5;
+}
+
+function remainingAt(y: number, pageHeight: number): number {
+  return pageHeight - (y % pageHeight);
+}
+
+function paragraphStart(lines: Line[], paragraph: Paragraph | null): Line | undefined {
+  let start: Line | undefined;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i].paragraph !== paragraph) {
+      break;
+    }
+    start = lines[i];
+  }
+  return start;
 }

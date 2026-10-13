@@ -48,6 +48,25 @@ export class PartAssets {
   }
 }
 
+function extensionOf(subtype: string): string {
+  if (subtype === "jpeg") {
+    return "jpg";
+  }
+  if (subtype === "svg+xml") {
+    return "svg";
+  }
+  if (subtype === "x-emf") {
+    return "emf";
+  }
+  if (subtype === "x-wmf") {
+    return "wmf";
+  }
+  if (subtype === "tif") {
+    return "tiff";
+  }
+  return subtype;
+}
+
 function parseDataUrl(url: string | undefined): { ext: string; base64: string } | undefined {
   if (!url) {
     return undefined;
@@ -57,6 +76,5 @@ function parseDataUrl(url: string | undefined): { ext: string; base64: string } 
     return undefined;
   }
   const subtype = match[1].toLowerCase();
-  const ext = subtype === "jpeg" ? "jpg" : subtype;
-  return { ext, base64: match[2] };
+  return { ext: extensionOf(subtype), base64: match[2] };
 }
