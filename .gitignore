@@ -2,6 +2,7 @@ node_modules
 dist
 .DS_Store
 *.log
+docsample/
 
 # 规范 PDF/ZIP 体积大，本地用 download.sh 拉取，不进仓库
 docs/specs/*.pdf
