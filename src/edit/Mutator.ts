@@ -8,6 +8,7 @@ import { CaretPos } from "../selection/CaretPos";
 import type { SelRange } from "../selection/SelRange";
 import type { StoryRef } from "../selection/StoryRef";
 import type { ParagraphAttrs } from "../model/style/ParagraphAttrs";
+import type { TextLink } from "../model/field/TextLink";
 import { mergeRunStyle, type RunStyle } from "../model/style/RunStyle";
 import { EditImpact, type EditStructure } from "./EditImpact";
 import type { MutationPatch, RemovedParagraph, RemovedWord } from "./MutationPatch";
@@ -16,10 +17,7 @@ export class Mutator {
   insert(document: Document, story: StoryRef, pos: CaretPos, text: string, runStyle?: RunStyle): MutationPatch {
     const original = pos;
     const caret = this.prepare(document, story, pos);
-    if (!caret.node || caret.node.data.kind === "table" || caret.node.data.kind === "page") {
-      return this.emptyPatch(story, original);
-    }
-    if (caret.node.data.paragraph?.isTable) {
+    if (!caret.node || caret.node.data.kind === "table" || caret.node.data.paragraph?.isTable) {
       return this.emptyPatch(story, original);
     }
 
@@ -199,6 +197,17 @@ export class Mutator {
       removed.push({ node, prev: node.pre, next: node.next });
       const { nodeNext } = document.words.removeNode(node);
       caret = new CaretPos(story, nodeNext, false);
+      if (node.data.kind === "table" && paragraph?.isTable && !this.nodesOf(document, paragraph).length) {
+        const neighbor = paragraph.getPreParagraph() ?? paragraph.getNextParagraph();
+        removedParas.push({ paragraph, after: paragraph.getPreParagraph() ?? null });
+        document.removeParagraph(paragraph);
+        dirty.delete(paragraph);
+        if (neighbor) {
+          dirty.add(neighbor);
+        } else if (document.paragraphs.head) {
+          dirty.add(document.paragraphs.head.data);
+        }
+      }
       if (node.data.isEnterChar() && paragraph) {
         const next = this.nextParagraph(paragraph);
         if (next) {
@@ -237,11 +246,70 @@ export class Mutator {
       }
       snapshots.push({ node, block: node.data.block });
       const next = mergeRunStyle(node.data.block?.style, patch);
-      const key = JSON.stringify(next);
+      const key = `${JSON.stringify(next)}|${linkKey(node.data.block)}|${reviewKey(node.data.block)}|${node.data.block?.field ?? ""}|${node.data.block?.fieldInstr ?? ""}`;
       if (key !== lastKey || !lastBlock) {
-        lastBlock = new Block();
-        lastBlock.style = next;
-        lastBlock.charType = node.data.block?.charType;
+        lastBlock = copyRun(node.data.block, next);
+        lastKey = key;
+      }
+      node.data.block = lastBlock;
+      if (node.data.paragraph) {
+        dirty.add(node.data.paragraph);
+      }
+    }
+    this.syncAll(document, dirty);
+    return snapshots;
+  }
+
+  applyLink(document: Document, range: SelRange, link: TextLink | undefined): { node: LinkedNode<Word>; block: Block | null }[] {
+    const nodes = this.nodesIn(range.normalized());
+    const dirty = new Set<Paragraph>();
+    const snapshots: { node: LinkedNode<Word>; block: Block | null }[] = [];
+    let lastKey = "";
+    let lastBlock: Block | null = null;
+    for (const node of nodes) {
+      if (node.data.kind !== "text" || node.data.isEnterChar()) {
+        continue;
+      }
+      snapshots.push({ node, block: node.data.block });
+      const style = linkStyle(node.data.block?.style, link);
+      const key = `${JSON.stringify(style)}|${JSON.stringify(link ?? null)}|${node.data.block?.field ?? ""}`;
+      if (key !== lastKey || !lastBlock) {
+        lastBlock = copyRun(node.data.block, style);
+        lastBlock.link = link ? { ...link } : undefined;
+        lastKey = key;
+      }
+      node.data.block = lastBlock;
+      if (node.data.paragraph) {
+        dirty.add(node.data.paragraph);
+      }
+    }
+    this.syncAll(document, dirty);
+    return snapshots;
+  }
+
+  applyComment(document: Document, range: SelRange, id: string): { node: LinkedNode<Word>; block: Block | null }[] {
+    const nodes = this.nodesIn(range.normalized());
+    const dirty = new Set<Paragraph>();
+    const snapshots: { node: LinkedNode<Word>; block: Block | null }[] = [];
+    let lastKey = "";
+    let lastBlock: Block | null = null;
+    for (const node of nodes) {
+      if (node.data.kind !== "text" || node.data.isEnterChar()) {
+        continue;
+      }
+      snapshots.push({ node, block: node.data.block });
+      const ids = [...(node.data.block?.commentIds ?? [])];
+      if (!ids.includes(id)) {
+        ids.push(id);
+      }
+      const style = { ...node.data.block?.style };
+      if (!style.backgroundColor) {
+        style.backgroundColor = "#FFF2CC";
+      }
+      const key = `${ids.join(",")}|${JSON.stringify(style)}|${reviewKey(node.data.block)}`;
+      if (key !== lastKey || !lastBlock) {
+        lastBlock = copyRun(node.data.block, style);
+        lastBlock.commentIds = ids;
         lastKey = key;
       }
       node.data.block = lastBlock;
@@ -497,6 +565,17 @@ export class Mutator {
     if (item.paragraph.node) {
       return;
     }
+    if (item.paragraph.isTable) {
+      if (item.after?.node) {
+        document.insertParagraphAfter(item.after, item.paragraph);
+      } else if (document.paragraphs.head) {
+        document.insertParagraphBefore(document.paragraphs.head.data, item.paragraph);
+      } else {
+        document.addParagraph(item.paragraph);
+      }
+      item.paragraph.changed = true;
+      return;
+    }
     if (item.after) {
       document.insertParagraphAfter(item.after, item.paragraph);
     } else {
@@ -550,9 +629,47 @@ export class Mutator {
     return block;
   }
 
+  insertPageBreak(document: Document, story: StoryRef, pos: CaretPos): MutationPatch {
+    const original = pos;
+    const caret = this.prepare(document, story, pos);
+    const paragraph = caret.node?.data.paragraph;
+    if (!caret.node || !paragraph || paragraph.isTable || caret.node.data.kind === "table") {
+      return this.emptyPatch(story, original);
+    }
+    const block = new Block();
+    block.charType = "page";
+    const word = new Word();
+    word.kind = "page";
+    word.block = block;
+    word.paragraph = paragraph;
+    paragraph.changed = true;
+    const node = caret.after
+      ? document.words.insertAfter(caret.node, word)
+      : document.words.insertBefore(caret.node, word);
+    const after: LinkedNode<Word>[] = [];
+    let current = node.next;
+    while (current && current.data.paragraph === paragraph) {
+      after.push(current);
+      current = current.next;
+    }
+    this.cloneBlocks(after);
+    const dirty = new Set<Paragraph>([paragraph]);
+    this.syncAll(document, dirty);
+    return {
+      story,
+      impact: this.impact(story, dirty, "split"),
+      caret: new CaretPos(story, node, true),
+      originalCaret: original,
+      inserted: [node],
+      removed: [],
+      createdParagraphs: [],
+      removedParagraphs: [],
+    };
+  }
+
   private inheritBlock(pos: CaretPos, paragraph: Paragraph): Block {
     const neighbor = pos.node?.data.block ?? pos.node?.pre?.data.block ?? paragraph.blocks.at(-1);
-    if (neighbor) {
+    if (neighbor && !isAtomicBlock(neighbor)) {
       return neighbor;
     }
     const block = this.seedBlock(pos, paragraph);
@@ -563,8 +680,7 @@ export class Mutator {
   private seedBlock(pos: CaretPos, paragraph: Paragraph): Block {
     const neighbor = pos.node?.data.block ?? pos.node?.pre?.data.block ?? paragraph.blocks.at(-1);
     const block = new Block();
-    block.style = this.styleFrom(paragraph, neighbor);
-    block.charType = neighbor?.charType;
+    block.style = this.styleFrom(paragraph, neighbor && !isAtomicBlock(neighbor) ? neighbor : undefined);
     return block;
   }
 
@@ -615,7 +731,26 @@ export class Mutator {
     const texts = new Map<Block, string>();
     for (const node of nodes) {
       const word = node.data;
-      if (word.kind !== "text" || word.isEnterChar()) {
+      if (word.isEnterChar()) {
+        continue;
+      }
+      if (word.kind === "page") {
+        const block = word.block ?? new Block();
+        block.charType = "page";
+        block.text = "";
+        word.block = block;
+        if (!order.includes(block)) {
+          order.push(block);
+        }
+        continue;
+      }
+      if (word.kind === "drawing") {
+        if (word.block && !order.includes(word.block)) {
+          order.push(word.block);
+        }
+        continue;
+      }
+      if (word.kind !== "text") {
         continue;
       }
       if (!word.block) {
@@ -628,7 +763,9 @@ export class Mutator {
       texts.set(word.block, `${texts.get(word.block)}${word.char}`);
     }
     for (const block of order) {
-      block.text = texts.get(block) ?? "";
+      if (texts.has(block)) {
+        block.text = texts.get(block) ?? "";
+      }
     }
     if (!order.length) {
       const empty = paragraph.blocks[0] ?? new Block();
@@ -731,4 +868,42 @@ export class Mutator {
       removedParagraphs: [],
     };
   }
+}
+
+function isAtomicBlock(block: Block): boolean {
+  return block.charType === "page" || block.drawing != null || block.math != null || block.mathXml != null;
+}
+
+function copyRun(source: Block | null | undefined, style: RunStyle): Block {
+  const block = new Block();
+  block.style = style;
+  block.charType = source?.charType;
+  block.field = source?.field;
+  block.fieldInstr = source?.fieldInstr;
+  block.link = source?.link ? { ...source.link } : undefined;
+  block.revision = source?.revision ? { ...source.revision } : undefined;
+  block.commentIds = source?.commentIds?.slice();
+  block.commentRef = source?.commentRef;
+  block.footnoteId = source?.footnoteId;
+  return block;
+}
+
+function reviewKey(block: Block | null | undefined): string {
+  const revision = block?.revision;
+  return `${revision?.kind ?? ""}:${revision?.id ?? ""}:${block?.commentIds?.join(",") ?? ""}:${block?.commentRef ?? ""}:${block?.footnoteId ?? ""}`;
+}
+
+function linkKey(block: Block | null | undefined): string {
+  return JSON.stringify(block?.link ?? null);
+}
+
+function linkStyle(style: RunStyle | undefined, link: TextLink | undefined): RunStyle {
+  if (!link) {
+    return { ...style };
+  }
+  return {
+    ...style,
+    color: style?.color ?? "#0563C1",
+    underline: style?.underline && style.underline !== "none" ? style.underline : "single",
+  };
 }

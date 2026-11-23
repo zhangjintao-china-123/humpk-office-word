@@ -1,4 +1,7 @@
+import type { Block } from "../../../../model/block/Block";
 import type { Paragraph } from "../../../../model/block/Paragraph";
+import { sameLink, type TextLink } from "../../../../model/field/TextLink";
+import { sameIds, sameRevision, type RevisionMark } from "../../../../model/review/Review";
 import type { TocMark } from "../../../../model/toc/Toc";
 import { escapeXml } from "../../ooxml/XmlEscape";
 import type { PartAssets } from "../package/PartAssets";
@@ -23,16 +26,106 @@ export class ParagraphSerializer {
   }
 
   private bodyRuns(paragraph: Paragraph): string {
-    return paragraph.blocks
-      .map((block) => {
-        const run = this.runs.serialize(block, this.assets);
-        if (!run || (block.field !== "PAGE" && block.field !== "NUMPAGES" && block.field !== "SECTIONPAGES")) {
-          return run;
+    const blocks = paragraph.blocks;
+    let xml = "";
+    let index = 0;
+    let openComments: string[] = [];
+    let openRevision: RevisionMark | undefined;
+    const closeRevision = (): void => {
+      if (!openRevision) {
+        return;
+      }
+      xml += `</w:${openRevision.kind}>`;
+      openRevision = undefined;
+    };
+    const syncComments = (next: string[]): void => {
+      if (sameIds(openComments, next)) {
+        return;
+      }
+      closeRevision();
+      while (openComments.length) {
+        xml += `<w:commentRangeEnd w:id="${escapeXml(openComments.pop() ?? "")}"/>`;
+      }
+      for (const id of next) {
+        xml += `<w:commentRangeStart w:id="${escapeXml(id)}"/>`;
+      }
+      openComments = next.slice();
+    };
+    const syncRevision = (next: RevisionMark | undefined): void => {
+      if (sameRevision(openRevision, next) || (!openRevision && !next)) {
+        return;
+      }
+      closeRevision();
+      if (next) {
+        xml += revisionStart(next);
+        openRevision = next;
+      }
+    };
+    while (index < blocks.length) {
+      const block = blocks[index];
+      syncComments(block.commentIds ?? []);
+      if (block.commentRef || block.footnoteId) {
+        closeRevision();
+        xml += this.runs.serialize(block, this.assets);
+        index += 1;
+        continue;
+      }
+      syncRevision(block.revision);
+      if (block.link && !paragraph.toc) {
+        const parts: string[] = [];
+        let next = index;
+        while (
+          next < blocks.length &&
+          sameLink(blocks[next].link, block.link) &&
+          !blocks[next].field &&
+          !blocks[next].footnoteId &&
+          !blocks[next].commentRef &&
+          sameIds(blocks[next].commentIds, block.commentIds) &&
+          revisionEqual(blocks[next].revision, block.revision)
+        ) {
+          const run = this.runs.serialize(blocks[next], this.assets);
+          if (run) {
+            parts.push(run);
+          }
+          next += 1;
         }
-        const instr = block.field === "PAGE" ? " PAGE " : block.field === "NUMPAGES" ? " NUMPAGES " : " SECTIONPAGES ";
-        return `<w:fldSimple w:instr="${instr}">${run}</w:fldSimple>`;
-      })
-      .join("");
+        if (parts.length && block.link) {
+          xml += hyperlinkXml(block.link, parts.join(""), this.assets);
+        }
+        index = next;
+        continue;
+      }
+      if (block.field && block.field !== "HYPERLINK") {
+        const parts: string[] = [];
+        let next = index;
+        while (
+          next < blocks.length &&
+          blocks[next].field === block.field &&
+          blocks[next].fieldInstr === block.fieldInstr &&
+          !blocks[next].link &&
+          !blocks[next].footnoteId &&
+          !blocks[next].commentRef &&
+          sameIds(blocks[next].commentIds, block.commentIds) &&
+          revisionEqual(blocks[next].revision, block.revision)
+        ) {
+          const run = this.runs.serialize(blocks[next], this.assets);
+          if (run) {
+            parts.push(run);
+          }
+          next += 1;
+        }
+        if (parts.length) {
+          xml += `<w:fldSimple w:instr="${escapeXml(fieldInstruction(block))}">${parts.join("")}</w:fldSimple>`;
+        }
+        index = next;
+        continue;
+      }
+      xml += this.runs.serialize(block, this.assets);
+      index += 1;
+    }
+    syncComments([]);
+    closeRevision();
+    return xml;
   }
 
   private tocRuns(paragraph: Paragraph, toc: TocMark): string {
@@ -56,6 +149,36 @@ export class ParagraphSerializer {
     this.tables ??= new TableSerializer(this);
     return this.tables;
   }
+}
+
+function fieldInstruction(block: Block): string {
+  if (block.fieldInstr) {
+    return block.fieldInstr;
+  }
+  return ` ${block.field ?? "QUOTE"} `;
+}
+
+function hyperlinkXml(link: TextLink, inner: string, assets?: PartAssets): string {
+  const anchor = link.anchor ? ` w:anchor="${escapeXml(link.anchor)}"` : "";
+  if (link.url) {
+    const id = assets?.hyperlink(link.url);
+    const rel = id ? ` r:id="${id}"` : "";
+    return `<w:hyperlink${rel}${anchor}>${inner}</w:hyperlink>`;
+  }
+  return `<w:hyperlink${anchor}>${inner}</w:hyperlink>`;
+}
+
+function revisionEqual(a: RevisionMark | undefined, b: RevisionMark | undefined): boolean {
+  if (!a && !b) {
+    return true;
+  }
+  return sameRevision(a, b);
+}
+
+function revisionStart(mark: RevisionMark): string {
+  const author = mark.author ? ` w:author="${escapeXml(mark.author)}"` : "";
+  const date = mark.date ? ` w:date="${escapeXml(mark.date)}"` : "";
+  return `<w:${mark.kind} w:id="${escapeXml(mark.id)}"${author}${date}>`;
 }
 
 function fieldChar(type: "begin" | "separate" | "end"): string {

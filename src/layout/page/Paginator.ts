@@ -1,6 +1,7 @@
 import { Line } from "../../model/line/Line";
 import type { Paragraph } from "../../model/block/Paragraph";
 import { flagOn } from "../../model/style/ParagraphAttrs";
+import { headerRowCount } from "../table/TableMetrics";
 
 export class Paginator {
   paginate(lines: Line[], pageHeight: number): Line[] {
@@ -215,12 +216,25 @@ export class Paginator {
       return y + line.height;
     }
 
+    const headerCount = headerRowCount(table);
     let row = 0;
     while (row < heights.length) {
       let rem = pageHeight - (y % pageHeight);
-      if (rem < (heights[row] ?? 0) && rem < pageHeight) {
+      const rowHeight = heights[row] ?? 0;
+      if (rem < rowHeight && rem < pageHeight) {
         y += rem;
         rem = pageHeight;
+      }
+      const headers = row >= headerCount ? this.sumRange(heights, 0, headerCount) : 0;
+      const wantHeader = headers > 0 && headers + rowHeight <= pageHeight;
+      if (wantHeader && headers + rowHeight > rem && rem < pageHeight) {
+        y += rem;
+        rem = pageHeight;
+      }
+      let prefix = 0;
+      if (wantHeader && headers + rowHeight <= rem) {
+        prefix = headers;
+        rem -= headers;
       }
       const from = row;
       let used = 0;
@@ -232,12 +246,21 @@ export class Paginator {
         used = heights[row] ?? 0;
         row += 1;
       }
-      const slice = this.cloneTableLine(line, from, row, used);
+      const slice = this.cloneTableLine(line, from, row, prefix + used);
+      slice.tableHeaderRows = prefix > 0 ? headerCount : 0;
       slice.top = y;
       result.push(slice);
-      y += used;
+      y += prefix + used;
     }
     return y;
+  }
+
+  private sumRange(heights: number[], start: number, count: number): number {
+    let sum = 0;
+    for (let i = 0; i < count; i += 1) {
+      sum += heights[start + i] ?? 0;
+    }
+    return sum;
   }
 
   private cloneTableLine(source: Line, from: number, to: number, height: number): Line {
@@ -250,6 +273,7 @@ export class Paginator {
     line.type = "table";
     line.height = height;
     line.fullHeight = height;
+    line.leftBlankWidth = source.leftBlankWidth;
     line.tableRowFrom = from;
     line.tableRowTo = to;
     return line;

@@ -16,7 +16,7 @@ export class CaretView {
   sync(selection: Selection, ctx: HitContext, viewport: Viewport): void {
     const pos = selection.caret();
     const primary = selection.primaryRange();
-    if (!pos || !primary || selection.dragging || !primary.collapsed()) {
+    if (!pos || !primary || selection.dragging || !selection.isCollapsed()) {
       this.el.hidden = true;
       return;
     }
@@ -29,7 +29,7 @@ export class CaretView {
     this.el.hidden = false;
     this.el.style.left = `${css.x}px`;
     this.el.style.top = `${css.y}px`;
-    this.el.style.height = `${box.height}px`;
+    this.el.style.height = `${box.height * (viewport.zoom || 1)}px`;
   }
 
   remove(): void {

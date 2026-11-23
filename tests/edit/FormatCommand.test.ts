@@ -87,4 +87,54 @@ describe("FormatCommand", () => {
     new FormatCommand(ctx, { type: "align", value: "center" }).do();
     expect(document.paragraphs.head!.data.attrs.textAlign).toBe("center");
   });
+
+  it("首行两字、1.5 倍行距和段前 6 磅写到段落属性", () => {
+    const document = doc("a");
+    const selection = new Selection();
+    selection.collapse(new CaretPos(body, document.words.head, false));
+    const ctx: EditContext = {
+      mutator: new Mutator(),
+      relayout: { apply: () => false } as unknown as Relayout,
+      selection,
+      documentOf: () => document,
+      afterEdit: () => undefined,
+    };
+    const history = new History();
+    history.do(new FormatCommand(ctx, { type: "indent", value: "first2" }));
+    history.do(new FormatCommand(ctx, { type: "lineSpacing", value: "1.5" }));
+    history.do(new FormatCommand(ctx, { type: "paraGap", value: "before6" }));
+    const attrs = document.paragraphs.head!.data.attrs;
+    expect(attrs.firstLineChars).toBe(200);
+    expect(attrs.line).toBe("360");
+    expect(attrs.lineRule).toBe("auto");
+    expect(attrs.before).toBe("120");
+    history.undo();
+    expect(document.paragraphs.head!.data.attrs.before).toBeUndefined();
+    expect(document.paragraphs.head!.data.attrs.line).toBe("360");
+  });
+
+  it("上标可以来回切换，标题样式改整段字号", () => {
+    const document = doc("ab");
+    const selection = new Selection();
+    const head = document.words.head!;
+    selection.collapse(new CaretPos(body, head, false));
+    const ctx: EditContext = {
+      mutator: new Mutator(),
+      relayout: { apply: () => false } as unknown as Relayout,
+      selection,
+      documentOf: () => document,
+      afterEdit: () => undefined,
+    };
+    const history = new History();
+    history.do(new FormatCommand(ctx, { type: "superscript" }));
+    expect(head.data.getStyle()?.vertAlign).toBe("superscript");
+    history.do(new FormatCommand(ctx, { type: "superscript" }));
+    expect(head.data.getStyle()?.vertAlign).toBe("baseline");
+    history.do(new FormatCommand(ctx, { type: "style", value: "heading1" }));
+    expect(document.paragraphs.head!.data.attrs.styleId).toBe("Heading1");
+    expect(document.paragraphs.head!.data.attrs.outlineLevel).toBe(1);
+    expect(head.data.getStyle()?.bold).toBe(true);
+    expect(head.data.getStyle()?.fontSizeHalfPoint).toBe(36);
+    expect(document.styles.get("Heading1")?.name).toBe("heading 1");
+  });
 });

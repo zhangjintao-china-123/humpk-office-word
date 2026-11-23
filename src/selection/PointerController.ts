@@ -8,6 +8,7 @@ export interface PointerHost {
   selection: Selection;
   hitClient(clientX: number, clientY: number): CaretPos | null;
   cellsInRect(from: TableCell, to: TableCell): TableCell[];
+  sameFlow?(from: CaretPos, to: CaretPos): boolean;
   onChange(): void;
   followLink?(pos: CaretPos): boolean;
 }
@@ -57,9 +58,14 @@ export class PointerController {
     this.attached?.setPointerCapture?.(event.pointerId);
     if (event.metaKey || event.ctrlKey) {
       this.host.selection.addRange(new SelRange(pos.story, pos, pos));
+    } else if (pos.node?.data.kind === "table" && pos.node) {
+      this.anchor = new CaretPos(pos.story, pos.node, false);
+      this.host.selection.setFlow(this.anchor, new CaretPos(pos.story, pos.node, true));
     } else if (event.shiftKey && this.anchor && this.selectCellRect(this.anchor, pos)) {
       this.host.onChange();
       return;
+    } else if (event.shiftKey && this.anchor && this.host.sameFlow?.(this.anchor, pos)) {
+      this.host.selection.setFlow(this.anchor, pos);
     } else if (event.shiftKey) {
       const primary = this.host.selection.primaryRange();
       if (primary && storyEquals(primary.story, pos.story)) {
@@ -83,8 +89,18 @@ export class PointerController {
     if (!pos) {
       return;
     }
-    const from = this.anchor ?? this.host.selection.caret();
+    const from = this.anchor ?? this.host.selection.flow?.anchor ?? this.host.selection.caret();
+    if (from?.node?.data.kind === "table" && pos.node === from.node) {
+      this.host.selection.setFlow(new CaretPos(from.story, from.node, false), new CaretPos(from.story, from.node, true));
+      this.host.onChange();
+      return;
+    }
     if (from && this.selectCellRect(from, pos)) {
+      this.host.onChange();
+      return;
+    }
+    if (from && this.host.sameFlow?.(from, pos)) {
+      this.host.selection.setFlow(from, pos);
       this.host.onChange();
       return;
     }
@@ -123,12 +139,13 @@ export class PointerController {
     if (!cells.length) {
       return true;
     }
-    this.host.selection.ranges = cells.map((cell) => {
-      const story: StoryRef = { slot: "cell", cell };
-      const pos = new CaretPos(story, cell.document.words.head, false);
-      return new SelRange(story, pos, pos, "cell");
-    });
-    this.host.selection.primary = Math.max(0, cells.length - 1);
+    this.host.selection.useRanges(
+      cells.map((cell) => {
+        const story: StoryRef = { slot: "cell", cell };
+        const pos = new CaretPos(story, cell.document.words.head, false);
+        return new SelRange(story, pos, pos, "cell");
+      }),
+    );
     return true;
   }
 }

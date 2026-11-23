@@ -1,6 +1,7 @@
+import { EMPTY_INSETS, shapePreset, type GraphicShape, type ShapeInsets } from "../../../../model/graphic/Shape";
 import { Drawing, type WrapSide, type WrapType } from "../../../../model/inline/Drawing";
 import { ptToPx } from "../../../../shared/units";
-import { attr, children, first, descendants, textOf } from "../../ooxml/XmlQuery";
+import { attr, children, first, descendants, matchesName, textOf } from "../../ooxml/XmlQuery";
 import type { ParseContext } from "../ParseContext";
 import { resolveImage } from "./RasterImage";
 
@@ -30,17 +31,23 @@ export class DrawingParser {
   /** 旧版 w:pict / v:imagedata。尺寸写在 style 里，单位通常是磅。 */
   parsePict(pict: Element, ctx: ParseContext): Drawing | undefined {
     const image = descendants(pict, "v:imagedata")[0];
-    if (!image) {
+    const shape = descendants(pict, "v:shape")[0] ?? descendants(pict, "v:rect")[0] ?? descendants(pict, "v:roundrect")[0] ?? descendants(pict, "v:oval")[0];
+    if (!image && !shape) {
       return undefined;
     }
     const drawing = new Drawing();
-    const shape = descendants(pict, "v:shape")[0] ?? descendants(pict, "v:rect")[0];
     const style = attr(shape, "style") ?? "";
     drawing.width = styleLength(style, "width") ?? 0;
     drawing.height = styleLength(style, "height") ?? 0;
-    this.attachRel(drawing, attr(image, "r:id"), ctx, "primary");
+    if (image) {
+      this.attachRel(drawing, attr(image, "r:id"), ctx, "primary");
+    }
     if (!drawing.url && !drawing.sourceUrl) {
-      return undefined;
+      const graphic = this.legacyShape(shape, ctx);
+      if (!graphic) {
+        return undefined;
+      }
+      drawing.shape = graphic;
     }
     return drawing;
   }
@@ -55,7 +62,63 @@ export class DrawingParser {
     this.attachRel(drawing, attr(blip, "r:embed") ?? attr(blip, "r:link"), ctx, "primary");
     const svg = blip ? descendants(blip, "asvg:svgBlip")[0] : undefined;
     this.attachRel(drawing, attr(svg ?? null, "r:embed"), ctx, "display");
+    if (!drawing.url && !drawing.sourceUrl) {
+      const wsp = descendants(node, "wps:wsp")[0];
+      if (!wsp) {
+        return drawing.width > 0 || drawing.height > 0 ? drawing : undefined;
+      }
+      drawing.shape = this.wordShape(wsp, ctx);
+      this.useShapeExtent(drawing, wsp, ctx);
+    }
     return drawing;
+  }
+
+  private wordShape(wsp: Element, ctx: ParseContext): GraphicShape {
+    const props = first(wsp, "wps:spPr");
+    const line = first(props, "a:ln");
+    const body = first(wsp, "wps:bodyPr");
+    const content = first(first(wsp, "wps:txbx"), "w:txbxContent");
+    const shape: GraphicShape = {
+      preset: shapePreset(attr(first(props, "a:prstGeom"), "prst")),
+      fill: first(props, "a:noFill") ? undefined : colorOf(first(props, "a:solidFill")),
+      line: colorOf(first(line, "a:solidFill")),
+      lineWidth: ctx.units.emuToPx(attr(line, "w")),
+      insets: insetsOf(body, ctx),
+    };
+    if (content && ctx.storyParser) {
+      shape.text = ctx.storyParser.parseRoot(content, ctx, "textbox");
+    }
+    return shape;
+  }
+
+  private legacyShape(shape: Element | undefined, ctx: ParseContext): GraphicShape | undefined {
+    if (!shape) {
+      return undefined;
+    }
+    const content = first(descendants(shape, "v:textbox")[0] ?? null, "w:txbxContent") ?? descendants(shape, "w:txbxContent")[0];
+    const graphic: GraphicShape = {
+      preset: legacyPreset(shape),
+      fill: cssColor(attr(shape, "fillcolor")),
+      line: cssColor(attr(shape, "strokecolor")),
+      lineWidth: styleLength(attr(shape, "style") ?? "", "strokeweight"),
+      insets: legacyInsets(attr(descendants(shape, "v:textbox")[0] ?? null, "inset")),
+    };
+    if (content && ctx.storyParser) {
+      graphic.text = ctx.storyParser.parseRoot(content, ctx, "textbox");
+    }
+    return graphic;
+  }
+
+  private useShapeExtent(drawing: Drawing, wsp: Element, ctx: ParseContext): void {
+    if (drawing.width > 0 && drawing.height > 0) {
+      return;
+    }
+    const ext = first(first(first(wsp, "wps:spPr"), "a:xfrm"), "a:ext");
+    if (!ext) {
+      return;
+    }
+    drawing.width = drawing.width || ctx.units.emuToPx(attr(ext, "cx")) || 0;
+    drawing.height = drawing.height || ctx.units.emuToPx(attr(ext, "cy")) || 0;
   }
 
   private attachRel(drawing: Drawing, relId: string | undefined, ctx: ParseContext, role: "primary" | "display"): void {
@@ -181,6 +244,76 @@ function mediaOf(relId: string | undefined, ctx: ParseContext): { ext: string; d
   }
   const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
   return { ext, data };
+}
+
+const SCHEME: Record<string, string> = {
+  dk1: "#000000",
+  lt1: "#FFFFFF",
+  tx1: "#000000",
+  bg1: "#FFFFFF",
+  accent1: "#5B9BD5",
+  accent2: "#ED7D31",
+  accent3: "#A9D08E",
+  accent4: "#FFC000",
+  accent5: "#4472C4",
+  accent6: "#70AD47",
+};
+
+function colorOf(fill: Element | null): string | undefined {
+  const srgb = attr(first(fill, "a:srgbClr"), "val");
+  if (srgb) {
+    return `#${srgb}`;
+  }
+  const scheme = attr(first(fill, "a:schemeClr"), "val");
+  return scheme ? SCHEME[scheme] : undefined;
+}
+
+function insetsOf(body: Element | null, ctx: ParseContext): ShapeInsets {
+  if (!body) {
+    return { ...EMPTY_INSETS };
+  }
+  const emu = (name: string) => ctx.units.emuToPx(attr(body, name)) ?? 0;
+  return { left: emu("lIns"), top: emu("tIns"), right: emu("rIns"), bottom: emu("bIns") };
+}
+
+function legacyPreset(shape: Element): GraphicShape["preset"] {
+  if (matchesName(shape, "v:oval")) {
+    return "ellipse";
+  }
+  if (matchesName(shape, "v:roundrect")) {
+    return "roundRect";
+  }
+  if (matchesName(shape, "v:line")) {
+    return "line";
+  }
+  return "rect";
+}
+
+function cssColor(value: string | undefined): string | undefined {
+  if (!value || value === "none") {
+    return undefined;
+  }
+  return value.startsWith("#") ? value : undefined;
+}
+
+function legacyInsets(value: string | undefined): ShapeInsets {
+  if (!value) {
+    return { left: 6, top: 4, right: 6, bottom: 4 };
+  }
+  const parts = value.split(",").map((part) => {
+    const token = /^(-?[\d.]+)\s*(pt|px)?$/i.exec(part.trim());
+    if (!token) {
+      return 4;
+    }
+    const amount = Number(token[1]);
+    return (token[2] ?? "pt").toLowerCase() === "pt" ? ptToPx(amount) : amount;
+  });
+  return {
+    left: parts[0] ?? 4,
+    top: parts[1] ?? parts[0] ?? 4,
+    right: parts[2] ?? parts[0] ?? 4,
+    bottom: parts[3] ?? parts[1] ?? parts[0] ?? 4,
+  };
 }
 
 function styleLength(style: string, name: string): number | undefined {

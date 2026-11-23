@@ -1,3 +1,5 @@
+import type { GraphicShape } from "../graphic/Shape";
+
 export type WrapType = "none" | "square" | "tight" | "through" | "nowrap";
 export type WrapSide = "both" | "left" | "right" | "largest";
 
@@ -32,4 +34,6 @@ export class Drawing {
   sourceUrl?: string;
   position: "inline" | "anchor" = "inline";
   anchorSet?: DrawingAnchor;
+  /** 预设形状或文本框。没有 url 时按形状画，不再画灰块。 */
+  shape?: GraphicShape;
 }

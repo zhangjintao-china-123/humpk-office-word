@@ -27,6 +27,19 @@ export interface TableBorder {
   color?: string;
 }
 
+/** dxa 的 value 已换成像素；pct 的 value 是百分比，100 表示整行宽。 */
+export interface TableLength {
+  type: "auto" | "dxa" | "pct";
+  value: number;
+}
+
+export interface TableInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
 export interface TableAnchor {
   leftFrom?: string;
   left?: number;
@@ -41,12 +54,21 @@ export class TableCell {
   rowSpan = 1;
   borders?: TableBorders;
   fill?: string;
+  /** 单元格首选宽度，盖过同一列的网格宽。 */
+  width?: TableLength;
+  vAlign?: "top" | "center" | "bottom";
+  /** 有 tcMar 时整组替换表级边距。 */
+  margin?: TableInsets;
 
   constructor(public document: Document) {}
 }
 
 export class TableRow {
   cells: TableCell[] = [];
+  /** auto 跟内容；atLeast 不低于 height；exact 固定为 height。 */
+  heightRule?: "auto" | "atLeast" | "exact";
+  height = 0;
+  header = false;
 }
 
 export class TableColumn {
@@ -61,4 +83,10 @@ export class Table {
   borders?: TableBorders;
   anchorType?: "relative";
   anchorSet?: TableAnchor;
+  /** 缺省按网格宽，超出版心再缩小。 */
+  width?: TableLength;
+  align?: string;
+  indent?: TableLength;
+  /** 缺省时左右 108 twip、上下 0，和 Word 的单元格边距一致。 */
+  cellMargin?: TableInsets;
 }

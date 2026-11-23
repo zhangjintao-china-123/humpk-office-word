@@ -1,12 +1,15 @@
 import { Document } from "../../../model/document/Document";
 import { HeaderFooterResolver } from "../../../layout/page/HeaderFooterResolver";
 import { DocxPackage } from "../ooxml/DocxPackage";
+import { CorePropsParser } from "./CorePropsParser";
 import { DocumentParser } from "./DocumentParser";
 import { HeaderFooterParser } from "./header-footer/HeaderFooterParser";
 import { NumberingParser } from "./NumberingParser";
 import { ParseContext } from "./ParseContext";
 import { RelationshipParser } from "./RelationshipParser";
 import { StoryParser } from "./story/StoryParser";
+import { ReviewParser } from "./review/ReviewParser";
+import { numberNotes } from "../../../model/review/Review";
 import { SettingsParser } from "./SettingsParser";
 import { StyleParser } from "./StyleParser";
 
@@ -40,6 +43,11 @@ export class DocxReader {
     document.adjustLineHeightInTable = settings.adjustLineHeightInTable;
     document.evenAndOddHeaders = settings.evenAndOddHeaders;
     document.defaultTabStopTwip = settings.defaultTabStopTwip;
+    document.props = new CorePropsParser().parse(pack.xml("docProps/core.xml"));
+    const review = new ReviewParser();
+    document.comments = review.comments(pack.xml("word/comments.xml"));
+    document.footnotes = review.footnotes(pack.xml("word/footnotes.xml"));
+    numberNotes(document);
     HeaderFooterResolver.inherit(document);
     return document;
   }

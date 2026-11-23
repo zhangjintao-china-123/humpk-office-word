@@ -3,7 +3,8 @@ import type { Paragraph } from "../model/block/Paragraph";
 import type { Table, TableCell } from "../model/table/Table";
 import type { StoryEditor } from "../editor/StoryEditor";
 import type { PageSetup } from "../render/page/PageSetup";
-import { CELL_PAD, MIN_ROW_HEIGHT } from "../layout/LayoutConstants";
+import { MIN_ROW_HEIGHT } from "../layout/LayoutConstants";
+import { cellInsets } from "../layout/table/TableMetrics";
 import { FallbackMeasurer } from "../layout/measure/FallbackMeasurer";
 import { CanvasMeasurer } from "../layout/measure/CanvasMeasurer";
 import type { ITextMeasurer } from "../layout/measure/ITextMeasurer";
@@ -134,8 +135,16 @@ export class Relayout {
 
   private growKnownCell(host: CellHost, cell: TableCell, contentHeight: number): boolean {
     const spanned = Math.max(1, cell.rowSpan);
+    const start = host.table.rows[cell.rowIndex];
+    if (start?.heightRule === "exact") {
+      return false;
+    }
     const current = this.sumRange(host.table.rowHeights, cell.rowIndex, spanned);
-    const next = Math.max(MIN_ROW_HEIGHT * spanned, contentHeight + CELL_PAD * 2);
+    const margin = cellInsets(host.table, cell);
+    const next = Math.max(MIN_ROW_HEIGHT * spanned, contentHeight + margin.top + margin.bottom);
+    if (start?.heightRule === "atLeast" && start.height > next) {
+      return false;
+    }
     if (next === current) {
       return false;
     }
@@ -161,10 +170,22 @@ export class Relayout {
 
   private constraints(story: StoryRef) {
     const measurer = this.measurer();
+    if (story.slot === "textbox") {
+      const drawing = story.block.drawing;
+      const insets = drawing?.shape?.insets ?? { left: 0, top: 0, right: 0, bottom: 0 };
+      return {
+        contentWidth: Math.max(8, (drawing?.width ?? 80) - insets.left - insets.right),
+        contentHeight: Number.POSITIVE_INFINITY,
+        measurer,
+        paginate: false as const,
+      };
+    }
     if (story.slot === "cell") {
       const width = this.cellWidth(story.cell);
+      const host = this.findCellHost(story.cell);
+      const margin = cellInsets(host?.table, story.cell);
       return {
-        contentWidth: Math.max(20, width - CELL_PAD * 2),
+        contentWidth: Math.max(20, width - margin.left - margin.right),
         contentHeight: Number.POSITIVE_INFINITY,
         linePitchPx: this.host.pageSetup.adjustLineHeightInTable ? this.host.pageSetup.linePitchPx : undefined,
         adjustLineHeightInTable: this.host.pageSetup.adjustLineHeightInTable,

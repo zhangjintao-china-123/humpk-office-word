@@ -4,11 +4,11 @@ import type { PageSetup } from "../../render/page/PageSetup";
 export const SIDE_PAD = 40;
 export const TOP_PAD = 32;
 
-export function pageOriginX(clientWidth: number, pageWidth: number): number {
-  if (clientWidth > pageWidth + SIDE_PAD * 2) {
+export function pageOriginX(clientWidth: number, pageWidth: number, sidePad = SIDE_PAD): number {
+  if (clientWidth >= pageWidth + sidePad * 2) {
     return Math.round((clientWidth - pageWidth) / 2);
   }
-  return SIDE_PAD;
+  return sidePad;
 }
 
 export function pageOrigins(pageSetup: PageSetup, pageCount: number, originX: number): PageOrigin[] {

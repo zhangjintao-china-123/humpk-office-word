@@ -9,6 +9,8 @@ export interface RunStyle {
   italic?: boolean;
   underline?: string;
   strike?: "single" | "double";
+  /** baseline 表示取消上下标。 */
+  vertAlign?: "superscript" | "subscript" | "baseline";
   wHint?: string;
   wAscii?: string;
   wEastAsia?: string;

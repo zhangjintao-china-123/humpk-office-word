@@ -1,6 +1,11 @@
+import { Block } from "../../../../model/block/Block";
 import { Paragraph } from "../../../../model/block/Paragraph";
+import { Drawing } from "../../../../model/inline/Drawing";
+import { parseMath, serializeElement } from "../math/MathParser";
 import { mergeRunStyle } from "../../../../model/style/RunStyle";
 import { fieldKind, type FieldKind } from "../../../../model/document/PageLabel";
+import { hyperlinkTarget, type TextLink } from "../../../../model/field/TextLink";
+import type { RevisionMark } from "../../../../model/review/Review";
 import type { TocHint } from "../../../../model/toc/Toc";
 import { attr, children, descendants, first, matchesName, textOf } from "../../ooxml/XmlQuery";
 import type { ParseContext } from "../ParseContext";
@@ -35,7 +40,7 @@ export class ParagraphParser {
       paragraph.tocHint = { instruction: probe.instruction, fieldEnd: probe.fieldEnd, anchor: probe.anchor };
     }
 
-    const runNodes = this.collectRuns(pNode);
+    const runNodes = this.collectRuns(pNode, ctx);
     if (runNodes.length === 0) {
       paragraph.addBlock(this.runs.parse(pPr ?? pNode, ctx, paragraph.inheritedRunStyle));
       paragraph.blocks[0].text = "";
@@ -43,9 +48,36 @@ export class ParagraphParser {
     }
 
     for (const source of runNodes) {
+      if (source.math) {
+        paragraph.addBlock(mathBlock(source.node));
+        continue;
+      }
       const block = this.runs.parse(source.node, ctx, paragraph.inheritedRunStyle);
       if (source.field) {
         block.field = source.field;
+        block.fieldInstr = source.instr;
+      }
+      if (source.link) {
+        block.link = source.link;
+        if (!block.style.color) {
+          block.style.color = "#0563C1";
+        }
+        if (!block.style.underline || block.style.underline === "none") {
+          block.style.underline = "single";
+        }
+      }
+      if (source.revision) {
+        block.revision = source.revision;
+        if (source.revision.kind === "ins") {
+          block.style.color = block.style.color ?? "#2E75B6";
+          block.style.underline = block.style.underline && block.style.underline !== "none" ? block.style.underline : "single";
+        } else {
+          block.style.color = block.style.color ?? "#C00000";
+          block.style.strike = block.style.strike ?? "single";
+        }
+      }
+      if (source.commentIds?.length) {
+        block.commentIds = source.commentIds;
       }
       if (block.drawing?.position === "anchor") {
         paragraph.hasAnchor = true;
@@ -55,12 +87,36 @@ export class ParagraphParser {
     return paragraph;
   }
 
-  private collectRuns(pNode: Element): { node: Element; field?: FieldKind }[] {
-    const runs: { node: Element; field?: FieldKind }[] = [];
+  private collectRuns(pNode: Element, ctx: ParseContext): RunSource[] {
+    const runs: RunSource[] = [];
+    const openComments: string[] = [];
     let instruction = "";
     let active: FieldKind | undefined;
     let inResult = false;
     for (const child of Array.from(pNode.children)) {
+      if (matchesName(child, "m:oMath") || matchesName(child, "m:oMathPara")) {
+        runs.push({ node: child, math: true });
+        continue;
+      }
+      if (matchesName(child, "w:commentRangeStart")) {
+        const id = attr(child, "w:id");
+        if (id && !openComments.includes(id)) {
+          openComments.push(id);
+        }
+        continue;
+      }
+      if (matchesName(child, "w:commentRangeEnd")) {
+        const id = attr(child, "w:id");
+        const at = id ? openComments.indexOf(id) : -1;
+        if (at >= 0) {
+          openComments.splice(at, 1);
+        }
+        continue;
+      }
+      if (matchesName(child, "w:ins") || matchesName(child, "w:del")) {
+        runs.push(...revisionRuns(child, openComments.slice()));
+        continue;
+      }
       if (matchesName(child, "w:r")) {
         const marker = fieldMarker(child);
         if (marker === "begin") {
@@ -82,9 +138,10 @@ export class ParagraphParser {
         if (marker === "end") {
           inResult = false;
           active = undefined;
+          instruction = "";
           continue;
         }
-        runs.push({ node: child, field: inResult ? active : undefined });
+        runs.push({ node: child, commentIds: openComments.slice(), ...markedRun(inResult, active, instruction) });
         continue;
       }
       if (matchesName(child, "mc:AlternateContent")) {
@@ -94,14 +151,20 @@ export class ParagraphParser {
         }
         continue;
       }
-      if (matchesName(child, "w:hyperlink") || matchesName(child, "w:ins") || matchesName(child, "w:sdt")) {
-        runs.push(...this.nestedRuns(child).map((node) => ({ node })));
+      if (matchesName(child, "w:hyperlink")) {
+        const link = linkFromElement(child, ctx);
+        runs.push(...this.nestedRuns(child).map((node) => ({ node, link })));
+        continue;
+      }
+      if (matchesName(child, "w:sdt")) {
+        runs.push(...this.nestedRuns(child).map((node) => ({ node, commentIds: openComments.slice() })));
         continue;
       }
       if (matchesName(child, "w:fldSimple")) {
-        const field = fieldKind(attr(child, "w:instr") ?? "");
+        const instr = attr(child, "w:instr") ?? "";
+        const marked = markedRun(true, fieldKind(instr), instr);
         for (const nested of children(child, "w:r")) {
-          runs.push({ node: nested, field });
+          runs.push({ node: nested, ...marked });
         }
       }
     }
@@ -149,6 +212,84 @@ export class ParagraphParser {
     }
     const content = first(node, "w:sdtContent");
     return content ? children(content, "w:r") : [];
+  }
+}
+
+interface RunSource {
+  node: Element;
+  field?: FieldKind;
+  instr?: string;
+  link?: TextLink;
+  revision?: RevisionMark;
+  commentIds?: string[];
+  math?: boolean;
+}
+
+function mathBlock(node: Element): Block {
+  const block = new Block();
+  block.math = parseMath(node);
+  block.mathXml = serializeElement(node);
+  const drawing = new Drawing();
+  drawing.width = 16;
+  drawing.height = 18;
+  block.drawing = drawing;
+  return block;
+}
+
+function revisionRuns(node: Element, commentIds: string[]): RunSource[] {
+  const revision = revisionOf(node);
+  const found: RunSource[] = [];
+  for (const child of Array.from(node.children)) {
+    if (matchesName(child, "w:r")) {
+      found.push({ node: child, revision, commentIds });
+      continue;
+    }
+    if (matchesName(child, "w:ins") || matchesName(child, "w:del")) {
+      found.push(...revisionRuns(child, commentIds));
+    }
+  }
+  return found;
+}
+
+function revisionOf(node: Element): RevisionMark {
+  return {
+    kind: matchesName(node, "w:del") ? "del" : "ins",
+    id: attr(node, "w:id") ?? "0",
+    author: attr(node, "w:author"),
+    date: attr(node, "w:date"),
+  };
+}
+
+function markedRun(inResult: boolean, kind: FieldKind | undefined, instruction: string): Pick<RunSource, "field" | "instr" | "link"> {
+  if (!inResult) {
+    return {};
+  }
+  const link = hyperlinkTarget(instruction);
+  if (link || kind === "HYPERLINK") {
+    return { link };
+  }
+  if (!kind) {
+    return {};
+  }
+  return { field: kind, instr: instruction.trim() || kind };
+}
+
+function linkFromElement(node: Element, ctx: ParseContext): TextLink | undefined {
+  const anchor = attr(node, "w:anchor");
+  const relId = attr(node, "r:id");
+  const target = relId ? ctx.relationships.get(relId) : undefined;
+  const url = target ? decodeTarget(target) : undefined;
+  if (!anchor && !url) {
+    return undefined;
+  }
+  return { anchor: anchor || undefined, url: url || undefined };
+}
+
+function decodeTarget(target: string): string {
+  try {
+    return decodeURI(target);
+  } catch {
+    return target;
   }
 }
 

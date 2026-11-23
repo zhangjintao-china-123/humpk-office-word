@@ -34,6 +34,7 @@ export class WordStreamBuilder {
     document.paragraphs.each((node) => {
       this.appendParagraph(document, node.data);
     });
+    this.buildShapeStories(document);
   }
 
   private appendParagraph(document: Document, paragraph: Paragraph): void {
@@ -81,6 +82,29 @@ export class WordStreamBuilder {
     enter.block = lastBlock ?? null;
     enter.paragraph = paragraph;
     document.words.append(enter);
+  }
+
+  private buildShapeStories(document: Document): void {
+    const visit = (story: Document): void => {
+      story.paragraphs.each((node) => {
+        for (const block of node.data.blocks) {
+          const inner = block.drawing?.shape?.text;
+          if (inner && inner.words.length === 0) {
+            this.buildStoryOnly(inner);
+          }
+        }
+        const table = node.data.table;
+        if (!table) {
+          return;
+        }
+        for (const row of table.rows) {
+          for (const cell of row.cells) {
+            visit(cell.document);
+          }
+        }
+      });
+    };
+    visit(document);
   }
 
   private createTextWord(char: string, block: Block, paragraph: Paragraph): Word {

@@ -31,6 +31,7 @@ let caption = "未命名文档";
 
 const ribbon = new Ribbon(ribbonHost, {
   applyFormat: (action) => workspace.applyFormat(action),
+  applyOutline: (action) => workspace.applyOutline(action),
   applyTableBorder: (mode) => workspace.applyTableBorder(mode),
   setBorderPen: (pen) => workspace.setBorderPen(pen),
   undo: () => {
@@ -47,6 +48,8 @@ const ribbon = new Ribbon(ribbonHost, {
   saveFile: () => {
     void downloadDocx();
   },
+  insertTable: () => workspace.insertTable(),
+  insertPageBreak: () => workspace.insertPageBreak(),
   insertTableRow: () => workspace.insertTableRow(),
   deleteTableRow: () => workspace.deleteTableRow(),
   insertTableColumn: () => workspace.insertTableColumn(),
@@ -55,8 +58,23 @@ const ribbon = new Ribbon(ribbonHost, {
   splitTableCell: () => workspace.splitTableCell(),
   insertToc: () => workspace.insertToc(),
   insertPageNumber: () => workspace.insertPageNumber(),
+  applyLink: (raw) => workspace.applyLink(raw),
+  clearLink: () => workspace.clearLink(),
+  addComment: (text) => workspace.addComment(text),
+  addFootnote: (text) => workspace.addFootnote(text),
+  showComment: (id) => workspace.showComment(id),
+  showNote: (id) => workspace.showNote(id),
+  acceptRevision: () => workspace.acceptRevision(),
+  rejectRevision: () => workspace.rejectRevision(),
   toggleTitlePage: () => workspace.toggleTitlePage(),
   toggleEvenOdd: () => workspace.toggleEvenOdd(),
+  setZoom: (zoom) => workspace.setZoom(zoom),
+  print: () => workspace.print(),
+  findNext: (query) => workspace.findNext(query),
+  findPrev: (query) => workspace.findPrev(query),
+  replaceMatch: (query, replacement) => workspace.replaceMatch(query, replacement),
+  replaceAllMatches: (query, replacement) => workspace.replaceAllMatches(query, replacement),
+  closeFind: () => workspace.closeFind(),
   formatState: () => workspace.formatState(caption),
 });
 workspace.onUi(() => ribbon.sync());
@@ -76,6 +94,26 @@ if (demoName === "toc") {
   void openNamedDocx("/paragraph-demo.docx", "paragraph-demo.docx");
 } else if (demoName === "mix") {
   void openNamedDocx("/mix-demo.docx", "mix-demo.docx");
+} else if (demoName === "table") {
+  void openNamedDocx("/table-demo.docx", "table-demo.docx");
+} else if (demoName === "link") {
+  void openNamedDocx("/link-demo.docx", "link-demo.docx");
+} else if (demoName === "review") {
+  void openNamedDocx("/review-demo.docx", "review-demo.docx");
+} else if (demoName === "review-track") {
+  void openNamedDocx("/review-track-demo.docx", "review-track-demo.docx");
+} else if (demoName === "review-notes") {
+  void openNamedDocx("/review-notes-demo.docx", "review-notes-demo.docx");
+} else if (demoName === "graphic") {
+  void openNamedDocx("/graphic-demo.docx", "graphic-demo.docx");
+} else if (demoName === "shape") {
+  void openNamedDocx("/shape-demo.docx", "shape-demo.docx");
+} else if (demoName === "math") {
+  void openNamedDocx("/math-demo.docx", "math-demo.docx");
+} else if (demoName === "find") {
+  void openNamedDocx("/find-demo.docx", "find-demo.docx");
+} else if (demoName === "pages") {
+  void openNamedDocx("/pages-demo.docx", "pages-demo.docx");
 }
 
 async function downloadDocx(): Promise<void> {
@@ -97,9 +135,25 @@ window.addEventListener("resize", () => {
 });
 
 window.addEventListener("keydown", (event) => {
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+  if (!(event.metaKey || event.ctrlKey) || event.altKey) {
+    return;
+  }
+  const key = event.key.toLowerCase();
+  if (key === "s") {
     event.preventDefault();
     void downloadDocx();
+  } else if (key === "f") {
+    event.preventDefault();
+    ribbon.openFind();
+  } else if (key === "h") {
+    event.preventDefault();
+    ribbon.openFind(true);
+  } else if (key === "p") {
+    event.preventDefault();
+    workspace.print();
+  } else if (event.key === "0") {
+    event.preventDefault();
+    workspace.setZoom(1);
   }
 });
 
@@ -113,8 +167,10 @@ fileInput.addEventListener("change", async () => {
 });
 
 async function openNamedDocx(source: ArrayBuffer | string, name: string): Promise<void> {
-  const data = typeof source === "string" ? await (await fetch(source)).arrayBuffer() : source;
-  workspace.load(await new DocxReader().read(data));
+  const data = typeof source === "string" ? await (await fetch(source, { cache: "no-store" })).arrayBuffer() : source;
+  const document = await new DocxReader().read(data);
+  document.fileName = name;
+  workspace.load(document);
   caption = name;
   ribbon.sync();
 }

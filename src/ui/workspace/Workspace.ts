@@ -15,11 +15,20 @@ import { WordStreamBuilder } from "../../model/flatten/WordStreamBuilder";
 import type { Table, TableCell } from "../../model/table/Table";
 import { DEFAULT_FONT_SIZE } from "../../layout/LayoutConstants";
 import { pxToPt, twipToPx } from "../../shared/units";
+import { linkLabel, parseLinkInput } from "../../model/field/TextLink";
 import { mergeRunStyle, resolveFontFamily, type RunStyle } from "../../model/style/RunStyle";
-import { Clipboard } from "../../edit/Clipboard";
+import { Clipboard, payloadFromData } from "../../edit/Clipboard";
+import { CommentCommand } from "../../edit/CommentCommand";
+import { FootnoteCommand } from "../../edit/FootnoteCommand";
+import { HyperlinkCommand } from "../../edit/HyperlinkCommand";
+import { RevisionCommand } from "../../edit/RevisionCommand";
+import { collectStories, findInStories, indexAtOrAfter, indexBefore, type FindHit, type FindQuery, type FindStatus } from "../../edit/Find";
 import { DeleteCommand } from "../../edit/DeleteCommand";
-import { FormatCommand, type FormatAction } from "../../edit/FormatCommand";
+import { FormatCommand, gapPreset, indentPreset, spacingPreset, stylePreset, type FormatAction } from "../../edit/FormatCommand";
+import { InsertObjectCommand } from "../../edit/InsertObjectCommand";
+import { OutlineCommand, type OutlineAction } from "../../edit/OutlineCommand";
 import { InsertCommand } from "../../edit/InsertCommand";
+import { ReplaceCommand } from "../../edit/ReplaceCommand";
 import { TableBorderCommand } from "../../edit/TableBorderCommand";
 import { TableStructureCommand } from "../../edit/TableStructureCommand";
 import { TocCommand } from "../../edit/TocCommand";
@@ -32,6 +41,7 @@ import { PagePainter } from "../../render/page/PagePainter";
 import { PageSetup } from "../../render/page/PageSetup";
 import { imageCache } from "../../render/image/ImageCache";
 import { CaretView } from "../../selection/CaretView";
+import { FindPainter } from "../../selection/FindPainter";
 import { HitTester, type CaretBox, type HitContext } from "../../selection/HitTester";
 import { PointerController } from "../../selection/PointerController";
 import { Selection } from "../../selection/Selection";
@@ -39,6 +49,8 @@ import { SelectionPainter } from "../../selection/SelectionPainter";
 import { SelectionFragment } from "../../selection/SelectionFragment";
 import { SelectionText } from "../../selection/SelectionText";
 import { CaretPos } from "../../selection/CaretPos";
+import { caretRank } from "../../selection/MainWalk";
+import { SelRange } from "../../selection/SelRange";
 import { storyKind, storySection, type StoryRef } from "../../selection/StoryRef";
 import { ContextMenuController } from "../contextmenu/ContextMenuController";
 import { EditImpact } from "../../edit/EditImpact";
@@ -47,6 +59,8 @@ import { InputController } from "../../edit/InputController";
 import { Mutator } from "../../edit/Mutator";
 import { Relayout } from "../../edit/Relayout";
 import type { StoryEditor } from "../../editor/StoryEditor";
+import { printImages } from "./PrintPages";
+import { stepZoom } from "./ZoomLevels";
 import { SIDE_PAD, TOP_PAD, pageOriginX, pageOrigins } from "./WorkspaceLayout";
 
 const WORKSPACE_BG = "#c5c5c5";
@@ -60,12 +74,18 @@ export class Workspace {
   readonly mutator = new Mutator();
   readonly clipboard = new Clipboard();
   pageCount = 1;
+  /** 用户选过缩放后不再随窗口改回“适合宽度”。 */
+  private zoomPinned = false;
 
   private readonly root: HTMLElement;
   private readonly sizer: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
   private readonly painter = new PagePainter();
+  private readonly findPainter = new FindPainter();
   private readonly hit = new HitTester();
+  private findHits: FindHit[] = [];
+  private findIndex = -1;
+  private findQueryKey = "";
   private readonly selectionPainter: SelectionPainter;
   private readonly pointer: PointerController;
   private readonly contextMenu: ContextMenuController;
@@ -111,6 +131,9 @@ export class Workspace {
     this.draw = new Draw(this.canvas);
     this.stopImages = imageCache.onReady(() => this.paint());
     this.root.addEventListener("scroll", () => this.syncScroll(), { passive: true });
+    this.root.addEventListener("wheel", this.onWheel, { passive: false });
+    window.visualViewport?.addEventListener("resize", this.onVisualViewport);
+    window.visualViewport?.addEventListener("scroll", this.onVisualViewport);
     this.relayout = new Relayout(this);
     this.input = new InputController(this);
     this.input.attach(host);
@@ -118,7 +141,8 @@ export class Workspace {
       selection: this.selection,
       hitClient: (x, y) => this.hitClient(x, y),
       cellsInRect: (from, to) => this.cellsInRect(from, to),
-      followLink: (pos) => this.followToc(pos),
+      sameFlow: (from, to) => this.sameFlow(from, to),
+      followLink: (pos) => this.followLink(pos),
       onChange: () => {
         this.input.resetColumn();
         this.input.clearPending();
@@ -154,6 +178,7 @@ export class Workspace {
     this.disposeBands();
     this.selection.clear();
     this.history.clear();
+    this.invalidateFind();
     this.applyPageSetup(document);
 
     const shared = { draw: this.draw, viewport: this.viewport, pageSetup: this.pageSetup };
@@ -207,11 +232,24 @@ export class Workspace {
     this.history.do(new FormatCommand(this, action));
   }
 
+  applyOutline(action: OutlineAction): void {
+    if (!this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    this.history.do(new OutlineCommand(this, action));
+  }
+
   async copy(): Promise<void> {
     if (!this.selectionText.hasCopyableContent(this.selection)) {
       return;
     }
-    await this.clipboard.write(this.selectionFragment.extract(this.selection, this.selectedTable()?.table));
+    const origin = this.selection.flow?.anchor ?? this.selection.caret();
+    await this.clipboard.write(
+      this.selectionFragment.extract(this.selection, this.selectedTable()?.table, origin ? this.flowOwner(origin) : null),
+    );
   }
 
   async cut(): Promise<void> {
@@ -222,8 +260,9 @@ export class Workspace {
     this.history.do(new DeleteCommand(this, "backward"));
   }
 
-  async paste(): Promise<void> {
-    const payload = await this.clipboard.read();
+  async paste(data?: DataTransfer | null): Promise<void> {
+    const offered = payloadFromData(data);
+    const payload = offered && !offered.empty ? offered : await this.clipboard.read();
     if (payload.empty) {
       return;
     }
@@ -285,6 +324,66 @@ export class Workspace {
     this.runTableOp((target) => ({ type: "split", cell: target.cells[0] }));
   }
 
+  applyLink(raw: string): void {
+    const link = parseLinkInput(raw);
+    if (!link || !this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    this.history.do(new HyperlinkCommand(this, link));
+  }
+
+  clearLink(): void {
+    if (!this.body?.document || this.selection.isEmpty()) {
+      return;
+    }
+    this.history.do(new HyperlinkCommand(this, undefined));
+  }
+
+  addComment(text: string): void {
+    if (!this.body?.document || !text.trim()) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    this.history.do(new CommentCommand(this, text));
+  }
+
+  addFootnote(text: string): void {
+    if (!this.body?.document || !text.trim()) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    this.history.do(new FootnoteCommand(this, text));
+  }
+
+  acceptRevision(): void {
+    if (!this.body?.document || this.selection.isEmpty()) {
+      return;
+    }
+    this.history.do(new RevisionCommand(this, "accept"));
+  }
+
+  rejectRevision(): void {
+    if (!this.body?.document || this.selection.isEmpty()) {
+      return;
+    }
+    this.history.do(new RevisionCommand(this, "reject"));
+  }
+
+  showComment(id: string): void {
+    this.revealReview((block) => !!block.commentIds?.includes(id) || block.commentRef === id);
+  }
+
+  showNote(id: string): void {
+    this.revealReview((block) => block.footnoteId === id);
+  }
+
   insertToc(): void {
     if (!this.body?.document) {
       return;
@@ -297,6 +396,26 @@ export class Workspace {
       return;
     }
     this.history.do(new HeaderFooterCommand(this, "page"));
+  }
+
+  insertTable(): void {
+    if (!this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    this.history.do(new InsertObjectCommand(this, { type: "table", rows: 3, cols: 3 }));
+  }
+
+  insertPageBreak(): void {
+    if (!this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    this.history.do(new InsertObjectCommand(this, { type: "pageBreak" }));
   }
 
   toggleTitlePage(): void {
@@ -330,6 +449,20 @@ export class Workspace {
       color: run.color ?? "#111111",
       highlight: run.backgroundColor ?? run.highlight ?? "none",
       align: pos?.node?.data.paragraph?.attrs.textAlign ?? "left",
+      indent: indentPreset(pos?.node?.data.paragraph?.attrs),
+      lineSpacing: spacingPreset(pos?.node?.data.paragraph?.attrs),
+      paraGap: gapPreset(pos?.node?.data.paragraph?.attrs),
+      vertAlign: run.vertAlign,
+      paragraphStyle: stylePreset(pos?.node?.data.paragraph?.attrs),
+      listLevel: listLevelOf(pos?.node?.data.paragraph),
+      link: linkLabel(pos?.node?.data.block?.link),
+      comments: (this.body?.document?.comments ?? []).map((comment) => ({
+        id: comment.id,
+        author: comment.author || "批注",
+        text: comment.text,
+      })),
+      notes: (this.body?.document?.footnotes ?? []).map((note) => ({ id: note.id, text: note.text })),
+      revision: pos?.node?.data.block?.revision?.kind,
       canUndo: this.history.canUndo(),
       canRedo: this.history.canRedo(),
       hasDoc: !!this.body?.document,
@@ -339,6 +472,7 @@ export class Workspace {
       borderFlags: selected ? this.borderApplier.inspect(selected.cells, selected.table) : undefined,
       titlePg: this.currentSection()?.titlePg ?? false,
       evenAndOdd: this.body?.document?.evenAndOddHeaders ?? false,
+      zoom: this.viewport.zoom || 1,
     };
   }
 
@@ -435,6 +569,75 @@ export class Workspace {
     }
   }
 
+  setZoom(zoom: number): void {
+    this.zoomPinned = true;
+    const next = Math.min(2, Math.max(0.25, zoom || 1));
+    const prev = this.viewport.zoom || 1;
+    if (Math.abs(next - prev) < 0.001) {
+      return;
+    }
+    const width = this.root.clientWidth;
+    const height = this.root.clientHeight;
+    const oldOriginX = this.pageOriginX();
+    const anchor = this.viewport.cssToWorld(width / 2, height / 2);
+    this.viewport.zoom = next;
+    const originShift = this.pageOriginX() - oldOriginX;
+    this.layout();
+    this.root.scrollLeft = Math.max(0, (anchor.x + originShift) * next - width / 2);
+    this.root.scrollTop = Math.max(0, anchor.y * next - height / 2);
+    this.syncScroll();
+    for (const handler of this.uiListeners) {
+      handler();
+    }
+  }
+
+  print(): void {
+    printImages(this.renderPrintImages(), this.pageSetup.width, this.pageSetup.height);
+  }
+
+  findNext(query: FindQuery): FindStatus {
+    return this.moveFind(query, 1);
+  }
+
+  findPrev(query: FindQuery): FindStatus {
+    return this.moveFind(query, -1);
+  }
+
+  replaceMatch(query: FindQuery, replacement: string): FindStatus {
+    const hits = this.ensureHits(query);
+    if (!hits.length) {
+      this.findIndex = -1;
+      this.paint();
+      return { index: 0, total: 0, replaced: 0 };
+    }
+    let index = this.findIndex;
+    if (index < 0 || index >= hits.length) {
+      index = indexAtOrAfter(hits, this.selection.caret(), this.searchStories().map((item) => item.story));
+    }
+    const hit = hits[index];
+    this.history.do(new ReplaceCommand(this, [hit], replacement));
+    return this.landAfterReplace(query, 1);
+  }
+
+  replaceAllMatches(query: FindQuery, replacement: string): FindStatus {
+    const hits = [...this.ensureHits(query)];
+    if (!hits.length) {
+      this.findIndex = -1;
+      this.paint();
+      return { index: 0, total: 0, replaced: 0 };
+    }
+    this.history.do(new ReplaceCommand(this, hits, replacement));
+    const status = this.landAfterReplace(query, hits.length);
+    this.findIndex = -1;
+    this.paint();
+    return { ...status, index: 0 };
+  }
+
+  closeFind(): void {
+    this.invalidateFind();
+    this.paint();
+  }
+
   async exportDocx(): Promise<ArrayBuffer> {
     const document = this.body?.document;
     if (!document) {
@@ -457,6 +660,10 @@ export class Workspace {
 
     draw.save();
     draw.translate(-viewport.scrollX, -viewport.scrollY);
+    const zoom = viewport.zoom || 1;
+    if (zoom !== 1) {
+      draw.scale(zoom, zoom);
+    }
     const origins = this.pageOrigins();
     for (let i = 0; i < origins.length; i += 1) {
       this.painter.paint(draw, pageSetup, origins[i].x, origins[i].y, i);
@@ -470,7 +677,9 @@ export class Workspace {
       this.footerBands[footer.sectionIndex]?.paintPage(origins[i], footer.type, label);
     }
     const ctx = this.hitContext(origins);
+    this.findPainter.paint(draw, this.findHits, ctx);
     this.selectionPainter.paint(draw, this.selection, ctx);
+    this.selectionPainter.paintTableHandles(draw, ctx);
     draw.restore();
     this.caret.sync(this.selection, ctx, this.viewport);
   }
@@ -485,7 +694,50 @@ export class Workspace {
     if (story.slot === "footer") {
       return this.footerBands[storySection(story)]?.editor(storyKind(story))?.document ?? null;
     }
+    if (story.slot === "textbox") {
+      return story.block.drawing?.shape?.text ?? null;
+    }
     return story.cell.document;
+  }
+
+  flowOwner(pos: CaretPos): { document: Document; story: StoryRef } | null {
+    for (const candidate of this.flowCandidates()) {
+      if (caretRank(candidate.document, candidate.story, pos) != null) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  private sameFlow(from: CaretPos, to: CaretPos): boolean {
+    const left = this.flowOwner(from);
+    const right = this.flowOwner(to);
+    return left != null && right != null && left.document === right.document;
+  }
+
+  private flowCandidates(): { document: Document; story: StoryRef }[] {
+    const candidates: { document: Document; story: StoryRef }[] = [];
+    if (this.body?.document) {
+      candidates.push({ document: this.body.document, story: { slot: "body" } });
+    }
+    const kinds: HeaderFooterType[] = ["default", "first", "even"];
+    this.headerBands.forEach((bands, sectionIndex) => {
+      for (const kind of kinds) {
+        const document = bands.editor(kind)?.document;
+        if (document) {
+          candidates.push({ document, story: { slot: "header", kind, sectionIndex } });
+        }
+      }
+    });
+    this.footerBands.forEach((bands, sectionIndex) => {
+      for (const kind of kinds) {
+        const document = bands.editor(kind)?.document;
+        if (document) {
+          candidates.push({ document, story: { slot: "footer", kind, sectionIndex } });
+        }
+      }
+    });
+    return candidates;
   }
 
   editorOf(story: StoryRef): StoryEditor | undefined {
@@ -541,6 +793,7 @@ export class Workspace {
 
   afterEdit(impact: EditImpact): void {
     if (impact.dirty.length) {
+      this.invalidateFind();
       this.body?.emit(EditorEvents.documentChange, impact);
     }
     this.onSelectionChange();
@@ -575,7 +828,7 @@ export class Workspace {
       return null;
     }
     const css = this.viewport.worldToCss(box.x, box.y);
-    return { x: css.x, y: css.y, height: box.height };
+    return { x: css.x, y: css.y, height: box.height * (this.viewport.zoom || 1) };
   }
 
   dispose(): void {
@@ -591,11 +844,125 @@ export class Workspace {
     host?.classList.remove("ho-word-workspace");
   }
 
+  private onWheel = (event: WheelEvent): void => {
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
+    event.preventDefault();
+    this.setZoom(stepZoom(this.viewport.zoom || 1, event.deltaY < 0 ? 1 : -1));
+  };
+
+  private renderPrintImages(): string[] {
+    const width = Math.max(1, Math.round(this.pageSetup.width));
+    const height = Math.max(1, Math.round(this.pageSetup.height));
+    const canvas = document.createElement("canvas");
+    const draw = new Draw(canvas);
+    draw.resize(width, height, 2);
+    const origins = this.pageOrigins();
+    const images: string[] = [];
+    for (let i = 0; i < origins.length; i += 1) {
+      draw.clear();
+      draw.setFill("#ffffff");
+      draw.fillRect(0, 0, width, height);
+      draw.save();
+      draw.translate(-origins[i].x, -origins[i].y);
+      draw.beginPath();
+      draw.rect(origins[i].x, origins[i].y, this.pageSetup.width, this.pageSetup.height);
+      draw.clip();
+      this.body?.paintOnPages(origins, this.pageLabels, draw);
+      const label = this.labelAt(i);
+      const header = this.bandAt("header", i);
+      const footer = this.bandAt("footer", i);
+      this.headerBands[header.sectionIndex]?.paintPage(origins[i], header.type, label, draw);
+      this.footerBands[footer.sectionIndex]?.paintPage(origins[i], footer.type, label, draw);
+      draw.restore();
+      images.push(canvas.toDataURL("image/png"));
+    }
+    return images;
+  }
+
+  private moveFind(query: FindQuery, direction: -1 | 1): FindStatus {
+    const hits = this.ensureHits(query);
+    if (!hits.length) {
+      this.findIndex = -1;
+      this.paint();
+      return { index: 0, total: 0 };
+    }
+    const stories = this.searchStories().map((item) => item.story);
+    let index = this.findIndex;
+    if (index < 0 || index >= hits.length) {
+      const caret = this.selection.caret();
+      index = direction > 0 ? indexAtOrAfter(hits, caret, stories) : indexBefore(hits, caret, stories);
+    } else {
+      index = (index + direction + hits.length) % hits.length;
+    }
+    this.showHit(index);
+    return { index: index + 1, total: hits.length };
+  }
+
+  private landAfterReplace(query: FindQuery, replaced: number): FindStatus {
+    this.findQueryKey = "";
+    const hits = this.ensureHits(query);
+    if (!hits.length) {
+      this.findIndex = -1;
+      this.paint();
+      return { index: 0, total: 0, replaced };
+    }
+    const index = indexAtOrAfter(hits, this.selection.caret(), this.searchStories().map((item) => item.story));
+    this.showHit(index);
+    return { index: index + 1, total: hits.length, replaced };
+  }
+
+  private ensureHits(query: FindQuery): FindHit[] {
+    const key = `${query.matchCase ? "1" : "0"}\n${query.text}`;
+    if (key !== this.findQueryKey) {
+      this.findQueryKey = key;
+      this.findHits = query.text ? findInStories(this.searchStories(), query) : [];
+      this.findIndex = -1;
+    }
+    return this.findHits;
+  }
+
+  private showHit(index: number): void {
+    const hit = this.findHits[index];
+    if (!hit) {
+      return;
+    }
+    this.findIndex = index;
+    const start = new CaretPos(hit.story, hit.start, false);
+    const end = new CaretPos(hit.story, hit.end, true);
+    this.selection.setRange(new SelRange(hit.story, start, end));
+    this.onSelectionChange();
+  }
+
+  private searchStories() {
+    return collectStories(this.stories());
+  }
+
+  private invalidateFind(): void {
+    this.findHits = [];
+    this.findIndex = -1;
+    this.findQueryKey = "";
+  }
+
   private cellsInRect(from: TableCell, to: TableCell): TableCell[] {
     return this.hit.cellsInRect(from, to, this.hitContext());
   }
 
-  private followToc(pos: CaretPos): boolean {
+  private followLink(pos: CaretPos): boolean {
+    const link = pos.node?.data.block?.link;
+    if (link?.url) {
+      if (!/^javascript:/i.test(link.url)) {
+        window.open(link.url, "_blank", "noopener,noreferrer");
+      }
+      return true;
+    }
+    if (link?.anchor) {
+      const paragraph = this.findBookmark(link.anchor);
+      if (paragraph && this.jumpToParagraph(paragraph)) {
+        return true;
+      }
+    }
     if (pos.story.slot !== "body") {
       return false;
     }
@@ -618,6 +985,91 @@ export class Workspace {
     return false;
   }
 
+  private revealReview(match: (block: Block) => boolean): void {
+    const document = this.body?.document;
+    if (!document) {
+      return;
+    }
+    let node = document.words.head;
+    while (node) {
+      if (node.data.block && match(node.data.block)) {
+        this.selection.collapse(new CaretPos({ slot: "body" }, node, false));
+        this.onSelectionChange();
+        return;
+      }
+      node = node.next;
+    }
+  }
+
+  private findBookmark(name: string): Paragraph | undefined {
+    const document = this.body?.document;
+    if (!document) {
+      return undefined;
+    }
+    let found: Paragraph | undefined;
+    const visit = (story: Document): void => {
+      story.paragraphs.each((node) => {
+        if (!found && node.data.bookmarks.includes(name)) {
+          found = node.data;
+        }
+        const table = node.data.table;
+        if (!table || found) {
+          return;
+        }
+        for (const row of table.rows) {
+          for (const cell of row.cells) {
+            visit(cell.document);
+          }
+        }
+      });
+    };
+    visit(document);
+    return found;
+  }
+
+  private jumpToParagraph(paragraph: Paragraph): boolean {
+    const document = this.body?.document;
+    if (!document) {
+      return false;
+    }
+    let node = document.words.head;
+    while (node) {
+      if (node.data.paragraph === paragraph) {
+        this.selection.collapse(new CaretPos({ slot: "body" }, node, false));
+        return true;
+      }
+      node = node.next;
+    }
+    let jumped = false;
+    const visit = (story: Document, cell?: TableCell): void => {
+      if (jumped) {
+        return;
+      }
+      if (cell) {
+        let word = story.words.head;
+        while (word) {
+          if (word.data.paragraph === paragraph) {
+            this.selection.collapse(new CaretPos({ slot: "cell", cell }, word, false));
+            jumped = true;
+            return;
+          }
+          word = word.next;
+        }
+      }
+      story.paragraphs.each((item) => {
+        if (item.data.table) {
+          for (const row of item.data.table.rows) {
+            for (const nested of row.cells) {
+              visit(nested.document, nested);
+            }
+          }
+        }
+      });
+    };
+    visit(document);
+    return jumped;
+  }
+
   private placeCaret(): void {
     const head = this.body?.document?.words.head;
     if (head) {
@@ -630,10 +1082,34 @@ export class Workspace {
     this.ensureCaretVisible();
     this.paint();
     this.input.sync();
-    this.input.focus();
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || !active.closest(".ho-word-findbar")) {
+      this.input.focus();
+    }
     for (const handler of this.uiListeners) {
       handler();
     }
+  }
+
+  private readonly onVisualViewport = (): void => {
+    this.ensureCaretVisible();
+  };
+
+  /** 键盘盖住编辑区时，用视觉视口而不是整块画布高度来判断光标是否还看得见。 */
+  private visibleSize(): { width: number; height: number } {
+    const width = this.root.clientWidth;
+    const height = this.root.clientHeight;
+    const viewport = window.visualViewport;
+    if (!viewport) {
+      return { width, height };
+    }
+    const rect = this.root.getBoundingClientRect();
+    const coveredBottom = Math.max(0, rect.bottom - (viewport.offsetTop + viewport.height));
+    const coveredRight = Math.max(0, rect.right - (viewport.offsetLeft + viewport.width));
+    return {
+      width: Math.max(80, width - coveredRight),
+      height: Math.max(80, height - coveredBottom),
+    };
   }
 
   private ensureCaretVisible(): void {
@@ -642,8 +1118,9 @@ export class Workspace {
       return;
     }
     const pad = 8;
-    const viewW = this.root.clientWidth;
-    const viewH = this.root.clientHeight;
+    const view = this.visibleSize();
+    const viewW = view.width;
+    const viewH = view.height;
     let dx = 0;
     let dy = 0;
     if (box.y < pad) {
@@ -779,12 +1256,51 @@ export class Workspace {
   }
 
   private layout(): void {
+    const before = this.viewport.zoom || 1;
+    if (!this.zoomPinned) {
+      const fit = this.fitZoom();
+      if (fit != null) {
+        this.viewport.zoom = fit;
+      }
+    }
     const width = Math.max(1, this.root.clientWidth);
     const height = Math.max(1, this.root.clientHeight);
-    this.sizer.style.width = `${this.contentWidth()}px`;
-    this.sizer.style.height = `${this.contentHeight()}px`;
+    const zoom = this.viewport.zoom || 1;
+    let cssWidth = this.contentWidth() * zoom;
+    if (cssWidth > width && cssWidth - width < 2) {
+      cssWidth = width;
+    }
+    this.sizer.style.width = `${cssWidth}px`;
+    this.sizer.style.height = `${this.contentHeight() * zoom}px`;
     this.draw.resize(width, height);
     this.syncScroll();
+    if (Math.abs((this.viewport.zoom || 1) - before) > 0.001) {
+      for (const handler of this.uiListeners) {
+        handler();
+      }
+    }
+  }
+
+  /** 纸张放不进窗口时缩小到刚好放下；放得下就回到 100%。宽度还没量到时不改。 */
+  private fitZoom(): number | null {
+    const width = this.root.clientWidth;
+    if (width < 64) {
+      return null;
+    }
+    const room = width - 20;
+    if (room >= this.pageSetup.width) {
+      return 1;
+    }
+    return Math.max(0.25, room / this.pageSetup.width);
+  }
+
+  private sidePad(): number {
+    const zoom = this.viewport.zoom || 1;
+    const world = this.root.clientWidth / zoom;
+    if (world >= this.pageSetup.width + SIDE_PAD * 2) {
+      return SIDE_PAD;
+    }
+    return 8 / zoom;
   }
 
   private syncScroll(): void {
@@ -794,14 +1310,23 @@ export class Workspace {
   }
 
   private pageOriginX(): number {
-    return pageOriginX(this.root.clientWidth, this.pageSetup.width);
+    const zoom = this.viewport.zoom || 1;
+    return pageOriginX(this.root.clientWidth / zoom, this.pageSetup.width, this.sidePad());
   }
 
   private contentWidth(): number {
-    return this.pageOriginX() + this.pageSetup.width + SIDE_PAD;
+    return this.pageOriginX() + this.pageSetup.width + this.sidePad();
   }
 
   private contentHeight(): number {
     return TOP_PAD + this.pageSetup.stackHeight(this.pageCount) + TOP_PAD;
   }
+}
+
+function listLevelOf(paragraph: { isTable?: boolean; attrs: { numId?: string; ilvl?: string } } | null | undefined): number | undefined {
+  if (!paragraph || paragraph.isTable || !paragraph.attrs.numId || paragraph.attrs.numId === "0") {
+    return undefined;
+  }
+  const level = Number(paragraph.attrs.ilvl ?? "0");
+  return Number.isFinite(level) ? level : 0;
 }

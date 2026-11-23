@@ -1,16 +1,20 @@
-import type { FieldValues } from "../../model/document/PageLabel";
+import type { FieldView } from "../../model/field/FieldDisplay";
+import type { DocNote } from "../../model/review/Review";
 import { Draw } from "../canvas/Draw";
 import { Line } from "../../model/line/Line";
 import type { Drawing } from "../../model/inline/Drawing";
 import type { Block } from "../../model/block/Block";
 import type { Word } from "../../model/inline/Word";
-import { CELL_PAD } from "../../layout/LayoutConstants";
+import { cellContentHeight, cellContentOrigin } from "../../layout/table/TableMetrics";
 import { fillColorOf, fontCss } from "../../layout/measure/FontSpec";
+import { paintShape } from "../graphic/ShapePainter";
+import type { MathView } from "../../model/math/MathExpr";
 import type { ParagraphBorder, ParagraphShading } from "../../model/style/ParagraphAttrs";
 import { ptToPx } from "../../shared/units";
 import { imageCache, type ImageCache } from "../image/ImageCache";
+import type { Table } from "../../model/table/Table";
 import { TableBorderPainter } from "../table/TableBorderPainter";
-import { TableGeometry } from "../table/TableGeometry";
+import { TableGeometry, type TableCellBox } from "../table/TableGeometry";
 
 /** 画正文行、行内图和表格切片。 */
 
@@ -20,9 +24,9 @@ export class StoryPainter {
 
   constructor(private readonly images: ImageCache = imageCache) {}
 
-  paintLine(draw: Draw, line: Line, x: number, top: number, pageNumber?: number, fields?: FieldValues): void {
+  paintLine(draw: Draw, line: Line, x: number, top: number, pageNumber?: number, fields?: FieldView): void {
     if (line.type === "table") {
-      this.paintTable(draw, line, x, top);
+      this.paintTable(draw, line, x, top, pageNumber, fields);
       return;
     }
     this.paintShading(draw, line, x, top);
@@ -55,7 +59,47 @@ export class StoryPainter {
     this.paintParagraphBorders(draw, line, x, top);
   }
 
+  paintFootnotes(draw: Draw, notes: DocNote[], lines: Line[], pageIndex: number, box: { x: number; y: number; pageH: number }): void {
+    if (!notes.length || box.pageH <= 0) {
+      return;
+    }
+    const pageOf = new Map<string, number>();
+    for (const line of lines) {
+      const page = Math.floor(line.top / box.pageH);
+      let node = line.startNode;
+      for (let i = 0; i < line.length && node; i += 1) {
+        const id = node.data.block?.footnoteId;
+        if (id && !pageOf.has(id)) {
+          pageOf.set(id, page);
+        }
+        node = node.next;
+      }
+    }
+    const here = notes.filter((note) => pageOf.get(note.id) === pageIndex);
+    if (!here.length) {
+      return;
+    }
+    draw.setStroke("#1F4E79", 1);
+    draw.beginPath();
+    draw.moveTo(box.x, box.y);
+    draw.lineTo(box.x + 120, box.y);
+    draw.stroke();
+    let y = box.y + 16;
+    here.forEach((note) => {
+      const index = notes.findIndex((item) => item.id === note.id) + 1;
+      draw.setFill("#1F4E79");
+      draw.setFont(fontCss({ fontSizePx: 12, color: "#1F4E79" }, 0));
+      draw.fillText(`${index} ${note.text}`, box.x, y);
+      y += 18;
+    });
+  }
+
   paintDrawing(draw: Draw, drawing: Drawing, x: number, y: number): void {
+    if (drawing.shape) {
+      paintShape(draw, drawing, x, y);
+      this.paintTextBox(draw, drawing, x, y);
+      return;
+    }
     const { width, height, url } = drawing;
     const img = this.images.ensure(url);
     const boxW = Math.max(width, 24);
@@ -72,6 +116,24 @@ export class StoryPainter {
       draw.setFont("12px sans-serif");
       draw.fillText(label, x + 4, y + 14);
     }
+  }
+
+  private paintTextBox(draw: Draw, drawing: Drawing, x: number, y: number): void {
+    const story = drawing.shape?.text;
+    const insets = drawing.shape?.insets;
+    if (!story || !insets) {
+      return;
+    }
+    draw.save();
+    draw.beginPath();
+    draw.rect(x, y, Math.max(drawing.width, 1), Math.max(drawing.height, 1));
+    draw.clip();
+    story.paragraphs.each((node) => {
+      for (const line of node.data.lines) {
+        this.paintLine(draw, line, x + insets.left, y + insets.top + line.top);
+      }
+    });
+    draw.restore();
   }
 
   private paintOutline(draw: Draw, line: Line, x: number, top: number): void {
@@ -100,10 +162,16 @@ export class StoryPainter {
     top: number,
     pageNumber?: number,
     paintedFields?: Set<Block>,
-    fields?: FieldValues,
+    fields?: FieldView,
   ): void {
     if (word.kind === "drawing" && word.drawing) {
-      this.paintDrawing(draw, word.drawing, x + word.left, top + line.beforeHeight + line.contentOffsetY);
+      const left = x + word.left;
+      const boxTop = top + line.beforeHeight + line.contentOffsetY;
+      if (word.block?.mathView) {
+        paintMath(draw, word.block.mathView, left, boxTop);
+        return;
+      }
+      this.paintDrawing(draw, word.drawing, left, boxTop);
       return;
     }
     if (word.kind !== "text" || word.isEnterChar()) {
@@ -124,13 +192,30 @@ export class StoryPainter {
     }
     this.applyStyle(draw, word);
     const baseline = boxTop + height * 0.85;
+    const align = style?.vertAlign;
+    if (word.block?.footnoteId || word.block?.commentRef) {
+      const raised = { ...style, vertAlign: undefined, fontSizePx: Math.max(8, (style?.fontSizePx ?? 16) * 0.72) };
+      draw.setFont(fontCss(raised, word.intChar));
+      draw.fillText(word.char, left, baseline - height * 0.28);
+      return;
+    }
+    if (align === "superscript" || align === "subscript") {
+      const shrunk = { ...style, vertAlign: undefined, fontSizePx: Math.max(8, (style?.fontSizePx ?? 16) * 0.65) };
+      draw.setFont(fontCss(shrunk, word.intChar));
+      const shift = align === "subscript" ? -height * 0.12 : height * 0.32;
+      draw.fillText(word.char, left, baseline - shift);
+      return;
+    }
     const field = word.block?.field;
     if (field && word.block) {
       if (paintedFields?.has(word.block)) {
         return;
       }
       paintedFields?.add(word.block);
-      const text = fields?.[field] ?? (field === "PAGE" && pageNumber != null ? String(pageNumber) : word.block.text);
+      const text =
+        fields?.text.get(word.block) ??
+        (field === "PAGE" || field === "NUMPAGES" || field === "SECTIONPAGES" ? fields?.values[field] : undefined) ??
+        (field === "PAGE" && pageNumber != null ? String(pageNumber) : word.block.text);
       draw.fillText(text, left, baseline);
       return;
     }
@@ -261,7 +346,7 @@ export class StoryPainter {
     }
   }
 
-  private paintTable(draw: Draw, line: Line, x: number, top: number): void {
+  private paintTable(draw: Draw, line: Line, x: number, top: number, pageNumber?: number, fields?: FieldView): void {
     const table = line.startNode?.data.table;
     if (!table) {
       return;
@@ -270,7 +355,7 @@ export class StoryPainter {
     const to = line.tableRowTo || table.rows.length;
     const sliceH = line.height || this.tables.sliceHeight(table, from, to);
     const originX = x + line.leftBlankWidth;
-    const boxes = this.tables.boxesInSlice(table, from, to, originX, top);
+    const boxes = this.tables.boxesForSlice(table, from, to, line.tableHeaderRows, originX, top);
 
     draw.save();
     draw.beginPath();
@@ -280,22 +365,26 @@ export class StoryPainter {
     for (const box of boxes) {
       this.borders.paint(draw, box, table);
       const lines = box.cell.document.paragraphs.toArray().flatMap((paragraph) => paragraph.lines);
-      this.paintCell(draw, lines, box);
+      this.paintCell(draw, table, lines, box, pageNumber, fields);
     }
     draw.restore();
   }
 
   private paintCell(
     draw: Draw,
+    table: Table,
     lines: Line[],
-    box: { x: number; y: number; width: number; height: number },
+    box: TableCellBox,
+    pageNumber?: number,
+    fields?: FieldView,
   ): void {
+    const origin = cellContentOrigin(table, box, cellContentHeight(lines));
     draw.save();
     draw.beginPath();
     draw.rect(box.x, box.y, box.width, box.height);
     draw.clip();
     for (const line of lines) {
-      this.paintLine(draw, line, box.x + CELL_PAD, box.y + CELL_PAD + line.top);
+      this.paintLine(draw, line, origin.x, origin.y + line.top, pageNumber, fields);
     }
     draw.restore();
   }
@@ -344,6 +433,25 @@ function leaderMark(leader: string): string {
     return "_";
   }
   return "";
+}
+
+function paintMath(draw: Draw, view: MathView, x: number, y: number): void {
+  for (const glyph of view.glyphs) {
+    if (glyph.kind === "line") {
+      draw.setStroke("#111111", glyph.width || 1);
+      draw.beginPath();
+      draw.moveTo(x + glyph.x, y + glyph.y);
+      draw.lineTo(x + (glyph.x2 ?? glyph.x), y + (glyph.y2 ?? glyph.y));
+      draw.stroke();
+      continue;
+    }
+    if (!glyph.text) {
+      continue;
+    }
+    draw.setFill("#111111");
+    draw.setFont(`italic ${glyph.size ?? 16}px "Cambria Math", "Times New Roman", serif`);
+    draw.fillText(glyph.text, x + glyph.x, y + glyph.y);
+  }
 }
 
 function formatLabel(url: string | undefined): string {

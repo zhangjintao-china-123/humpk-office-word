@@ -3,6 +3,7 @@ import { TableCell } from "../../../../model/table/Table";
 import { attr, first } from "../../ooxml/XmlQuery";
 import type { ParseContext } from "../ParseContext";
 import { TableBordersParser } from "./TableBordersParser";
+import { readInsets, readLength } from "./TableMetricParser";
 import { TableMergeParser } from "./TableMergeParser";
 
 export class TableCellParser {
@@ -29,6 +30,12 @@ export class TableCellParser {
     if (fill && fill !== "auto") {
       cell.fill = fill.startsWith("#") ? fill : `#${fill}`;
     }
+    const vAlign = attr(first(tcPr, "w:vAlign"), "w:val");
+    if (vAlign === "top" || vAlign === "center" || vAlign === "bottom") {
+      cell.vAlign = vAlign;
+    }
+    cell.margin = readInsets(first(tcPr, "w:tcMar"));
+    cell.width = readLength(first(tcPr, "w:tcW"));
     return cell;
   }
 

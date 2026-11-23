@@ -9,6 +9,28 @@ export interface TableCellBox {
 }
 
 export class TableGeometry {
+  boxesForSlice(
+    table: Table,
+    from: number,
+    to: number,
+    headerRows: number,
+    originX: number,
+    originY: number,
+  ): TableCellBox[] {
+    if (headerRows <= 0) {
+      return this.boxesInSlice(table, from, to, originX, originY);
+    }
+    const headerH = this.span(table.rowHeights, 0, headerRows);
+    const header = this.boxesInSlice(table, 0, headerRows, originX, originY).map((box) => {
+      const room = headerH - (box.y - originY);
+      return { ...box, height: Math.min(box.height, Math.max(0, room)) };
+    });
+    const body = this.boxesInSlice(table, from, to, originX, originY + headerH).filter(
+      (box) => box.cell.rowIndex >= from,
+    );
+    return [...header, ...body];
+  }
+
   boxesInSlice(table: Table, from: number, to: number, originX: number, originY: number): TableCellBox[] {
     const boxes: TableCellBox[] = [];
     const widths = table.columnWidths;

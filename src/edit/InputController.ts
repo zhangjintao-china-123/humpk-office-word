@@ -1,8 +1,10 @@
 import { moveLeft, moveLineEnd, moveLineStart, movePage, moveRight, moveVertical } from "./CaretMotion";
+import { moveInFlow } from "../selection/MainWalk";
 import { DeleteCommand } from "./DeleteCommand";
 import { EditImpact } from "./EditImpact";
 import type { EditContext } from "./EditContext";
 import { FormatCommand, type FormatAction } from "./FormatCommand";
+import { caretParagraph, OutlineCommand } from "./OutlineCommand";
 import { History } from "./History";
 import { InsertCommand } from "./InsertCommand";
 import type { CaretPos } from "../selection/CaretPos";
@@ -20,7 +22,7 @@ export interface InputHost extends EditContext {
   requestSave(): void;
   copy(): Promise<void> | void;
   cut(): Promise<void> | void;
-  paste(): Promise<void> | void;
+  paste(data?: DataTransfer | null): Promise<void> | void;
 }
 
 export class InputController {
@@ -45,6 +47,7 @@ export class InputController {
     this.el.addEventListener("compositionend", this.onCompositionEnd);
     this.el.addEventListener("input", this.onInput);
     this.el.addEventListener("keydown", this.onKeyDown);
+    this.el.addEventListener("paste", this.onPaste);
   }
 
   detach(): void {
@@ -52,6 +55,7 @@ export class InputController {
     this.el.removeEventListener("compositionend", this.onCompositionEnd);
     this.el.removeEventListener("input", this.onInput);
     this.el.removeEventListener("keydown", this.onKeyDown);
+    this.el.removeEventListener("paste", this.onPaste);
     this.el.remove();
   }
 
@@ -99,6 +103,17 @@ export class InputController {
     if (text) {
       this.host.history.do(new InsertCommand(this.host, text));
     }
+  };
+
+  private onPaste = (event: ClipboardEvent): void => {
+    if (this.composing) {
+      return;
+    }
+    event.preventDefault();
+    this.el.value = "";
+    this.skipInput = true;
+    this.resetColumn();
+    void this.host.paste(event.clipboardData);
   };
 
   private onInput = (): void => {
@@ -161,16 +176,23 @@ export class InputController {
         void this.host.cut();
         return;
       }
-      if (key === "v") {
+    }
+    if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      const numbered = caretParagraph(this.host.selection.caret());
+      if (numbered?.attrs.numId && numbered.attrs.numId !== "0") {
         event.preventDefault();
-        this.resetColumn();
-        void this.host.paste();
+        this.host.history.do(new OutlineCommand(this.host, { type: event.shiftKey ? "promote" : "demote" }));
         return;
       }
     }
     if (event.key === "Enter") {
       event.preventDefault();
       this.resetColumn();
+      const numbered = caretParagraph(this.host.selection.caret());
+      if (numbered?.attrs.numId && numbered.attrs.numId !== "0" && numbered.getFullText() === "") {
+        this.host.history.do(new OutlineCommand(this.host, { type: "clear" }));
+        return;
+      }
       this.host.history.do(new InsertCommand(this.host, "\n"));
       return;
     }
@@ -241,10 +263,17 @@ export class InputController {
       return false;
     }
     if (shift) {
-      if (primary?.mode === "cell") {
+      if (primary?.mode === "cell" && !selection.flow) {
         selection.collapse(pos);
       }
-      selection.extendInStory(next, "text");
+      const anchor = selection.flow?.anchor ?? selection.primaryRange()?.start ?? pos;
+      const anchorOwner = this.host.flowOwner?.(anchor);
+      const nextOwner = this.host.flowOwner?.(next);
+      if (anchorOwner && nextOwner && anchorOwner.document === nextOwner.document) {
+        selection.setFlow(anchor, next);
+      } else {
+        selection.extendInStory(next, "text");
+      }
     } else {
       selection.collapse(next);
     }
@@ -256,13 +285,13 @@ export class InputController {
     if (!pos) {
       return null;
     }
-    if (key === "ArrowLeft") {
+    if (key === "ArrowLeft" || key === "ArrowRight") {
       this.resetColumn();
-      return moveLeft(pos);
-    }
-    if (key === "ArrowRight") {
-      this.resetColumn();
-      return moveRight(pos);
+      const owner = this.host.flowOwner?.(pos);
+      if (owner) {
+        return moveInFlow(owner.document, owner.story, pos, key === "ArrowRight" ? 1 : -1);
+      }
+      return key === "ArrowLeft" ? moveLeft(pos) : moveRight(pos);
     }
     if (key === "Home" || key === "End") {
       this.resetColumn();

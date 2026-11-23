@@ -10,6 +10,7 @@ body,
   flex-direction: column;
   height: 100%;
   background: #ececec;
+  touch-action: manipulation;
 }
 
 .ho-word-toolbar {
@@ -51,6 +52,7 @@ body,
   position: absolute;
   inset: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   cursor: text;
 }
 
@@ -90,7 +92,17 @@ body,
   padding: 0;
   border: 0;
   resize: none;
-  opacity: 0;
+  outline: none;
+  color: transparent;
+  caret-color: transparent;
+  background: transparent;
+  font-size: 16px;
   z-index: 3;
   overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .ho-word-sizer {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
 }

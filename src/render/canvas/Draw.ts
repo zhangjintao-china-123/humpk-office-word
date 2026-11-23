@@ -17,12 +17,12 @@ export class Draw implements IDraw {
     return globalThis.devicePixelRatio || 1;
   }
 
-  resize(cssWidth: number, cssHeight: number): void {
+  resize(cssWidth: number, cssHeight: number, extraScale = 1): void {
     const width = Math.max(1, cssWidth);
     const height = Math.max(1, cssHeight);
     this.cssWidth = width;
     this.cssHeight = height;
-    const dpr = this.dpr();
+    const dpr = this.dpr() * (extraScale > 0 ? extraScale : 1);
     this.el.style.width = `${width}px`;
     this.el.style.height = `${height}px`;
     this.el.width = Math.max(1, Math.round(width * dpr));
@@ -47,6 +47,10 @@ export class Draw implements IDraw {
 
   translate(x: number, y: number): void {
     this.ctx.translate(x, y);
+  }
+
+  scale(x: number, y = x): void {
+    this.ctx.scale(x, y);
   }
 
   setFill(color: string): void {
@@ -76,6 +80,22 @@ export class Draw implements IDraw {
 
   lineTo(x: number, y: number): void {
     this.ctx.lineTo(x, y);
+  }
+
+  arcTo(x1: number, y1: number, x2: number, y2: number, radius: number): void {
+    this.ctx.arcTo(x1, y1, x2, y2, radius);
+  }
+
+  ellipse(cx: number, cy: number, rx: number, ry: number): void {
+    this.ctx.ellipse(cx, cy, Math.max(rx, 0.5), Math.max(ry, 0.5), 0, 0, Math.PI * 2);
+  }
+
+  closePath(): void {
+    this.ctx.closePath();
+  }
+
+  fill(): void {
+    this.ctx.fill();
   }
 
   stroke(): void {

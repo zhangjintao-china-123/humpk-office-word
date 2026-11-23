@@ -13,9 +13,17 @@ export class RunParser {
     const block = new Block();
     block.style = mergeRunStyle(inherited, this.properties.parse(first(rNode, "w:rPr")));
 
-    const text = first(rNode, "w:t");
+    const text = first(rNode, "w:t") ?? first(rNode, "w:delText");
     if (text) {
       block.text = textOf(text);
+    }
+    const footnote = first(rNode, "w:footnoteReference");
+    if (footnote) {
+      block.footnoteId = attr(footnote, "w:id");
+    }
+    const comment = first(rNode, "w:commentReference");
+    if (comment) {
+      block.commentRef = attr(comment, "w:id");
     }
 
     const tab = first(rNode, "w:tab");

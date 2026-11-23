@@ -17,6 +17,15 @@ export function fontSizeOf(style: RunStyle | undefined): number {
   return style?.fontSizePx ?? DEFAULT_FONT_SIZE;
 }
 
+/** 上下标画成大约 65% 的字号，行高仍按原字号。 */
+export function glyphSizeOf(style: RunStyle | undefined): number {
+  const full = fontSizeOf(style);
+  if (style?.vertAlign === "superscript" || style?.vertAlign === "subscript") {
+    return full * 0.65;
+  }
+  return full;
+}
+
 export function quoteFontFamily(family: string): string {
   const name = family.trim().replace(/^["']|["']$/g, "");
   if (!name) {
@@ -33,7 +42,7 @@ export function cssFontStack(family: string): string {
   return names.map((name) => quoteFontFamily(name)).join(", ");
 }
 
-export function fontCss(style: RunStyle | undefined, charCode: number, size = fontSizeOf(style)): string {
+export function fontCss(style: RunStyle | undefined, charCode: number, size = glyphSizeOf(style)): string {
   const family = style ? resolveFontFamily(style, charCode) : "Times New Roman";
   const weight = style?.bold ? "bold" : "normal";
   const italic = style?.italic ? "italic" : "normal";

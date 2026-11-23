@@ -1,6 +1,6 @@
 import type { Draw } from "../../render/canvas/Draw";
 import type { RunStyle } from "../../model/style/RunStyle";
-import { fontCss, fontSizeOf } from "./FontSpec";
+import { fontCss, glyphSizeOf } from "./FontSpec";
 import type { ITextMeasurer } from "./ITextMeasurer";
 
 /** 按绘制字号测宽，避免大字号缩放在字体回退时把宽度缩没。 */
@@ -20,7 +20,7 @@ export class CanvasMeasurer implements ITextMeasurer {
       cached = this.draw.measureText(text);
       this.cache.set(key, cached);
     }
-    const size = fontSizeOf(style);
+    const size = glyphSizeOf(style);
     if (cached > 0) {
       return cached;
     }

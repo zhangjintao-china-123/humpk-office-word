@@ -4,6 +4,7 @@ import type { Word } from "../model/inline/Word";
 import type { CaretPos } from "../selection/CaretPos";
 import type { StoryRef } from "../selection/StoryRef";
 import type { EditImpact } from "./EditImpact";
+import type { NumberingSnap } from "./OutlineNumbering";
 
 export interface RemovedWord {
   node: LinkedNode<Word>;
@@ -31,4 +32,6 @@ export interface MutationPatch {
   removed: RemovedWord[];
   createdParagraphs: CreatedParagraph[];
   removedParagraphs: RemovedParagraph[];
+  /** 重排编号前的段落属性，撤销时写回。 */
+  numberingBefore?: NumberingSnap[];
 }

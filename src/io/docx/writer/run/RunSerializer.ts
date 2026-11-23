@@ -9,11 +9,20 @@ export class RunSerializer {
   private readonly drawings = new DrawingSerializer();
 
   serialize(block: Block, assets?: PartAssets): string {
+    if (block.mathXml) {
+      return block.mathXml;
+    }
     if (block.drawing) {
       return this.drawings.serialize(block.drawing, assets) ?? "";
     }
+    if (block.footnoteId) {
+      return `<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="${escapeXml(block.footnoteId)}"/></w:r>`;
+    }
+    if (block.commentRef) {
+      return `<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:commentReference w:id="${escapeXml(block.commentRef)}"/></w:r>`;
+    }
     const rPr = this.properties(block.style);
-    const text = this.text(block.text);
+    const text = block.revision?.kind === "del" ? this.deleted(block.text) : this.text(block.text);
     const br = block.charType === "page" ? `<w:br w:type="page"/>` : "";
     if (!text && !rPr && !br) {
       return "";
@@ -23,6 +32,15 @@ export class RunSerializer {
 
   propertiesOf(style: RunStyle | undefined): string {
     return style ? this.properties(style) : "";
+  }
+
+  private deleted(value: string): string {
+    if (!value) {
+      return "";
+    }
+    const preserve = /^\s|\s$/.test(value) || value.includes("  ");
+    const space = preserve ? ` xml:space="preserve"` : "";
+    return `<w:delText${space}>${escapeXml(value)}</w:delText>`;
   }
 
   private text(value: string): string {
@@ -58,6 +76,9 @@ export class RunSerializer {
       parts.push("<w:dstrike/>");
     } else if (style.strike) {
       parts.push("<w:strike/>");
+    }
+    if (style.vertAlign === "superscript" || style.vertAlign === "subscript") {
+      parts.push(`<w:vertAlign w:val="${style.vertAlign}"/>`);
     }
     const color = hexColor(style.color);
     if (color) {

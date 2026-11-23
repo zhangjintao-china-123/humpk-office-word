@@ -4,6 +4,7 @@ import { attr, children, first } from "../../ooxml/XmlQuery";
 import type { ParseContext } from "../ParseContext";
 import { TableBordersParser } from "./TableBordersParser";
 import { TableGridParser } from "./TableGridParser";
+import { readInsets, readLength } from "./TableMetricParser";
 import { TableRowParser } from "./TableRowParser";
 
 export class TableParser {
@@ -17,6 +18,10 @@ export class TableParser {
 
     const tblPr = first(tblNode, "w:tblPr");
     table.borders = this.borders.parse(tblPr, "w:tblBorders");
+    table.width = readLength(first(tblPr, "w:tblW"));
+    table.align = attr(first(tblPr, "w:jc"), "w:val") || undefined;
+    table.indent = readLength(first(tblPr, "w:tblInd"));
+    table.cellMargin = readInsets(first(tblPr, "w:tblCellMar"));
     const tblpPr = first(tblPr, "w:tblpPr");
     if (tblpPr) {
       table.anchorType = "relative";

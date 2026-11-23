@@ -5,11 +5,13 @@ import { Document } from "../../src/model/document/Document";
 import { Line } from "../../src/model/line/Line";
 import { WordStreamBuilder } from "../../src/model/flatten/WordStreamBuilder";
 import { Table, TableCell, TableRow } from "../../src/model/table/Table";
+import { Drawing } from "../../src/model/inline/Drawing";
 import { Word } from "../../src/model/inline/Word";
 import { PageSetup } from "../../src/render/page/PageSetup";
 import type { StoryEditor } from "../../src/editor/StoryEditor";
+import { CaretPos } from "../../src/selection/CaretPos";
 import { HitTester, type HitContext } from "../../src/selection/HitTester";
-import { CELL_PAD } from "../../src/layout/LayoutConstants";
+import { DEFAULT_CELL_INSETS } from "../../src/layout/table/TableMetrics";
 
 function paragraph(text: string, id = 1): Paragraph {
   const p = new Paragraph(id);
@@ -100,12 +102,12 @@ describe("HitTester", () => {
 
     const tableX = 40;
     const tableY = 20;
-    const inA = hit.hit(tableX + CELL_PAD + 3, tableY + CELL_PAD + 6, ctx);
+    const inA = hit.hit(tableX + DEFAULT_CELL_INSETS.left + 3, tableY + DEFAULT_CELL_INSETS.top + 6, ctx);
     expect(inA?.story.slot).toBe("cell");
     expect(inA?.story.slot === "cell" && inA.story.cell).toBe(table.rows[0].cells[0]);
     expect(inA?.node?.data.char).toBe("A");
 
-    const inB = hit.hit(tableX + 50 + CELL_PAD + 3, tableY + CELL_PAD + 6, ctx);
+    const inB = hit.hit(tableX + 50 + DEFAULT_CELL_INSETS.left + 3, tableY + DEFAULT_CELL_INSETS.top + 6, ctx);
     expect(inB?.story.slot === "cell" && inB.story.cell).toBe(table.rows[0].cells[1]);
     expect(inB?.node?.data.char).toBe("B");
   });
@@ -182,14 +184,36 @@ describe("HitTester", () => {
       origins,
       body: editor([tableLineOf(outer)], hostDoc(outer)),
     };
-    const pos = hit.hit(40 + CELL_PAD + CELL_PAD + 3, 20 + CELL_PAD + CELL_PAD + 6, ctx);
+    const padX = DEFAULT_CELL_INSETS.left;
+    const padY = DEFAULT_CELL_INSETS.top;
+    const pos = hit.hit(40 + padX + padX + 3, 20 + padY + padY + 6, ctx);
     expect(pos?.story.slot).toBe("cell");
     expect(pos?.story.slot === "cell" && pos.story.cell).toBe(innerTable.rows[0].cells[0]);
     expect(pos?.node?.data.char).toBe("N");
     const boxes = hit.cellBoxes(innerTable.rows[0].cells[0], ctx);
     expect(boxes).toHaveLength(1);
-    expect(boxes[0].x).toBe(40 + CELL_PAD);
+    expect(boxes[0].x).toBe(40 + DEFAULT_CELL_INSETS.left);
     expect(hit.findTable(innerTable.rows[0].cells[0], ctx)).toBe(innerTable);
+  });
+
+  it("表格左上角控点命中表格词，续页切片不再放控点", () => {
+    const table = grid([[story("a").document]]);
+    const line = tableLineOf(table);
+    const ctx: HitContext = {
+      pageSetup: setup,
+      origins,
+      body: editor([line], hostDoc(table)),
+    };
+    const handles = hit.tableHandles(ctx);
+    expect(handles).toHaveLength(1);
+    const onHandle = hit.hit(handles[0].x + 2, handles[0].y + 2, ctx);
+    expect(onHandle?.node?.data.kind).toBe("table");
+    expect(onHandle?.node).toBe(line.startNode);
+    const inside = hit.hit(handles[0].x + 40, handles[0].y + 40, ctx);
+    expect(inside?.node?.data.kind).not.toBe("table");
+
+    line.tableRowFrom = 1;
+    expect(hit.tableHandles(ctx)).toHaveLength(0);
   });
 
   it("正文有行时仍能点中页眉，纸面空白落到最近正文", () => {
@@ -207,6 +231,74 @@ describe("HitTester", () => {
     const onPaper = hit.hit(40 + 3, 20 + 80, ctx);
     expect(onPaper?.story.slot).toBe("body");
     expect(onPaper?.node?.data.char).toBe("正");
+  });
+
+  it("光标高度跟着当前字，文字落到同一条基线上", () => {
+    const { line } = story("Ab");
+    const text = line.startNode!;
+    const drawing = text.next!;
+    text.data.height = 16;
+    drawing.data.kind = "drawing";
+    drawing.data.height = 80;
+    line.maxCharHeight = 80;
+    line.beforeHeight = 4;
+    line.contentOffsetY = 2;
+    const ctx: HitContext = { pageSetup: setup, origins, body: editor([line]) };
+    const onText = hit.caretBox(new CaretPos({ slot: "body" }, text, false), ctx)!;
+    const onDrawing = hit.caretBox(new CaretPos({ slot: "body" }, drawing, false), ctx)!;
+    const baseline = setup.contentTop() + 4 + 2 + 80 * 0.85;
+    expect(onText.height).toBe(16);
+    expect(onText.y).toBeCloseTo(baseline - 16 * 0.85);
+    expect(onDrawing.height).toBe(80);
+    expect(onDrawing.y).toBeCloseTo(setup.contentTop() + 4 + 2);
+  });
+
+  it("点在文本框内时落到框里的字", () => {
+    const inner = story("框");
+    const drawing = new Drawing();
+    drawing.width = 80;
+    drawing.height = 40;
+    drawing.shape = {
+      preset: "rect",
+      insets: { left: 4, top: 4, right: 4, bottom: 4 },
+      text: inner.document,
+    };
+    const block = new Block();
+    block.drawing = drawing;
+    const hostParagraph = new Paragraph(2);
+    hostParagraph.addBlock(block);
+    const document = new Document();
+    document.addParagraph(hostParagraph);
+    new WordStreamBuilder().buildStoryOnly(document);
+    const line = new Line();
+    line.startNode = document.words.head;
+    line.length = document.words.length;
+    line.height = 40;
+    line.paragraph = hostParagraph;
+    hostParagraph.lines = [line];
+    document.words.head!.data.left = 0;
+    document.words.head!.data.kernedWidth = 80;
+    const ctx: HitContext = { pageSetup: setup, origins, body: editor([line], document) };
+
+    const inside = hit.hit(setup.contentLeft() + 7, setup.contentTop() + 10, ctx);
+    expect(inside?.story.slot).toBe("textbox");
+    expect(inside?.node?.data.char).toBe("框");
+    expect(inside?.after).toBe(false);
+    const caret = inside ? hit.caretBox(inside, ctx) : null;
+    expect(caret?.x).toBe(setup.contentLeft() + 4);
+
+    const outside = hit.hit(setup.contentLeft() + 90, setup.contentTop() + 8, ctx);
+    expect(outside?.story.slot).toBe("body");
+  });
+
+  it("字高还没量出来时，光标用这一行的字框", () => {
+    const { line } = story("a");
+    line.maxCharHeight = 14;
+    line.beforeHeight = 2;
+    const ctx: HitContext = { pageSetup: setup, origins, body: editor([line]) };
+    const box = hit.caretBox(new CaretPos({ slot: "body" }, line.startNode, false), ctx)!;
+    expect(box.height).toBe(14);
+    expect(box.y).toBe(setup.contentTop() + 2);
   });
 });
 

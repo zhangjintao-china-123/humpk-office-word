@@ -60,6 +60,11 @@ export class RunPropertiesParser {
       style.strike = "single";
     }
 
+    const vert = attr(first(rPr, "w:vertAlign"), "w:val");
+    if (vert === "superscript" || vert === "subscript") {
+      style.vertAlign = vert;
+    }
+
     return style;
   }
 }

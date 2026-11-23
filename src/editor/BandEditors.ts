@@ -1,6 +1,7 @@
 import type { PageLabel } from "../model/document/PageLabel";
 import type { Document } from "../model/document/Document";
 import type { HeaderFooterType } from "../model/document/DocumentKind";
+import type { Draw } from "../render/canvas/Draw";
 import { StoryEditor, type PageOrigin } from "./StoryEditor";
 
 /** 同一槽位（页眉或页脚）下 first / even / default 各一份编辑器。 */
@@ -48,8 +49,8 @@ export class BandEditors {
     return max;
   }
 
-  paintPage(origin: PageOrigin, type: HeaderFooterType, label: PageLabel): void {
-    this.editor(type)?.paintOnPages([origin], [label]);
+  paintPage(origin: PageOrigin, type: HeaderFooterType, label: PageLabel, draw?: Draw): void {
+    this.editor(type)?.paintOnPages([origin], [label], draw);
   }
 
   dispose(): void {

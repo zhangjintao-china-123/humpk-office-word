@@ -10,6 +10,7 @@ import { paragraphIndentXml, paragraphPropertiesXml } from "./paragraph/Paragrap
 import { PartAssets, type WrittenImage, type WrittenRel } from "./package/PartAssets";
 import { rootRelsXml, stylesXml, wrapDocumentXml, wrapStoryXml } from "./package/DefaultParts";
 import { RunSerializer } from "./run/RunSerializer";
+import { commentsXml, footnotesXml } from "./review/ReviewSerializer";
 import { StorySerializer } from "./story/StorySerializer";
 
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
@@ -18,6 +19,10 @@ const HEADER_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relat
 const FOOTER_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer";
 const HEADER_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml";
 const FOOTER_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml";
+const COMMENTS_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
+const FOOTNOTES_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes";
+const COMMENTS_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml";
+const FOOTNOTES_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml";
 
 interface StoryPart {
   sectionIndex: number;
@@ -41,6 +46,8 @@ export class DocxWriter {
     const customTab = document.defaultTabStopTwip != null && document.defaultTabStopTwip !== 720;
     const settingsId =
       document.evenAndOddHeaders || document.adjustLineHeightInTable || customTab ? nextId(relSeq) : undefined;
+    const commentsId = document.comments.length ? nextId(relSeq) : undefined;
+    const footnotesId = document.footnotes.length ? nextId(relSeq) : undefined;
 
     const bands = this.collectBands(document, imageSeq);
     const relByPath = new Map<string, string>();
@@ -66,10 +73,20 @@ export class DocxWriter {
     });
     const tail = document.sections.length ? bands.filter((part) => part.sectionIndex === lastIndex) : bands;
     const pack = new DocxPackage();
-    pack.setXml("[Content_Types].xml", this.contentTypes(bands, bodyAssets.images, !!numberingId, !!settingsId));
+    pack.setXml(
+      "[Content_Types].xml",
+      this.contentTypes(bands, bodyAssets.images, !!numberingId, !!settingsId, !!commentsId, !!footnotesId),
+    );
     pack.setXml("_rels/.rels", rootRelsXml());
     pack.setXml("word/document.xml", wrapDocumentXml(body, this.sectPr(document.lastSection(), tail)));
-    pack.setXml("word/_rels/document.xml.rels", this.documentRels(stylesId, numberingId, settingsId, bands, bodyAssets.rels));
+    const extra = [...bodyAssets.rels];
+    if (commentsId) {
+      extra.push({ id: commentsId, type: COMMENTS_TYPE, target: "comments.xml" });
+    }
+    if (footnotesId) {
+      extra.push({ id: footnotesId, type: FOOTNOTES_TYPE, target: "footnotes.xml" });
+    }
+    pack.setXml("word/_rels/document.xml.rels", this.documentRels(stylesId, numberingId, settingsId, bands, extra));
     pack.setXml("word/styles.xml", this.styles(document.styles.list()));
     if (numberingId) {
       pack.setXml("word/numbering.xml", this.numberingXml(numbering));
@@ -79,6 +96,12 @@ export class DocxWriter {
         "word/settings.xml",
         this.settingsXml(document.evenAndOddHeaders, document.adjustLineHeightInTable, document.defaultTabStopTwip),
       );
+    }
+    if (commentsId) {
+      pack.setXml("word/comments.xml", commentsXml(document.comments));
+    }
+    if (footnotesId) {
+      pack.setXml("word/footnotes.xml", footnotesXml(document.footnotes));
     }
     const written = new Set<string>();
     for (const part of bands) {
@@ -202,7 +225,14 @@ export class DocxWriter {
     return relsXml(rels);
   }
 
-  private contentTypes(bands: StoryPart[], images: WrittenImage[], numbering: boolean, settings: boolean): string {
+  private contentTypes(
+    bands: StoryPart[],
+    images: WrittenImage[],
+    numbering: boolean,
+    settings: boolean,
+    comments: boolean,
+    footnotes: boolean,
+  ): string {
     const defaults = new Map<string, string>([
       ["rels", "application/vnd.openxmlformats-package.relationships+xml"],
       ["xml", "application/xml"],
@@ -231,6 +261,12 @@ export class DocxWriter {
       overrides.push(
         `<Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>`,
       );
+    }
+    if (comments) {
+      overrides.push(`<Override PartName="/word/comments.xml" ContentType="${COMMENTS_CT}"/>`);
+    }
+    if (footnotes) {
+      overrides.push(`<Override PartName="/word/footnotes.xml" ContentType="${FOOTNOTES_CT}"/>`);
     }
     const seen = new Set<string>();
     for (const part of bands) {
@@ -347,7 +383,10 @@ function nextId(seq: { n: number }): string {
 
 function relsXml(rels: WrittenRel[]): string {
   const body = rels
-    .map((rel) => `<Relationship Id="${rel.id}" Type="${rel.type}" Target="${escapeXml(rel.target)}"/>`)
+    .map((rel) => {
+      const mode = rel.external ? ` TargetMode="External"` : "";
+      return `<Relationship Id="${rel.id}" Type="${rel.type}" Target="${escapeXml(rel.target)}"${mode}/>`;
+    })
     .join("");
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${REL_NS}">${body}</Relationships>`;
 }

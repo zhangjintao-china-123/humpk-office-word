@@ -33,6 +33,8 @@ export class Line {
   sharesBand = false;
   tableRowFrom = 0;
   tableRowTo = 0;
+  /** 跨页后续切片在顶部重复的标题行数。 */
+  tableHeaderRows = 0;
 
   getNode(charIndex: number): LinkedNode<Word> | null {
     let node = this.startNode;

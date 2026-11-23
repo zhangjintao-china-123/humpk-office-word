@@ -1,4 +1,6 @@
 import { fieldValues, type PageLabel } from "../model/document/PageLabel";
+import { buildFieldView, type FieldView } from "../model/field/FieldDisplay";
+import type { Block } from "../model/block/Block";
 import type { Line } from "../model/line/Line";
 import type { Paragraph } from "../model/block/Paragraph";
 import type { PlacedAnchor } from "../model/inline/PlacedAnchor";
@@ -46,11 +48,11 @@ export class StoryEditor extends EditorBase {
     return Math.max(1, Math.ceil(total / this.pageSetup.contentHeight) || 1);
   }
 
-  paintOnPages(origins: PageOrigin[], labels?: PageLabel[]): void {
-    if (!(this.draw instanceof Draw) || origins.length === 0) {
+  paintOnPages(origins: PageOrigin[], labels?: PageLabel[], target?: Draw): void {
+    const draw = target ?? (this.draw instanceof Draw ? this.draw : null);
+    if (!draw || origins.length === 0) {
       return;
     }
-    const draw = this.draw;
     if (this.slot === "body") {
       this.paintBody(draw, origins, labels);
       return;
@@ -101,6 +103,7 @@ export class StoryEditor extends EditorBase {
       x: contentX(origin) + anchor.x,
       y: contentY(origin, anchor.y),
     }));
+    const text = this.fieldText(labels, origins.length);
     for (const line of this.lines) {
       const pageIndex = Math.min(origins.length - 1, Math.floor(line.top / pageH));
       const origin = origins[pageIndex];
@@ -109,23 +112,47 @@ export class StoryEditor extends EditorBase {
       draw.rect(origin.x, origin.y, this.pageSetup.width, this.pageSetup.height);
       draw.clip();
       const label = labels?.[pageIndex] ?? fallbackLabel(pageIndex, origins.length);
-      this.painter.paintLine(draw, line, contentX(origin), contentY(origin, line.top), label.pageNumber, fieldValues(label));
+      this.painter.paintLine(draw, line, contentX(origin), contentY(origin, line.top), label.pageNumber, {
+        values: fieldValues(label),
+        text,
+      });
       draw.restore();
     }
     this.paintAnchors(draw, origins, false, (anchor, origin) => ({
       x: contentX(origin) + anchor.x,
       y: contentY(origin, anchor.y),
     }));
+    origins.forEach((origin, pageIndex) => {
+      draw.save();
+      draw.beginPath();
+      draw.rect(origin.x, origin.y, this.pageSetup.width, this.pageSetup.height);
+      draw.clip();
+      this.painter.paintFootnotes(draw, this.document?.footnotes ?? [], this.lines, pageIndex, {
+        x: contentX(origin),
+        y: origin.y + this.pageSetup.contentTop() + pageH + 8,
+        pageH,
+      });
+      draw.restore();
+    });
   }
 
   private paintBand(draw: Draw, origin: PageOrigin, label: PageLabel): void {
     const left = origin.x + this.pageSetup.contentLeft();
     const top = origin.y + this.pageSetup.bandTop(this.slot === "footer" ? "footer" : "header");
     this.paintAnchors(draw, [origin], true, (anchor) => ({ x: left + anchor.x, y: top + anchor.y }));
+    const view: FieldView = { values: fieldValues(label), text: this.fieldText([label], 1) };
     for (const line of this.lines) {
-      this.painter.paintLine(draw, line, left, top + line.top, label.pageNumber, fieldValues(label));
+      this.painter.paintLine(draw, line, left, top + line.top, label.pageNumber, view);
     }
     this.paintAnchors(draw, [origin], false, (anchor) => ({ x: left + anchor.x, y: top + anchor.y }));
+  }
+
+  private fieldText(labels: PageLabel[] | undefined, pageCount: number): Map<Block, string> {
+    if (!this.document) {
+      return new Map();
+    }
+    const pages = labels?.length ? labels : Array.from({ length: pageCount }, (_, index) => fallbackLabel(index, pageCount));
+    return buildFieldView(this.document, this.lines, pages, this.pageSetup.contentHeight).text;
   }
 
   private paintAnchors(

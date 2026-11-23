@@ -10,6 +10,7 @@ import { MeasurePass } from "./measure/MeasurePass";
 import { MixSpacing } from "./measure/MixSpacing";
 import { Paginator } from "./page/Paginator";
 import { TableLayouter } from "./table/TableLayouter";
+import { tableOffset } from "./table/TableMetrics";
 import { TokenBuilder } from "./token/TokenBuilder";
 import { assignTocPages } from "../model/toc/Toc";
 import { AnchorLayout } from "./anchor/AnchorLayout";
@@ -36,7 +37,7 @@ export class StoryLayout {
     }
 
     const lines = this.breaker.break(tokens, constraints.contentWidth);
-    this.applyTableHeights(lines);
+    this.applyTableHeights(lines, constraints.contentWidth);
     const placed =
       constraints.paginate === false
         ? this.stack(lines)
@@ -47,6 +48,7 @@ export class StoryLayout {
     this.assignParagraphLines(document, flowed.lines);
     document.anchors = flowed.anchors;
     this.refreshToc(document, constraints);
+    this.layoutShapes(document, constraints);
     return flowed.lines;
   }
 
@@ -72,7 +74,7 @@ export class StoryLayout {
     }
     const assembled = this.assemble(document);
     this.breaker.collapseAdjacent(assembled);
-    this.applyTableHeights(assembled);
+    this.applyTableHeights(assembled, constraints.contentWidth);
     const placed =
       constraints.paginate === false ? this.stack(assembled) : this.paginator.paginate(assembled, constraints.contentHeight);
     this.assignParagraphLines(document, placed);
@@ -81,7 +83,39 @@ export class StoryLayout {
     this.assignParagraphLines(document, flowed.lines);
     document.anchors = flowed.anchors;
     this.refreshToc(document, constraints);
+    this.layoutShapes(document, constraints);
     return flowed.lines;
+  }
+
+  private layoutShapes(document: Document, constraints: LayoutConstraints): void {
+    const visit = (story: Document): void => {
+      story.paragraphs.each((node) => {
+        for (const block of node.data.blocks) {
+          const shape = block.drawing?.shape;
+          const inner = shape?.text;
+          if (!inner || !block.drawing) {
+            continue;
+          }
+          const width = Math.max(8, block.drawing.width - shape.insets.left - shape.insets.right);
+          this.layout(inner, {
+            ...constraints,
+            contentWidth: width,
+            contentHeight: Math.max(block.drawing.height, 1000),
+            paginate: false,
+          });
+        }
+        const table = node.data.table;
+        if (!table) {
+          return;
+        }
+        for (const row of table.rows) {
+          for (const cell of row.cells) {
+            visit(cell.document);
+          }
+        }
+      });
+    };
+    visit(document);
   }
 
   private refreshToc(document: Document, constraints: LayoutConstraints): void {
@@ -91,7 +125,7 @@ export class StoryLayout {
     assignTocPages(document, constraints.contentHeight);
   }
 
-  private applyTableHeights(lines: Line[]): void {
+  private applyTableHeights(lines: Line[], contentWidth: number): void {
     for (const line of lines) {
       if (line.type !== "table") {
         continue;
@@ -105,6 +139,9 @@ export class StoryLayout {
       line.fullHeight = line.height;
       line.tableRowFrom = 0;
       line.tableRowTo = table.rows.length;
+      if (!line.paragraph?.hasAnchor) {
+        line.leftBlankWidth = tableOffset(table, contentWidth);
+      }
     }
   }
 

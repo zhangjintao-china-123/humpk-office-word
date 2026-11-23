@@ -1,17 +1,27 @@
 import { ClipboardPayload, type ClipboardParagraph, type ClipboardRun } from "../edit/ClipboardPayload";
 import { TableSnapshot } from "../edit/TableSnapshot";
+import type { Document } from "../model/document/Document";
 import type { Word } from "../model/inline/Word";
 import type { Table, TableCell } from "../model/table/Table";
 import { mergeRunStyle, type RunStyle } from "../model/style/RunStyle";
+import { cellsInReadingOrder, coverFlow } from "./MainWalk";
 import { Selection } from "./Selection";
 import { SelectionText } from "./SelectionText";
 import type { SelRange } from "./SelRange";
+import type { StoryRef } from "./StoryRef";
 
 export class SelectionFragment {
   private readonly text = new SelectionText();
   private readonly snapshot = new TableSnapshot();
 
-  extract(selection: Selection, table?: Table): ClipboardPayload {
+  extract(
+    selection: Selection,
+    table?: Table,
+    owner?: { document: Document; story: StoryRef } | null,
+  ): ClipboardPayload {
+    if (selection.flow && owner) {
+      return this.extractFlow(selection, owner);
+    }
     const ranges = selection.normalized();
     const cells: TableCell[] = [];
     const paragraphs: ClipboardParagraph[] = [];
@@ -31,6 +41,28 @@ export class SelectionFragment {
       ? this.snapshot.capture(host, cells.length ? cells : host.rows.flatMap((row) => row.cells), (cell) =>
           this.extractRange(this.text.cellContentRange(cell)),
         )
+      : undefined;
+    return new ClipboardPayload(this.joinText(paragraphs), paragraphs, grid);
+  }
+
+  private extractFlow(selection: Selection, owner: { document: Document; story: StoryRef }): ClipboardPayload {
+    const flow = selection.flow;
+    if (!flow) {
+      return new ClipboardPayload("", [], undefined);
+    }
+    const cover = coverFlow(owner.document, owner.story, flow.anchor, flow.focus);
+    const paragraphs: ClipboardParagraph[] = [];
+    const tables: Table[] = [];
+    for (const piece of cover.pieces) {
+      if (piece.type === "text") {
+        paragraphs.push(...this.extractRange(piece.range));
+      } else if (piece.node.data.table) {
+        tables.push(piece.node.data.table);
+      }
+    }
+    const host = tables[0];
+    const grid = host
+      ? this.snapshot.capture(host, cellsInReadingOrder(host), (cell) => this.extractRange(this.text.cellContentRange(cell)))
       : undefined;
     return new ClipboardPayload(this.joinText(paragraphs), paragraphs, grid);
   }

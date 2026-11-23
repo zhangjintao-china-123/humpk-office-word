@@ -1,3 +1,4 @@
+import type { CaretPos } from "../selection/CaretPos";
 import type { Document } from "../model/document/Document";
 import type { RunStyle } from "../model/style/RunStyle";
 import type { Selection } from "../selection/Selection";
@@ -11,6 +12,7 @@ export interface EditContext {
   relayout: Relayout;
   selection: Selection;
   documentOf(story: StoryRef): Document | null;
+  flowOwner?(pos: CaretPos): { document: Document; story: StoryRef } | null;
   afterEdit(impact: EditImpact): void;
   pendingRunStyle?(): RunStyle | undefined;
   setPendingRunStyle?(style: RunStyle | undefined): void;

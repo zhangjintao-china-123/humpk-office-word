@@ -1,14 +1,16 @@
+import type { Block } from "../model/block/Block";
 import type { Document } from "../model/document/Document";
 import type { HeaderFooterType } from "../model/document/DocumentKind";
 import type { Line } from "../model/line/Line";
 import type { Table, TableCell } from "../model/table/Table";
 import type { LinkedNode } from "../model/list/LinkedList";
+import type { Drawing } from "../model/inline/Drawing";
 import type { Word } from "../model/inline/Word";
 import type { StoryEditor } from "../editor/StoryEditor";
 import type { PageOrigin } from "../editor/StoryEditor";
 import type { PageSetup } from "../render/page/PageSetup";
 import { TableGeometry, type TableCellBox } from "../render/table/TableGeometry";
-import { CELL_PAD } from "../layout/LayoutConstants";
+import { cellContentHeight, cellContentOrigin } from "../layout/table/TableMetrics";
 import { CaretPos } from "./CaretPos";
 import { storyKind, storySection, type StoryRef } from "./StoryRef";
 
@@ -36,17 +38,80 @@ export interface CaretBox {
   height: number;
 }
 
+export const TABLE_HANDLE = 14;
+
+export interface TableHandle {
+  story: StoryRef;
+  node: LinkedNode<Word>;
+  x: number;
+  y: number;
+  size: number;
+}
+
 export class HitTester {
   private readonly tables = new TableGeometry();
 
   hit(worldX: number, worldY: number, ctx: HitContext): CaretPos | null {
+    const handle = this.tableHandleAt(worldX, worldY, ctx);
+    if (handle?.node) {
+      return new CaretPos(handle.story, handle.node, false);
+    }
     return (
+      this.hitTextBoxes(worldX, worldY, ctx) ??
       this.hitCells(worldX, worldY, ctx) ??
       this.hitBody(worldX, worldY, ctx) ??
       this.hitBand(worldX, worldY, ctx, "header") ??
       this.hitBand(worldX, worldY, ctx, "footer") ??
       this.hitNearestBody(worldX, worldY, ctx)
     );
+  }
+
+  /** 表格第一页左上角外侧的小方块，用来选中整张表。 */
+  tableHandles(ctx: HitContext): TableHandle[] {
+    const found: TableHandle[] = [];
+    if (ctx.body) {
+      this.collectHandles(ctx.body.lines, { slot: "body" }, ctx, true, 0, 0, found);
+    }
+    return found;
+  }
+
+  private tableHandleAt(worldX: number, worldY: number, ctx: HitContext): TableHandle | null {
+    for (const handle of this.tableHandles(ctx)) {
+      if (this.contains(worldX, worldY, handle.x, handle.y, handle.size, handle.size)) {
+        return handle;
+      }
+    }
+    return null;
+  }
+
+  private collectHandles(
+    lines: Line[],
+    story: StoryRef,
+    ctx: HitContext,
+    paginate: boolean,
+    originX: number,
+    originY: number,
+    found: TableHandle[],
+  ): void {
+    for (const placed of this.tablePlacements(lines, ctx, paginate, originX, originY)) {
+      if (placed.boxes.length && placed.line.tableRowFrom <= 0 && placed.line.startNode) {
+        const left = Math.min(...placed.boxes.map((box) => box.x));
+        const top = Math.min(...placed.boxes.map((box) => box.y));
+        found.push({
+          story,
+          node: placed.line.startNode,
+          x: left - TABLE_HANDLE - 2,
+          y: top - TABLE_HANDLE - 2,
+          size: TABLE_HANDLE,
+        });
+      }
+      for (const box of placed.boxes) {
+        const nested: StoryRef = { slot: "cell", cell: box.cell };
+        const inner = this.storyLines(nested, ctx);
+        const origin = cellContentOrigin(placed.line.startNode?.data.table, box, cellContentHeight(inner));
+        this.collectHandles(inner, nested, ctx, false, origin.x, origin.y, found);
+      }
+    }
   }
 
   locateBand(
@@ -103,9 +168,8 @@ export class HitTester {
     const { line, originX, originY, node } = located;
     const word = node.data;
     const x = originX + (pos.after ? word.left + word.kernedWidth : word.left);
-    const y = originY + line.beforeHeight + line.contentOffsetY;
-    const height = Math.max(line.maxCharHeight, 14);
-    return { x, y, height };
+    const span = caretSpan(line, word);
+    return { x, y: originY + span.top, height: span.height };
   }
 
   storyLines(story: StoryRef, ctx: HitContext): Line[] {
@@ -114,6 +178,10 @@ export class HitTester {
     }
     if (story.slot === "header" || story.slot === "footer") {
       return this.resolveBand(ctx, story)?.lines ?? [];
+    }
+    if (story.slot === "textbox") {
+      const inner = story.block.drawing?.shape?.text;
+      return inner?.paragraphs.toArray().flatMap((paragraph) => paragraph.lines) ?? [];
     }
     return story.cell.document.paragraphs.toArray().flatMap((paragraph) => paragraph.lines);
   }
@@ -127,12 +195,21 @@ export class HitTester {
   }
 
   lineOrigin(line: Line, story: StoryRef, ctx: HitContext): { x: number; y: number } | null {
+    if (story.slot === "textbox") {
+      const frame = this.textboxFrames(ctx).find((item) => item.block === story.block);
+      if (!frame) {
+        return null;
+      }
+      return { x: frame.x + frame.insetLeft, y: frame.y + frame.insetTop + line.top };
+    }
     if (story.slot === "cell") {
       const box = this.cellBoxes(story.cell, ctx)[0];
       if (!box) {
         return null;
       }
-      return { x: box.x + CELL_PAD, y: box.y + CELL_PAD + line.top };
+      const lines = this.storyLines(story, ctx);
+      const origin = cellContentOrigin(this.findTable(story.cell, ctx), box, cellContentHeight(lines));
+      return { x: origin.x, y: origin.y + line.top };
     }
     if (!ctx.origins.length) {
       return null;
@@ -210,6 +287,158 @@ export class HitTester {
     return cells;
   }
 
+  private hitTextBoxes(worldX: number, worldY: number, ctx: HitContext): CaretPos | null {
+    const frames = this.textboxFrames(ctx);
+    for (let i = frames.length - 1; i >= 0; i -= 1) {
+      const frame = frames[i];
+      if (!this.contains(worldX, worldY, frame.x, frame.y, frame.width, frame.height)) {
+        continue;
+      }
+      const story: StoryRef = { slot: "textbox", block: frame.block };
+      const lines = this.storyLines(story, ctx);
+      const localX = worldX - frame.x - frame.insetLeft;
+      const localY = worldY - frame.y - frame.insetTop;
+      return this.hitLines(lines, localX, localY, story) ?? this.fallbackLine(lines, localY, story);
+    }
+    return null;
+  }
+
+  private textboxFrames(ctx: HitContext): TextboxFrame[] {
+    const frames: TextboxFrame[] = [];
+    for (const editor of this.allEditors(ctx)) {
+      if (!editor?.document) {
+        continue;
+      }
+      this.scanLines(editor.lines, this.storyForEditor(editor, ctx), ctx, frames);
+      this.scanAnchors(editor, ctx, frames);
+    }
+    if (ctx.body) {
+      this.scanCellLines(ctx.body.lines, ctx, true, 0, 0, frames);
+    }
+    return frames;
+  }
+
+  private scanCellLines(
+    lines: Line[],
+    ctx: HitContext,
+    paginate: boolean,
+    originX: number,
+    originY: number,
+    frames: TextboxFrame[],
+  ): void {
+    for (const placed of this.tablePlacements(lines, ctx, paginate, originX, originY)) {
+      for (const box of placed.boxes) {
+        const story: StoryRef = { slot: "cell", cell: box.cell };
+        const inner = this.storyLines(story, ctx);
+        this.scanLines(inner, story, ctx, frames);
+        const origin = cellContentOrigin(placed.line.startNode?.data.table, box, cellContentHeight(inner));
+        this.scanCellLines(inner, ctx, false, origin.x, origin.y, frames);
+      }
+    }
+  }
+
+  private scanLines(lines: Line[], story: StoryRef, ctx: HitContext, frames: TextboxFrame[]): void {
+    for (const line of lines) {
+      if (line.type === "table" || line.type === "page") {
+        continue;
+      }
+      let node = line.startNode;
+      let hasBox = false;
+      for (let i = 0; i < line.length && node; i += 1) {
+        if (node.data.block?.drawing?.shape?.text) {
+          hasBox = true;
+          break;
+        }
+        node = node.next;
+      }
+      if (!hasBox) {
+        continue;
+      }
+      const origin = this.lineOrigin(line, story, ctx);
+      if (!origin) {
+        continue;
+      }
+      node = line.startNode;
+      for (let i = 0; i < line.length && node; i += 1) {
+        const block = node.data.block;
+        if (node.data.kind === "drawing" && block) {
+          const frame = textboxFrame(block, origin.x + node.data.left, origin.y + line.beforeHeight + line.contentOffsetY);
+          if (frame) {
+            frames.push(frame);
+          }
+        }
+        node = node.next;
+      }
+    }
+  }
+
+  private storyForEditor(editor: StoryEditor, ctx: HitContext): StoryRef {
+    const slot = editor.slot ?? "body";
+    if (slot === "body") {
+      return { slot: "body" };
+    }
+    for (let i = 0; i < ctx.origins.length; i += 1) {
+      const at = ctx.bandAt?.(slot, i);
+      if (at?.editor === editor) {
+        return { slot, kind: at.type, sectionIndex: at.sectionIndex };
+      }
+    }
+    const mapped = slot === "header" ? ctx.headers : ctx.footers;
+    for (const kind of ["default", "first", "even"] as const) {
+      if (mapped?.[kind] === editor) {
+        return { slot, kind, sectionIndex: 0 };
+      }
+    }
+    return { slot, kind: "default", sectionIndex: 0 };
+  }
+
+  private scanAnchors(editor: StoryEditor, ctx: HitContext, frames: TextboxFrame[]): void {
+    const document = editor.document;
+    if (!document) {
+      return;
+    }
+    for (const anchor of document.anchors) {
+      const block = blockForDrawing(document, anchor.drawing);
+      if (!block) {
+        continue;
+      }
+      if (editor.slot !== "header" && editor.slot !== "footer") {
+        const pageH = ctx.pageSetup.contentHeight;
+        const pageIndex = Math.min(ctx.origins.length - 1, Math.max(0, Math.floor(anchor.y / pageH)));
+        const origin = ctx.origins[pageIndex];
+        if (!origin) {
+          continue;
+        }
+        const frame = textboxFrame(
+          block,
+          origin.x + ctx.pageSetup.contentLeft() + anchor.x,
+          origin.y + ctx.pageSetup.contentTop() + (anchor.y - pageIndex * pageH),
+        );
+        if (frame) {
+          frames.push(frame);
+        }
+        continue;
+      }
+      for (let i = 0; i < ctx.origins.length; i += 1) {
+        const at = ctx.bandAt?.(editor.slot, i);
+        const type = at?.type ?? ctx.bandType?.(editor.slot, i) ?? "default";
+        const shown = at?.editor ?? this.bandEditor(ctx, editor.slot, type);
+        if (shown !== editor) {
+          continue;
+        }
+        const origin = ctx.origins[i];
+        const frame = textboxFrame(
+          block,
+          origin.x + ctx.pageSetup.contentLeft() + anchor.x,
+          origin.y + ctx.pageSetup.bandTop(editor.slot) + anchor.y,
+        );
+        if (frame) {
+          frames.push(frame);
+        }
+      }
+    }
+  }
+
   private hitCells(worldX: number, worldY: number, ctx: HitContext): CaretPos | null {
     if (!ctx.body) {
       return null;
@@ -231,14 +460,15 @@ export class HitTester {
         if (!this.contains(worldX, worldY, box.x, box.y, box.width, box.height)) {
           continue;
         }
-        const inner = this.storyLines({ slot: "cell", cell: box.cell }, ctx);
-        const nested = this.hitTableLines(inner, ctx, false, box.x + CELL_PAD, box.y + CELL_PAD, worldX, worldY);
+        const story: StoryRef = { slot: "cell", cell: box.cell };
+        const inner = this.storyLines(story, ctx);
+        const origin = cellContentOrigin(placed.line.startNode?.data.table, box, cellContentHeight(inner));
+        const nested = this.hitTableLines(inner, ctx, false, origin.x, origin.y, worldX, worldY);
         if (nested) {
           return nested;
         }
-        const localX = worldX - box.x - CELL_PAD;
-        const localY = worldY - box.y - CELL_PAD;
-        const story: StoryRef = { slot: "cell", cell: box.cell };
+        const localX = worldX - origin.x;
+        const localY = worldY - origin.y;
         return this.hitLines(inner, localX, localY, story) ?? this.fallbackLine(inner, localY, story);
       }
     }
@@ -256,14 +486,9 @@ export class HitTester {
     for (const placed of this.tablePlacements(lines, ctx, paginate, originX, originY)) {
       for (const box of placed.boxes) {
         visit(box);
-        this.walkTables(
-          this.storyLines({ slot: "cell", cell: box.cell }, ctx),
-          ctx,
-          false,
-          box.x + CELL_PAD,
-          box.y + CELL_PAD,
-          visit,
-        );
+        const inner = this.storyLines({ slot: "cell", cell: box.cell }, ctx);
+        const origin = cellContentOrigin(placed.line.startNode?.data.table, box, cellContentHeight(inner));
+        this.walkTables(inner, ctx, false, origin.x, origin.y, visit);
       }
     }
   }
@@ -292,10 +517,11 @@ export class HitTester {
       }
       placed.push({
         line,
-        boxes: this.tables.boxesInSlice(
+        boxes: this.tables.boxesForSlice(
           table,
           line.tableRowFrom,
           line.tableRowTo || table.rows.length,
+          line.tableHeaderRows,
           x,
           y,
         ),
@@ -587,4 +813,71 @@ export class HitTester {
   private contains(x: number, y: number, left: number, top: number, width: number, height: number): boolean {
     return x >= left && x <= left + width && y >= top && y <= top + height;
   }
+}
+
+interface TextboxFrame {
+  block: Block;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  insetLeft: number;
+  insetTop: number;
+}
+
+function textboxFrame(block: Block, x: number, y: number): TextboxFrame | null {
+  const drawing = block.drawing;
+  const shape = drawing?.shape;
+  if (!drawing || !shape?.text) {
+    return null;
+  }
+  return {
+    block,
+    x,
+    y,
+    width: Math.max(drawing.width, 1),
+    height: Math.max(drawing.height, 1),
+    insetLeft: shape.insets.left,
+    insetTop: shape.insets.top,
+  };
+}
+
+function blockForDrawing(document: Document, drawing: Drawing): Block | undefined {
+  let found: Block | undefined;
+  document.paragraphs.each((node) => {
+    if (found) {
+      return;
+    }
+    for (const block of node.data.blocks) {
+      if (block.drawing === drawing) {
+        found = block;
+      }
+    }
+  });
+  return found;
+}
+
+/** 与 StoryPainter 共用：字框顶到基线约占字高的 0.85。 */
+const BASELINE_RATIO = 0.85;
+
+/**
+ * 光标跟着当前字，不跟着这一行最高的图形或字号。
+ * 文字底边落在行的共用基线上；图形按它自己的外框，从行框顶起。
+ */
+export function caretSpan(line: Line, word: Word): { top: number; height: number } {
+  const lineBox = Math.max(line.maxCharHeight, 14);
+  const boxTop = line.beforeHeight + line.contentOffsetY;
+  if (word.kind === "drawing") {
+    return { top: boxTop, height: Math.max(word.height, 1) };
+  }
+  let glyph = word.height > 0 ? word.height : lineBox;
+  let baseline = boxTop + lineBox * BASELINE_RATIO;
+  if (word.block?.footnoteId || word.block?.commentRef || word.getStyle()?.vertAlign === "superscript") {
+    glyph = Math.max(8, glyph * 0.72);
+    baseline -= lineBox * 0.28;
+  } else if (word.getStyle()?.vertAlign === "subscript") {
+    glyph = Math.max(8, glyph * 0.72);
+    baseline += lineBox * 0.12;
+  }
+  return { top: baseline - glyph * BASELINE_RATIO, height: glyph };
 }

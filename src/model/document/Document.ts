@@ -5,7 +5,15 @@ import { StyleSheet } from "../style/StyleSheet";
 import { Numbering } from "../style/Numbering";
 import type { DocumentKind, HeaderFooterType } from "./DocumentKind";
 import type { PlacedAnchor } from "../inline/PlacedAnchor";
+import type { DocComment, DocNote } from "../review/Review";
 import { Section } from "./Section";
+
+export interface DocProps {
+  title?: string;
+  creator?: string;
+  created?: Date;
+  modified?: Date;
+}
 
 export class Document {
   kind: DocumentKind = "body";
@@ -20,6 +28,10 @@ export class Document {
   evenAndOddHeaders = false;
   /** settings.xml 的 w:defaultTabStop，单位 twip。缺省按 Word 的 720。 */
   defaultTabStopTwip?: number;
+  props: DocProps = {};
+  fileName?: string;
+  comments: DocComment[] = [];
+  footnotes: DocNote[] = [];
 
   addParagraph(paragraph: Paragraph): void {
     paragraph.node = this.paragraphs.append(paragraph);

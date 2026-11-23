@@ -80,6 +80,9 @@ export class SelectionText {
   }
 
   hasCopyableContent(selection: Selection): boolean {
+    if (selection.flow && !selection.flow.anchor.equals(selection.flow.focus)) {
+      return true;
+    }
     return selection.normalized().some((range) => range.mode === "cell" || !range.collapsed());
   }
 

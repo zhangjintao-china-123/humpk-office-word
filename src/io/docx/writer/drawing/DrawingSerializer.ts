@@ -1,23 +1,53 @@
+import type { Document } from "../../../../model/document/Document";
+import type { GraphicShape } from "../../../../model/graphic/Shape";
 import type { Drawing, WrapSide, WrapType } from "../../../../model/inline/Drawing";
 import { pxToEmu } from "../../../../shared/units";
+import { escapeXml, hexColor } from "../../ooxml/XmlEscape";
 import type { PartAssets } from "../package/PartAssets";
 
 export class DrawingSerializer {
   private docPr = 1;
 
   serialize(drawing: Drawing, assets: PartAssets | undefined): string | undefined {
+    const cx = pxToEmu(drawing.width);
+    const cy = pxToEmu(drawing.height);
+    if (drawing.shape) {
+      const graphic = this.shapeGraphic(drawing.shape, cx, cy);
+      const body =
+        drawing.position === "anchor"
+          ? this.anchor(drawing, cx, cy, graphic)
+          : `<wp:inline><wp:extent cx="${cx}" cy="${cy}"/>${this.docName()}${graphic}</wp:inline>`;
+      return `<w:r><w:drawing>${body}</w:drawing></w:r>`;
+    }
     const relId = assets?.embedImage(drawing.sourceUrl ?? drawing.url);
     if (!relId) {
       return undefined;
     }
-    const cx = pxToEmu(drawing.width);
-    const cy = pxToEmu(drawing.height);
     const graphic = `<a:graphic><a:graphicData><a:blip r:embed="${relId}"/></a:graphicData></a:graphic>`;
     const body =
       drawing.position === "anchor"
         ? this.anchor(drawing, cx, cy, graphic)
         : `<wp:inline><wp:extent cx="${cx}" cy="${cy}"/>${graphic}</wp:inline>`;
     return `<w:r><w:drawing>${body}</w:drawing></w:r>`;
+  }
+
+  private shapeGraphic(shape: GraphicShape, cx: number, cy: number): string {
+    const preset = shape.preset === "unknown" ? "rect" : shape.preset;
+    const fill = hexColor(shape.fill);
+    const fillXml = fill ? `<a:solidFill><a:srgbClr val="${fill}"/></a:solidFill>` : "<a:noFill/>";
+    const line = hexColor(shape.line);
+    const lineXml = line
+      ? `<a:ln w="${pxToEmu(shape.lineWidth || 1)}"><a:solidFill><a:srgbClr val="${line}"/></a:solidFill></a:ln>`
+      : "";
+    const text = shape.text ? `<wps:txbx><w:txbxContent>${storyText(shape.text)}</w:txbxContent></wps:txbx>` : "";
+    const insets = `lIns="${pxToEmu(shape.insets.left)}" tIns="${pxToEmu(shape.insets.top)}" rIns="${pxToEmu(shape.insets.right)}" bIns="${pxToEmu(shape.insets.bottom)}"`;
+    return `<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="${preset}"><a:avLst/></a:prstGeom>${fillXml}${lineXml}</wps:spPr>${text}<wps:bodyPr ${insets}/></wps:wsp></a:graphicData></a:graphic>`;
+  }
+
+  private docName(): string {
+    const id = this.docPr;
+    this.docPr += 1;
+    return `<wp:docPr id="${id}" name="Shape ${id}"/>`;
   }
 
   private anchor(drawing: Drawing, cx: number, cy: number, graphic: string): string {
@@ -62,4 +92,13 @@ export class DrawingSerializer {
       .join("");
     return `<wp:wrapPolygon><wp:start x="${pxToEmu(start.x)}" y="${pxToEmu(start.y)}"/>${lines}</wp:wrapPolygon>`;
   }
+}
+
+function storyText(story: Document): string {
+  const parts: string[] = [];
+  story.paragraphs.each((node) => {
+    const text = node.data.blocks.map((block) => block.text).join("");
+    parts.push(`<w:p><w:r><w:t>${escapeXml(text)}</w:t></w:r></w:p>`);
+  });
+  return parts.join("") || "<w:p/>";
 }

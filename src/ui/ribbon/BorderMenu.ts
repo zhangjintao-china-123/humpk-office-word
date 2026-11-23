@@ -31,6 +31,43 @@ export const BORDER_SIZES = [
 
 export const BORDER_COLORS = ["#000000", "#C00000", "#FF0000", "#ED7D31", "#FFC000", "#70AD47", "#0070C0", "#7030A0"];
 
+const GRID = { l: 1.5, r: 14.5, t: 1.5, b: 14.5, x: 8, y: 8 };
+const QUIET = "#d0d0d0";
+const INK = "#222222";
+
+function borderIcon(mode: TableBorderMode): string {
+  if (mode === "none") {
+    return `<svg class="ho-word-border-mini" viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="1.5" y="1.5" width="13" height="13" fill="none" stroke="${QUIET}" stroke-width="1" stroke-dasharray="2.2 1.6"/>
+      <line x1="8" y1="1.5" x2="8" y2="14.5" stroke="${QUIET}" stroke-width="1" stroke-dasharray="2.2 1.6"/>
+      <line x1="1.5" y1="8" x2="14.5" y2="8" stroke="${QUIET}" stroke-width="1" stroke-dasharray="2.2 1.6"/>
+    </svg>`;
+  }
+  const on = {
+    top: mode === "top" || mode === "all" || mode === "outside",
+    right: mode === "right" || mode === "all" || mode === "outside",
+    bottom: mode === "bottom" || mode === "all" || mode === "outside",
+    left: mode === "left" || mode === "all" || mode === "outside",
+    h: mode === "insideH" || mode === "inside" || mode === "all",
+    v: mode === "insideV" || mode === "inside" || mode === "all",
+    down: mode === "tl2br",
+    up: mode === "tr2bl",
+  };
+  const seg = (x1: number, y1: number, x2: number, y2: number, active: boolean) =>
+    `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${active ? INK : QUIET}" stroke-width="${active ? 2 : 1}"/>`;
+  const { l, r, t, b, x, y } = GRID;
+  return `<svg class="ho-word-border-mini" viewBox="0 0 16 16" aria-hidden="true" stroke-linecap="square">
+    ${seg(l, t, r, t, on.top)}
+    ${seg(r, t, r, b, on.right)}
+    ${seg(l, b, r, b, on.bottom)}
+    ${seg(l, t, l, b, on.left)}
+    ${seg(l, y, r, y, on.h)}
+    ${seg(x, t, x, b, on.v)}
+    ${on.down ? seg(2.5, 2.5, 13.5, 13.5, true) : ""}
+    ${on.up ? seg(13.5, 2.5, 2.5, 13.5, true) : ""}
+  </svg>`;
+}
+
 export class BorderMenu {
   markup(): string {
     const items = BORDER_MENU_ITEMS.map((item, index) => {
@@ -38,14 +75,15 @@ export class BorderMenu {
       const split = prev && prev.group !== item.group ? `<div class="ho-word-border-split"></div>` : "";
       return `${split}<button type="button" data-border="${item.mode}">
         <span class="ho-word-border-check"></span>
-        <span class="ho-word-border-mini ho-word-border-${item.mode}"></span>
+        ${borderIcon(item.mode)}
         ${item.label}
       </button>`;
     }).join("");
     return `
       <div class="ho-word-drop ho-word-border-drop">
         <button type="button" data-drop-toggle data-border-toggle title="框线">
-          <span class="ho-word-border-mini ho-word-border-all"></span>
+          ${borderIcon("all")}
+          <span class="ho-word-menu-caret"></span>
         </button>
         <div class="ho-word-border-menu">
           <div class="ho-word-border-pen" data-keep-drop>

@@ -122,6 +122,66 @@
   width: 56px;
 }
 
+.ho-word-group-body select[data-select="zoom"] {
+  width: 72px;
+}
+
+.ho-word-group-body select[data-select="style"] {
+  width: 76px;
+}
+.ho-word-group-body select[data-select="indent"],
+.ho-word-group-body select[data-select="spacing"],
+.ho-word-group-body select[data-select="para-gap"] {
+  width: 88px;
+}
+
+.ho-word-findbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #fff;
+  border-top: 1px solid #e5e5e5;
+}
+
+.ho-word-findbar[hidden] {
+  display: none;
+}
+
+.ho-word-findbar input[type="text"] {
+  width: 160px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid #c6c6c6;
+  font-size: 12px;
+}
+
+.ho-word-findbar label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #333;
+}
+
+.ho-word-findbar button {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid #c6c6c6;
+  background: #fff;
+  font-size: 12px;
+}
+
+.ho-word-findbar button:hover {
+  background: #e6e6e6;
+}
+
+.ho-word-findbar [data-find-status] {
+  min-width: 72px;
+  font-size: 12px;
+  color: #555;
+}
+
 .ho-word-drop {
   position: relative;
 }
@@ -255,54 +315,195 @@
   background: #e5e5e5;
 }
 
+.ho-word-menu-caret {
+  width: 0;
+  height: 0;
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-top: 4px solid #444;
+}
+
 .ho-word-border-mini {
-  position: relative;
-  width: 16px;
-  height: 16px;
-  box-sizing: border-box;
-  border: 1px dashed #bbb;
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
 }
 
-.ho-word-border-mini::before,
-.ho-word-border-mini::after {
-  content: "";
+.ho-word-outline-menu {
+  display: none;
   position: absolute;
-  background: #222;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 20;
+  min-width: 196px;
+  max-height: 360px;
+  overflow: auto;
+  padding: 4px 0;
+  background: #fff;
+  border: 1px solid #c6c6c6;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
-.ho-word-border-bottom::before { left: 2px; right: 2px; bottom: 1px; height: 2px; }
-.ho-word-border-top::before { left: 2px; right: 2px; top: 1px; height: 2px; }
-.ho-word-border-left::before { top: 2px; bottom: 2px; left: 1px; width: 2px; }
-.ho-word-border-right::before { top: 2px; bottom: 2px; right: 1px; width: 2px; }
-.ho-word-border-none { border-style: dashed; }
-.ho-word-border-all { border: 2px solid #222; }
-.ho-word-border-all::before {
-  left: 50%; top: 2px; bottom: 2px; width: 1px;
+.ho-word-drop.is-open .ho-word-outline-menu {
+  display: block;
 }
-.ho-word-border-all::after {
-  top: 50%; left: 2px; right: 2px; height: 1px;
+
+.ho-word-outline-menu > button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
 }
-.ho-word-border-outside { border: 2px solid #222; }
-.ho-word-border-inside { border-style: dashed; }
-.ho-word-border-inside::before {
-  left: 50%; top: 2px; bottom: 2px; width: 2px;
+
+.ho-word-outline-menu > button:hover,
+.ho-word-outline-menu > button.is-on {
+  background: #e6e6e6;
 }
-.ho-word-border-inside::after {
-  top: 50%; left: 2px; right: 2px; height: 2px;
+
+.ho-word-link-menu {
+  min-width: 220px;
+  padding: 8px;
 }
-.ho-word-border-insideH::after {
-  top: 50%; left: 2px; right: 2px; height: 2px;
+
+.ho-word-link-row {
+  display: block;
+  margin-bottom: 6px;
 }
-.ho-word-border-insideV::before {
-  left: 50%; top: 2px; bottom: 2px; width: 2px;
+
+.ho-word-review-menu {
+  min-width: 240px;
+  padding: 8px;
 }
-.ho-word-border-tl2br::before {
-  left: 2px; top: 2px; width: 14px; height: 2px;
-  transform-origin: left center;
-  transform: rotate(45deg);
+
+.ho-word-review-menu textarea,
+.ho-word-review-menu input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 4px;
 }
-.ho-word-border-tr2bl::before {
-  right: 2px; top: 2px; width: 14px; height: 2px;
-  transform-origin: right center;
-  transform: rotate(-45deg);
+
+.ho-word-review-menu textarea {
+  min-height: 52px;
+  resize: vertical;
+}
+
+.ho-word-review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.ho-word-review-list button {
+  text-align: left;
+  white-space: normal;
+}
+
+.ho-word-review-empty {
+  color: #888;
+  font-size: 12px;
+}
+
+.ho-word-link-row input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid #c6c6c6;
+  font-size: 12px;
+}
+
+.ho-word-outline-sample {
+  min-width: 92px;
+  color: #333;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (hover: none) {
+  .ho-word-drop:hover .ho-word-palette,
+  .ho-word-drop:focus-within .ho-word-palette {
+    display: none;
+  }
+
+  .ho-word-drop.is-open .ho-word-palette {
+    display: grid;
+  }
+}
+
+@media (max-width: 900px) {
+  .ho-word-ribbon-title {
+    height: auto;
+    min-height: 28px;
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .ho-word-caption {
+    max-width: 28%;
+  }
+
+  .ho-word-ribbon-home {
+    overflow-x: auto;
+    overflow-y: hidden;
+    touch-action: pan-x;
+    scrollbar-width: none;
+  }
+
+  .ho-word-ribbon-home::-webkit-scrollbar {
+    display: none;
+  }
+
+  .ho-word-group {
+    flex: 0 0 auto;
+  }
+
+  .ho-word-group-body {
+    flex-wrap: nowrap;
+  }
+
+  .ho-word-group-body button,
+  .ho-word-group-body select,
+  .ho-word-findbar input[type="text"],
+  .ho-word-findbar button,
+  .ho-word-link-row input,
+  .ho-word-review-menu textarea,
+  .ho-word-review-menu input,
+  .ho-word-border-pen select {
+    height: 36px;
+    font-size: 16px;
+  }
+
+  .ho-word-font select[data-select="font"] {
+    width: 96px;
+  }
+
+  .ho-word-findbar {
+    flex-wrap: wrap;
+  }
+
+  .ho-word-findbar input[type="text"] {
+    flex: 1 1 140px;
+    width: auto;
+    min-width: 0;
+  }
+
+  .ho-word-outline-menu,
+  .ho-word-border-menu {
+    max-width: calc(100vw - 24px);
+    overflow: auto;
+  }
+
+  .ho-word-outline-menu > button,
+  .ho-word-border-menu > button {
+    height: 40px;
+    font-size: 16px;
+  }
 }

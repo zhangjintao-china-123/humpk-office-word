@@ -4,7 +4,23 @@ import type { Section } from "./Section";
 import type { Line } from "../line/Line";
 import { formatLevelNumber } from "../style/OutlineLabel";
 
-export type FieldKind = "PAGE" | "NUMPAGES" | "SECTIONPAGES";
+export type FieldKind =
+  | "PAGE"
+  | "NUMPAGES"
+  | "SECTIONPAGES"
+  | "DATE"
+  | "TIME"
+  | "CREATEDATE"
+  | "SAVEDATE"
+  | "AUTHOR"
+  | "TITLE"
+  | "FILENAME"
+  | "REF"
+  | "PAGEREF"
+  | "STYLEREF"
+  | "SEQ"
+  | "HYPERLINK"
+  | "OTHER";
 export type SectionBreak = "nextPage" | "continuous" | "evenPage" | "oddPage";
 
 export interface PageLabel {
@@ -22,12 +38,30 @@ export interface FieldValues {
   SECTIONPAGES: string;
 }
 
+const NAMED_FIELDS: Record<string, FieldKind> = {
+  PAGE: "PAGE",
+  NUMPAGES: "NUMPAGES",
+  SECTIONPAGES: "SECTIONPAGES",
+  DATE: "DATE",
+  TIME: "TIME",
+  CREATEDATE: "CREATEDATE",
+  SAVEDATE: "SAVEDATE",
+  AUTHOR: "AUTHOR",
+  TITLE: "TITLE",
+  FILENAME: "FILENAME",
+  REF: "REF",
+  PAGEREF: "PAGEREF",
+  STYLEREF: "STYLEREF",
+  SEQ: "SEQ",
+  HYPERLINK: "HYPERLINK",
+};
+
 export function fieldKind(instr: string): FieldKind | undefined {
   const token = instr.trim().split(/\s+/)[0]?.toUpperCase();
-  if (token === "PAGE" || token === "NUMPAGES" || token === "SECTIONPAGES") {
-    return token;
+  if (!token || token === "TOC") {
+    return undefined;
   }
-  return undefined;
+  return NAMED_FIELDS[token] ?? (/^[A-Z][A-Z0-9]*$/.test(token) ? "OTHER" : undefined);
 }
 
 export function formatPageNumber(value: number, fmt?: string): string {

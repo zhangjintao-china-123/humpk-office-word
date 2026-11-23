@@ -2,6 +2,7 @@ export interface WrittenRel {
   id: string;
   type: string;
   target: string;
+  external?: boolean;
 }
 
 export interface WrittenImage {
@@ -22,6 +23,21 @@ export class PartAssets {
   nextRelId(): string {
     const id = `rId${this.relSeq.n}`;
     this.relSeq.n += 1;
+    return id;
+  }
+
+  hyperlink(url: string): string {
+    const existing = this.rels.find((rel) => rel.external && rel.target === url);
+    if (existing) {
+      return existing.id;
+    }
+    const id = this.nextRelId();
+    this.rels.push({
+      id,
+      type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+      target: url,
+      external: true,
+    });
     return id;
   }
 

@@ -5,11 +5,13 @@ import type { StoryRef } from "../selection/StoryRef";
 import type { Document } from "../model/document/Document";
 import type { Paragraph } from "../model/block/Paragraph";
 import type { RunStyle } from "../model/style/RunStyle";
+import { consumeFlow } from "./FlowEdit";
 import { ClipboardPayload, type ClipboardParagraph } from "./ClipboardPayload";
 import { TableSnapshot } from "./TableSnapshot";
 import type { EditCommand } from "./EditCommand";
 import type { EditContext } from "./EditContext";
 import type { MutationPatch } from "./MutationPatch";
+import { refreshNumbering, renumberStory, restoreNumbering } from "./OutlineNumbering";
 
 export class InsertCommand implements EditCommand {
   private patches: MutationPatch[] = [];
@@ -29,6 +31,7 @@ export class InsertCommand implements EditCommand {
         const document = this.ctx.documentOf(patch.story);
         if (document) {
           this.ctx.mutator.replay(document, patch);
+          renumberStory(document);
           this.ctx.relayout.apply(patch.impact);
         }
       }
@@ -40,6 +43,10 @@ export class InsertCommand implements EditCommand {
       return;
     }
     this.played = true;
+    const consumed = consumeFlow(this.ctx);
+    if (consumed) {
+      this.patches.push(...consumed);
+    }
     if (this.payload.table) {
       this.pasteTable();
       return;
@@ -67,6 +74,7 @@ export class InsertCommand implements EditCommand {
       if (!document) {
         continue;
       }
+      restoreNumbering(patch.numberingBefore);
       const impact = this.ctx.mutator.invert(document, patch);
       this.ctx.relayout.apply(impact);
       this.ctx.selection.collapse(patch.originalCaret);
@@ -163,6 +171,7 @@ export class InsertCommand implements EditCommand {
         : created.inheritedRunStyle;
       created.changed = true;
     }
+    refreshNumbering(document, patch);
     this.ctx.relayout.apply(patch.impact);
     this.ctx.selection.collapse(patch.caret);
     this.ctx.afterEdit(patch.impact);
@@ -181,6 +190,7 @@ export class InsertCommand implements EditCommand {
     }
     const patch = this.ctx.mutator.insert(document, story, pos, text, style);
     this.patches.push(patch);
+    refreshNumbering(document, patch);
     this.ctx.relayout.apply(patch.impact);
     this.ctx.selection.collapse(patch.caret);
     this.ctx.afterEdit(patch.impact);

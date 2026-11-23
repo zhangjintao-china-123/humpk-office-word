@@ -4,6 +4,8 @@ import { Paragraph } from "../../src/model/block/Paragraph";
 import { Document } from "../../src/model/document/Document";
 import { WordStreamBuilder } from "../../src/model/flatten/WordStreamBuilder";
 import { Table, TableCell, TableRow } from "../../src/model/table/Table";
+import { LinkedList } from "../../src/model/list/LinkedList";
+import { Word } from "../../src/model/inline/Word";
 import { CaretPos } from "../../src/selection/CaretPos";
 import { PointerController } from "../../src/selection/PointerController";
 import { Selection } from "../../src/selection/Selection";
@@ -199,6 +201,32 @@ describe("PointerController", () => {
     dispatch(el, "pointerdown", 10, 8, { metaKey: true });
     dispatch(el, "pointerup", 10, 8);
     expect(selection.ranges).toHaveLength(2);
+    pointer.detach();
+  });
+
+  it("点表格词时选中整张表，拖动仍停在控点上则保持整表", () => {
+    const list = new LinkedList<Word>();
+    const word = new Word();
+    word.kind = "table";
+    const node = list.append(word);
+    const story: StoryRef = { slot: "body" };
+    const selection = new Selection();
+    const host = {
+      selection,
+      hitClient: () => new CaretPos(story, node, false),
+      cellsInRect: () => [],
+      onChange() {},
+    };
+    const el = document.createElement("div");
+    const pointer = new PointerController(host);
+    pointer.attach(el);
+    dispatch(el, "pointerdown", 4, 4);
+    dispatch(el, "pointermove", 6, 6);
+    dispatch(el, "pointerup", 6, 6);
+    expect(selection.flow?.anchor.after).toBe(false);
+    expect(selection.flow?.focus.after).toBe(true);
+    expect(selection.flow?.anchor.node).toBe(node);
+    expect(selection.flow?.focus.node).toBe(node);
     pointer.detach();
   });
 });

@@ -1,7 +1,9 @@
+import { consumeFlow } from "./FlowEdit";
 import { SelectionText } from "../selection/SelectionText";
 import type { EditCommand } from "./EditCommand";
 import type { EditContext } from "./EditContext";
 import type { MutationPatch } from "./MutationPatch";
+import { refreshNumbering, renumberStory, restoreNumbering } from "./OutlineNumbering";
 import type { SelRange } from "../selection/SelRange";
 
 export type DeleteDirection = "backward" | "forward";
@@ -21,6 +23,7 @@ export class DeleteCommand implements EditCommand {
         const document = this.ctx.documentOf(patch.story);
         if (document) {
           this.ctx.mutator.replay(document, patch);
+          renumberStory(document);
           this.ctx.relayout.apply(patch.impact);
         }
       }
@@ -32,6 +35,11 @@ export class DeleteCommand implements EditCommand {
       return;
     }
     this.played = true;
+    const consumed = consumeFlow(this.ctx);
+    if (consumed) {
+      this.patches = consumed;
+      return;
+    }
     const selectionText = new SelectionText();
     for (const raw of this.ctx.selection.normalized()) {
       const range = this.asTextRange(raw, selectionText);
@@ -45,6 +53,7 @@ export class DeleteCommand implements EditCommand {
           : this.ctx.mutator.deleteForward(document, range.story, range.start)
         : this.ctx.mutator.deleteRange(document, range.story, range);
       this.patches.push(patch);
+      refreshNumbering(document, patch);
       this.ctx.relayout.apply(patch.impact);
       this.ctx.selection.collapse(patch.caret);
       this.ctx.afterEdit(patch.impact);
@@ -57,6 +66,7 @@ export class DeleteCommand implements EditCommand {
       if (!document) {
         continue;
       }
+      restoreNumbering(patch.numberingBefore);
       const impact = this.ctx.mutator.invert(document, patch);
       this.ctx.relayout.apply(impact);
       this.ctx.selection.collapse(patch.originalCaret);
