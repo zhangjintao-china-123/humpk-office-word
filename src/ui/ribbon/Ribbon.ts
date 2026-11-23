@@ -38,6 +38,9 @@ export interface RibbonHost {
   toggleEvenOdd(): void;
   setZoom(zoom: number): void;
   print(): void;
+  cut(): void;
+  copy(): void;
+  paste(): void;
   findNext(query: FindQuery): FindStatus;
   findPrev(query: FindQuery): FindStatus;
   replaceMatch(query: FindQuery, replacement: string): FindStatus;
@@ -83,9 +86,12 @@ const SIZES = [8, 9, 10, 10.5, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 7
 const TEXT_COLORS = ["#111111", "#C00000", "#FF0000", "#ED7D31", "#FFC000", "#70AD47", "#00B0F0", "#0070C0", "#7030A0", "#FFFFFF"];
 const FILLS = ["none", "#FFFF00", "#00FF00", "#00FFFF", "#FF00FF", "#FFC7CE", "#C6EFCE", "#FFEB9C", "#D9D9D9"];
 
+type RibbonPage = "home" | "insert" | "table";
+
 export class Ribbon {
   readonly el: HTMLElement;
   private readonly borders = new BorderMenu();
+  private page: RibbonPage = "home";
 
   constructor(host: HTMLElement, private readonly actions: RibbonHost) {
     this.el = host;
@@ -172,6 +178,13 @@ export class Ribbon {
     }
     this.toggle("accept-revision", state.revision === "ins");
     this.toggle("reject-revision", state.revision === "del");
+    const tableTab = this.el.querySelector<HTMLButtonElement>("[data-tab=table]");
+    if (tableTab) {
+      tableTab.hidden = !state.inTable;
+    }
+    if (!state.inTable && this.page === "table") {
+      this.showPage("home");
+    }
     const zoom = this.el.querySelector<HTMLSelectElement>("[data-select=zoom]");
     if (zoom) {
       const nearest = ZOOM_LEVELS.reduce((best, item) =>
@@ -274,6 +287,12 @@ export class Ribbon {
       }
       return;
     }
+    const tab = el.closest<HTMLElement>("[data-tab]");
+    if (tab?.dataset.tab === "home" || tab?.dataset.tab === "insert" || tab?.dataset.tab === "table") {
+      this.closeDrops();
+      this.showPage(tab.dataset.tab);
+      return;
+    }
     this.closeDrops();
     const target = el.closest<HTMLElement>("[data-act]");
     if (!target) {
@@ -290,6 +309,12 @@ export class Ribbon {
       this.actions.openFile();
     } else if (act === "save") {
       this.actions.saveFile();
+    } else if (act === "cut") {
+      this.actions.cut();
+    } else if (act === "copy") {
+      this.actions.copy();
+    } else if (act === "paste") {
+      this.actions.paste();
     } else if (act === "insert-table") {
       this.actions.insertTable();
     } else if (act === "insert-page-break") {
@@ -347,6 +372,8 @@ export class Ribbon {
       this.actions.applyFormat({ type: "align", value: "both" });
     } else if (act === "find-open") {
       this.openFind();
+    } else if (act === "find-replace") {
+      this.openFind(true);
     } else if (act === "find-close") {
       this.closeFind();
     } else if (act === "find-next" || act === "find-prev") {
@@ -432,6 +459,16 @@ export class Ribbon {
     }
     this.sync();
   };
+
+  private showPage(page: RibbonPage): void {
+    this.page = page;
+    this.el.querySelectorAll<HTMLElement>("[data-tab]").forEach((button) => {
+      button.classList.toggle("is-on", button.dataset.tab === page);
+    });
+    this.el.querySelectorAll<HTMLElement>("[data-page]").forEach((panel) => {
+      panel.hidden = panel.dataset.page !== page;
+    });
+  }
 
   openFind(focusReplace = false): void {
     const bar = this.el.querySelector<HTMLElement>("[data-findbar]");
@@ -529,30 +566,6 @@ export class Ribbon {
     }
   }
 
-  private reviewMarkup(): string {
-    return `
-      <div class="ho-word-drop">
-        <button type="button" data-drop-toggle title="添加批注">批注</button>
-        <div class="ho-word-outline-menu ho-word-review-menu">
-          <label class="ho-word-link-row" data-keep-drop>批注
-            <textarea data-comment-text placeholder="批注内容"></textarea>
-          </label>
-          <button type="button" data-act="add-comment">添加批注</button>
-          <div class="ho-word-review-list" data-comment-list></div>
-        </div>
-      </div>
-      <div class="ho-word-drop">
-        <button type="button" data-drop-toggle title="插入脚注">脚注</button>
-        <div class="ho-word-outline-menu ho-word-review-menu">
-          <label class="ho-word-link-row" data-keep-drop>脚注
-            <input data-note-text placeholder="脚注内容" />
-          </label>
-          <button type="button" data-act="add-note">插入脚注</button>
-          <div class="ho-word-review-list" data-note-list></div>
-        </div>
-      </div>`;
-  }
-
   private linkMarkup(): string {
     return `
       <div class="ho-word-drop">
@@ -596,28 +609,31 @@ export class Ribbon {
       <div class="ho-word-ribbon-title">
         <div class="ho-word-brand">humpk-office</div>
         <div class="ho-word-tabs">
-          <button type="button" class="is-on">开始</button>
+          <button type="button" data-tab="home" class="is-on">开始</button>
+          <button type="button" data-tab="insert">插入</button>
+          <button type="button" data-tab="table" hidden>表格工具</button>
+        </div>
+        <div class="ho-word-qat">
+          <button type="button" data-act="undo" title="撤销 (Ctrl+Z)">撤销</button>
+          <button type="button" data-act="redo" title="重做 (Ctrl+Y)">重做</button>
+          <span class="ho-word-qat-split"></span>
+          <button type="button" data-act="new" title="新建">新建</button>
+          <button type="button" data-act="open" title="打开">打开</button>
+          <button type="button" data-act="save" title="保存">保存</button>
+          <span class="ho-word-qat-split"></span>
+          <button type="button" data-act="print" title="打印 (Ctrl+P)">打印</button>
+          <select data-select="zoom" title="缩放">${ZOOM_LEVELS.map((level) => `<option value="${level}">${level * 100}%</option>`).join("")}</select>
         </div>
         <div class="ho-word-caption" data-caption>空文档</div>
       </div>
-      <div class="ho-word-ribbon-home">
+      <div class="ho-word-ribbon-page" data-page="home">
         <section class="ho-word-group">
           <div class="ho-word-group-body">
-            <button type="button" data-act="undo" title="撤销 (Ctrl+Z)">↶</button>
-            <button type="button" data-act="redo" title="重做 (Ctrl+Y)">↷</button>
-            <button type="button" data-act="new" title="新建">新建</button>
-            <button type="button" data-act="open" title="打开">打开</button>
-            <button type="button" data-act="save" title="保存">保存</button>
+            <button type="button" data-act="paste" title="粘贴 (Ctrl+V)">粘贴</button>
+            <button type="button" data-act="cut" title="剪切 (Ctrl+X)">剪切</button>
+            <button type="button" data-act="copy" title="复制 (Ctrl+C)">复制</button>
           </div>
           <span>剪贴板</span>
-        </section>
-        <section class="ho-word-group">
-          <div class="ho-word-group-body">
-            <button type="button" data-act="find-open" title="查找 (Ctrl+F)">查找</button>
-            <button type="button" data-act="print" title="打印 (Ctrl+P)">打印</button>
-            <select data-select="zoom" title="缩放">${ZOOM_LEVELS.map((level) => `<option value="${level}">${level * 100}%</option>`).join("")}</select>
-          </div>
-          <span>视图</span>
         </section>
         <section class="ho-word-group">
           <div class="ho-word-group-body ho-word-font">
@@ -649,12 +665,6 @@ export class Ribbon {
             <button type="button" data-act="align-center" title="居中">≣</button>
             <button type="button" data-act="align-right" title="右对齐">≡</button>
             <button type="button" data-act="align-both" title="两端对齐">☰</button>
-            <select data-select="style" title="段落样式" aria-label="样式">
-              <option value="normal">正文</option>
-              <option value="heading1">标题 1</option>
-              <option value="heading2">标题 2</option>
-              <option value="heading3">标题 3</option>
-            </select>
             <select data-select="indent" title="首行缩进" aria-label="缩进">
               <option value="none">无缩进</option>
               <option value="first2">首行2字</option>
@@ -675,45 +685,68 @@ export class Ribbon {
               <option value="both6">前后6磅</option>
             </select>
             ${this.outlineMarkup()}
-            ${this.borders.markup()}
           </div>
           <span>段落</span>
         </section>
         <section class="ho-word-group">
           <div class="ho-word-group-body">
+            <select data-select="style" title="段落样式" aria-label="样式">
+              <option value="normal">正文</option>
+              <option value="heading1">标题 1</option>
+              <option value="heading2">标题 2</option>
+              <option value="heading3">标题 3</option>
+            </select>
+          </div>
+          <span>样式</span>
+        </section>
+        <section class="ho-word-group">
+          <div class="ho-word-group-body">
+            <button type="button" data-act="find-open" title="查找 (Ctrl+F)">查找</button>
+            <button type="button" data-act="find-replace" title="替换 (Ctrl+H)">替换</button>
+          </div>
+          <span>编辑</span>
+        </section>
+      </div>
+      <div class="ho-word-ribbon-page" data-page="insert" hidden>
+        <section class="ho-word-group">
+          <div class="ho-word-group-body">
             <button type="button" data-act="insert-page-break" title="从这里另起一页">分页</button>
-            <button type="button" data-act="page-number" title="在页眉或页脚插入页码">页码</button>
-            <button type="button" data-act="title-page" title="首页使用不同的页眉页脚">首页</button>
-            <button type="button" data-act="even-odd" title="奇偶页使用不同的页眉页脚">奇偶</button>
           </div>
-          <span>页眉</span>
-        </section>
-        <section class="ho-word-group">
-          <div class="ho-word-group-body">
-            ${this.linkMarkup()}
-            <button type="button" data-act="insert-toc" title="按标题生成目录">目录</button>
-          </div>
-          <span>引用</span>
-        </section>
-        <section class="ho-word-group">
-          <div class="ho-word-group-body">
-            ${this.reviewMarkup()}
-            <button type="button" data-act="accept-revision" title="接受修订">接受</button>
-            <button type="button" data-act="reject-revision" title="拒绝修订">拒绝</button>
-          </div>
-          <span>审阅</span>
+          <span>页面</span>
         </section>
         <section class="ho-word-group">
           <div class="ho-word-group-body">
             <button type="button" data-act="insert-table" title="插入 3×3 表格">表格</button>
-            <button type="button" data-act="insert-row" title="在下方插入行">行+</button>
-            <button type="button" data-act="delete-row" title="删除行">行-</button>
-            <button type="button" data-act="insert-col" title="在右侧插入列">列+</button>
-            <button type="button" data-act="delete-col" title="删除列">列-</button>
-            <button type="button" data-act="merge-cells" title="合并单元格">合并</button>
-            <button type="button" data-act="split-cell" title="拆分单元格">拆分</button>
           </div>
           <span>表格</span>
+        </section>
+        <section class="ho-word-group">
+          <div class="ho-word-group-body">
+            ${this.linkMarkup()}
+          </div>
+          <span>链接</span>
+        </section>
+        <section class="ho-word-group">
+          <div class="ho-word-group-body">
+            <button type="button" data-act="page-number" title="在页眉或页脚插入页码">页码</button>
+            <button type="button" data-act="title-page" title="首页使用不同的页眉页脚">首页</button>
+            <button type="button" data-act="even-odd" title="奇偶页使用不同的页眉页脚">奇偶</button>
+          </div>
+          <span>页眉和页脚</span>
+        </section>
+      </div>
+      <div class="ho-word-ribbon-page" data-page="table" hidden>
+        <section class="ho-word-group">
+          <div class="ho-word-group-body">
+            <button type="button" data-act="insert-row" title="在下方插入行">插入行</button>
+            <button type="button" data-act="delete-row" title="删除行">删除行</button>
+            <button type="button" data-act="insert-col" title="在右侧插入列">插入列</button>
+            <button type="button" data-act="delete-col" title="删除列">删除列</button>
+            <button type="button" data-act="merge-cells" title="合并单元格">合并</button>
+            <button type="button" data-act="split-cell" title="拆分单元格">拆分</button>
+            ${this.borders.markup()}
+          </div>
+          <span>布局</span>
         </section>
       </div>
       <div class="ho-word-findbar" data-findbar hidden>

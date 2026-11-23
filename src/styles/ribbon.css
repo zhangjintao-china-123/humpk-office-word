@@ -39,21 +39,70 @@
 }
 
 .ho-word-caption {
-  margin-left: auto;
+  margin-left: 12px;
   font-size: 11px;
   opacity: 0.85;
-  max-width: 40%;
+  max-width: 28%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.ho-word-ribbon-home {
+.ho-word-tabs button[hidden] {
+  display: none;
+}
+
+.ho-word-qat {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.ho-word-qat-split {
+  width: 1px;
+  height: 14px;
+  margin: 0 4px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.ho-word-qat button,
+.ho-word-qat select {
+  height: 22px;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font-size: 12px;
+}
+
+.ho-word-qat button {
+  padding: 0 6px;
+}
+
+.ho-word-qat button:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.ho-word-qat button:disabled {
+  opacity: 0.4;
+}
+
+.ho-word-qat select {
+  width: 72px;
+  background: #fff;
+  color: #222;
+}
+
+.ho-word-ribbon-page {
   display: flex;
   align-items: stretch;
   min-height: 72px;
   padding: 4px 8px 2px;
   overflow: visible;
+}
+
+.ho-word-ribbon-page[hidden] {
+  display: none;
 }
 
 .ho-word-group {
@@ -120,10 +169,6 @@
 
 .ho-word-font select[data-select="size"] {
   width: 56px;
-}
-
-.ho-word-group-body select[data-select="zoom"] {
-  width: 72px;
 }
 
 .ho-word-group-body select[data-select="style"] {
@@ -443,6 +488,7 @@
   .ho-word-ribbon-title {
     height: auto;
     min-height: 28px;
+    flex-wrap: wrap;
     padding-top: env(safe-area-inset-top);
   }
 
@@ -450,14 +496,14 @@
     max-width: 28%;
   }
 
-  .ho-word-ribbon-home {
+  .ho-word-ribbon-page {
     overflow-x: auto;
     overflow-y: hidden;
     touch-action: pan-x;
     scrollbar-width: none;
   }
 
-  .ho-word-ribbon-home::-webkit-scrollbar {
+  .ho-word-ribbon-page::-webkit-scrollbar {
     display: none;
   }
 

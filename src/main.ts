@@ -70,6 +70,15 @@ const ribbon = new Ribbon(ribbonHost, {
   toggleEvenOdd: () => workspace.toggleEvenOdd(),
   setZoom: (zoom) => workspace.setZoom(zoom),
   print: () => workspace.print(),
+  cut: () => {
+    void workspace.cut();
+  },
+  copy: () => {
+    void workspace.copy();
+  },
+  paste: () => {
+    void workspace.paste();
+  },
   findNext: (query) => workspace.findNext(query),
   findPrev: (query) => workspace.findPrev(query),
   replaceMatch: (query, replacement) => workspace.replaceMatch(query, replacement),
