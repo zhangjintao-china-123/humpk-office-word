@@ -368,7 +368,8 @@ export class StoryPainter {
 
     draw.save();
     draw.beginPath();
-    draw.rect(originX - 0.5, top, this.tableWidth(table) + 1, sliceH);
+    // 外框描边贴着表格外缘，留出一像素给抗锯齿，避免末行底边被裁成半截。
+    draw.rect(originX - 1, top - 1, this.tableWidth(table) + 2, sliceH + 2);
     draw.clip();
 
     for (const box of boxes) {

@@ -36,11 +36,32 @@ describe("跨页边框", () => {
       visibleY: 0,
       visibleHeight: 80,
     };
-    const frame = borderFrame(box, 2, 2);
+    const frame = borderFrame(box, 2, 2, { bottom: 1 });
     expect(frame.cutBottom).toBe(true);
     expect(frame.cutTop).toBe(false);
     expect(frame.y).toBe(0);
     expect(frame.height).toBe(78);
+    expect(frame.sideBottom).toBe(78);
+  });
+
+  it("末行底边向格子内收半个线宽，竖线接到外缘", () => {
+    const box: TableCellBox = {
+      cell: cell(0, 0),
+      x: 10,
+      y: 20,
+      width: 80,
+      height: 30,
+    };
+    const frame = borderFrame(box, 2, 2, { top: 1, bottom: 1, left: 0.5, right: 0.5 });
+    expect(frame.cutTop).toBe(false);
+    expect(frame.cutBottom).toBe(false);
+    expect(frame.y).toBe(21);
+    expect(frame.y + frame.height).toBe(49);
+    expect(frame.sideTop).toBe(20);
+    expect(frame.sideBottom).toBe(50);
+    expect(frame.x).toBe(10.5);
+    expect(frame.sideLeft).toBe(10);
+    expect(frame.sideRight).toBe(90);
   });
 });
 
