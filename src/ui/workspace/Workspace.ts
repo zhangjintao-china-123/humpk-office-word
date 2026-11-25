@@ -84,6 +84,7 @@ import { caretRank } from "../../selection/MainWalk";
 import { SelRange } from "../../selection/SelRange";
 import { storyKind, storySection, type StoryRef } from "../../selection/StoryRef";
 import { ContextMenuController } from "../contextmenu/ContextMenuController";
+import type { TextMenuState } from "../contextmenu/ContextMenuItem";
 import { EditImpact } from "../../edit/EditImpact";
 import { History } from "../../edit/History";
 import { InputController } from "../../edit/InputController";
@@ -130,6 +131,7 @@ export class Workspace {
   readonly relayout: Relayout;
   private readonly input: InputController;
   private readonly uiListeners: Array<() => void> = [];
+  private findRequest?: (replace: boolean) => void;
   private readonly saveListeners: Array<() => void> = [];
   private readonly writer = new DocxWriter();
   private readonly borderApplier = new TableBorderApplier();
@@ -234,6 +236,22 @@ export class Workspace {
       cut: () => this.cut(),
       paste: () => this.paste(),
       deleteSelection: () => this.deleteContent("backward"),
+      tableMenuState: () => this.tableMenuState(),
+      pictureWrap: () => this.currentPictureWrap(),
+      insertTableRow: (where) => this.insertTableRow(where),
+      insertTableColumn: (where) => this.insertTableColumn(where),
+      deleteTableRow: () => this.deleteTableRow(),
+      deleteTableColumn: () => this.deleteTableColumn(),
+      mergeTableCells: () => this.mergeTableCells(),
+      splitTableCell: () => this.splitTableCell(),
+      applyPictureWrap: (wrap) => this.applyPictureWrap(wrap),
+      textMenuState: () => this.textMenuState(),
+      applyFormat: (action) => this.applyFormat(action),
+      applyOutline: (action) => this.applyOutline(action),
+      applyLink: (raw) => this.applyLink(raw),
+      clearLink: () => this.clearLink(),
+      addComment: (text) => this.addComment(text),
+      openFind: (replace) => this.requestFind(replace),
     });
     this.contextMenu.attach(host, this.root);
     this.layout();
@@ -383,10 +401,13 @@ export class Workspace {
     this.borderPen = { ...this.borderPen, ...pen };
   }
 
-  insertTableRow(): void {
+  insertTableRow(where: "above" | "below" = "below"): void {
     this.runTableOp((target) => ({
       type: "insertRow",
-      index: Math.max(...target.cells.map((cell) => cell.rowIndex)) + 1,
+      index:
+        where === "above"
+          ? Math.min(...target.cells.map((cell) => cell.rowIndex))
+          : Math.max(...target.cells.map((cell) => cell.rowIndex + Math.max(1, cell.rowSpan) - 1)) + 1,
     }));
   }
 
@@ -397,10 +418,13 @@ export class Workspace {
     }));
   }
 
-  insertTableColumn(): void {
+  insertTableColumn(where: "left" | "right" = "right"): void {
     this.runTableOp((target) => ({
       type: "insertColumn",
-      index: Math.max(...target.cells.map((cell) => cell.colIndex + cell.colSpan - 1)) + 1,
+      index:
+        where === "left"
+          ? Math.min(...target.cells.map((cell) => cell.colIndex))
+          : Math.max(...target.cells.map((cell) => cell.colIndex + Math.max(1, cell.colSpan) - 1)) + 1,
     }));
   }
 
@@ -691,6 +715,52 @@ export class Workspace {
     this.onSelectionChange();
   };
 
+  tableMenuState(): { canMerge: boolean; canSplit: boolean; canDeleteRow: boolean; canDeleteCol: boolean } | null {
+    const target = this.selectedTable();
+    if (!target) {
+      return null;
+    }
+    const only = target.cells.length === 1 ? target.cells[0] : null;
+    return {
+      canMerge: target.cells.length > 1,
+      canSplit: !!only && (only.rowSpan > 1 || only.colSpan > 1),
+      canDeleteRow: target.table.rows.length > 1,
+      canDeleteCol: this.tableColumnCount(target.table) > 1,
+    };
+  }
+
+  textMenuState(): TextMenuState {
+    const state = this.formatState("");
+    return {
+      bold: state.bold,
+      italic: state.italic,
+      underline: state.underline,
+      strike: state.strike,
+      superscript: state.vertAlign === "superscript",
+      subscript: state.vertAlign === "subscript",
+      align: state.align,
+      lineSpacing: state.lineSpacing,
+      style: state.paragraphStyle,
+      canIndentLess: state.canIndentLess,
+      hasLink: !!state.link,
+      link: state.link,
+      hasList: state.listLevel != null,
+    };
+  }
+
+  requestFind(replace: boolean): void {
+    this.findRequest?.(replace);
+  }
+
+  onFindRequest(handler: (replace: boolean) => void): void {
+    this.findRequest = handler;
+  }
+
+  currentPictureWrap(): PictureWrap | null {
+    const picture = this.selectedPicture();
+    return picture ? pictureWrapOf(picture.drawing) : null;
+  }
+
   selectedPicture(): PictureBox | null {
     if (this.pictureFocus && this.pictureStillThere(this.pictureFocus)) {
       return this.livePicture(this.pictureFocus) ?? this.pictureFocus;
@@ -883,6 +953,14 @@ export class Workspace {
 
   private livePicture(box: PictureBox): PictureBox | null {
     return this.hit.pictures(this.hitContext()).find((item) => item.drawing === box.drawing) ?? null;
+  }
+
+  private tableColumnCount(table: Table): number {
+    const spanned = table.rows.reduce(
+      (max, row) => Math.max(max, row.cells.reduce((col, cell) => Math.max(col, cell.colIndex + cell.colSpan), 0)),
+      0,
+    );
+    return Math.max(table.columns.length, table.columnWidths.length, spanned, 1);
   }
 
   private selectedTable(): { table: Table; cells: TableCell[]; story: StoryRef } | null {

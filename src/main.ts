@@ -96,6 +96,7 @@ const ribbon = new Ribbon(ribbonHost, {
   formatState: () => workspace.formatState(caption),
 });
 workspace.onUi(() => ribbon.sync());
+workspace.onFindRequest((replace) => ribbon.openFind(replace));
 workspace.onSave(() => {
   void downloadDocx();
 });
