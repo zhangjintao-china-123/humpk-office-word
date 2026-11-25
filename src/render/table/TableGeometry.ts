@@ -6,6 +6,18 @@ export interface TableCellBox {
   y: number;
   width: number;
   height: number;
+  /** 这一页版心里实际露出来的顶边。格子本身可以高出这一片，用来接着画后面的字。 */
+  visibleY?: number;
+  visibleHeight?: number;
+}
+
+export function cellVisibleRect(box: TableCellBox): { x: number; y: number; width: number; height: number } {
+  return {
+    x: box.x,
+    y: box.visibleY ?? box.y,
+    width: box.width,
+    height: box.visibleHeight ?? box.height,
+  };
 }
 
 export class TableGeometry {
@@ -16,19 +28,49 @@ export class TableGeometry {
     headerRows: number,
     originX: number,
     originY: number,
+    clipTop = 0,
+    sliceHeight?: number,
+  ): TableCellBox[] {
+    const boxes = this.placeSlice(table, from, to, headerRows, originX, originY, clipTop);
+    if (sliceHeight == null) {
+      return boxes;
+    }
+    return boxes.map((box) => {
+      const top = Math.max(box.y, originY);
+      const bottom = Math.min(box.y + box.height, originY + sliceHeight);
+      return { ...box, visibleY: top, visibleHeight: Math.max(0, bottom - top) };
+    });
+  }
+
+  private placeSlice(
+    table: Table,
+    from: number,
+    to: number,
+    headerRows: number,
+    originX: number,
+    originY: number,
+    clipTop: number,
   ): TableCellBox[] {
     if (headerRows <= 0) {
-      return this.boxesInSlice(table, from, to, originX, originY);
+      return this.shiftY(this.boxesInSlice(table, from, to, originX, originY), clipTop);
     }
     const headerH = this.span(table.rowHeights, 0, headerRows);
     const header = this.boxesInSlice(table, 0, headerRows, originX, originY).map((box) => {
       const room = headerH - (box.y - originY);
       return { ...box, height: Math.min(box.height, Math.max(0, room)) };
     });
-    const body = this.boxesInSlice(table, from, to, originX, originY + headerH).filter(
-      (box) => box.cell.rowIndex >= from,
+    const body = this.shiftY(
+      this.boxesInSlice(table, from, to, originX, originY + headerH).filter((box) => box.cell.rowIndex >= from),
+      clipTop,
     );
     return [...header, ...body];
+  }
+
+  private shiftY(boxes: TableCellBox[], clipTop: number): TableCellBox[] {
+    if (clipTop <= 0) {
+      return boxes;
+    }
+    return boxes.map((box) => ({ ...box, y: box.y - clipTop }));
   }
 
   boxesInSlice(table: Table, from: number, to: number, originX: number, originY: number): TableCellBox[] {

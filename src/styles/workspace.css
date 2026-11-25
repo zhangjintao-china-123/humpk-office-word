@@ -56,6 +56,11 @@ body,
   cursor: text;
 }
 
+html.ho-table-resize,
+html.ho-table-resize * {
+  cursor: var(--ho-resize-cursor, col-resize) !important;
+}
+
 .ho-word-sizer {
   pointer-events: none;
 }

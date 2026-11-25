@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { Document } from "../../src/model/document/Document";
 import { Table, TableCell, TableRow } from "../../src/model/table/Table";
+import { borderFrame } from "../../src/render/table/TableBorderPainter";
 import { TableBorderResolve } from "../../src/render/table/TableBorderResolve";
+import type { TableCellBox } from "../../src/render/table/TableGeometry";
 
 function cell(row: number, col: number): TableCell {
   const item = new TableCell(new Document());
@@ -22,6 +24,25 @@ function table(rows: number, cols: number): Table {
   }
   return next;
 }
+
+describe("跨页边框", () => {
+  it("底边收在页脚上方，左右边一起停住", () => {
+    const box: TableCellBox = {
+      cell: cell(0, 0),
+      x: 10,
+      y: 0,
+      width: 40,
+      height: 200,
+      visibleY: 0,
+      visibleHeight: 80,
+    };
+    const frame = borderFrame(box, 2, 2);
+    expect(frame.cutBottom).toBe(true);
+    expect(frame.cutTop).toBe(false);
+    expect(frame.y).toBe(0);
+    expect(frame.height).toBe(78);
+  });
+});
 
 describe("TableBorderResolve", () => {
   const resolve = new TableBorderResolve();

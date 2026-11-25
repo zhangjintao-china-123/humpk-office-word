@@ -291,6 +291,24 @@ describe("HitTester", () => {
     expect(outside?.story.slot).toBe("body");
   });
 
+  it("靠近列线和行线可以拖，页切开的底边不行", () => {
+    const table = grid([[story("a").document, story("b").document]]);
+    const line = tableLineOf(table);
+    const paragraph = new Paragraph(9);
+    paragraph.isTable = true;
+    paragraph.table = table;
+    line.paragraph = paragraph;
+    const ctx: HitContext = { pageSetup: setup, origins, body: editor([line]) };
+    expect(hit.tableGuide(90, 40, ctx, 4)).toMatchObject({ kind: "column", index: 0 });
+    expect(hit.tableGuide(40, 40, ctx, 4)?.kind).toBe("left");
+    expect(hit.tableGuide(65, 60, ctx, 4)).toMatchObject({ kind: "row", index: 0 });
+    expect(hit.tableGuide(65, 40, ctx, 4)).toBeNull();
+
+    line.height = 20;
+    expect(hit.tableGuide(65, 40, ctx, 4)).toBeNull();
+    expect(hit.tableGuide(90, 30, ctx, 4)?.kind).toBe("column");
+  });
+
   it("字高还没量出来时，光标用这一行的字框", () => {
     const { line } = story("a");
     line.maxCharHeight = 14;

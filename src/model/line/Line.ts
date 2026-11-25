@@ -35,6 +35,8 @@ export class Line {
   tableRowTo = 0;
   /** 跨页后续切片在顶部重复的标题行数。 */
   tableHeaderRows = 0;
+  /** 同一行被页切开时，这一片从该行顶部往下已经画过的高度。 */
+  tableClipTop = 0;
 
   getNode(charIndex: number): LinkedNode<Word> | null {
     let node = this.startNode;

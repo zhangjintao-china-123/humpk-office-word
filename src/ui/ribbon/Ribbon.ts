@@ -4,6 +4,7 @@ import type { OutlineAction } from "../../edit/OutlineCommand";
 import type { TableBorderFlags, TableBorderMode, TableBorderPen } from "../../edit/TableBorderApplier";
 import { ZOOM_LEVELS } from "../workspace/ZoomLevels";
 import { BorderMenu } from "./BorderMenu";
+import { ColorDialog } from "./ColorDialog";
 
 export interface RibbonHost {
   applyFormat(action: FormatAction): void;
@@ -83,14 +84,17 @@ export interface RibbonState {
 
 const FONTS = ["宋体", "黑体", "楷体", "仿宋", "微软雅黑", "Times New Roman", "Arial", "Calibri"];
 const SIZES = [8, 9, 10, 10.5, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72];
-const TEXT_COLORS = ["#111111", "#C00000", "#FF0000", "#ED7D31", "#FFC000", "#70AD47", "#00B0F0", "#0070C0", "#7030A0", "#FFFFFF"];
-const FILLS = ["none", "#FFFF00", "#00FF00", "#00FFFF", "#FF00FF", "#FFC7CE", "#C6EFCE", "#FFEB9C", "#D9D9D9"];
+const THEME_BASES = ["#FFFFFF", "#000000", "#E7E6E6", "#44546A", "#5B9BD5", "#ED7D31", "#A5A5A5", "#FFC000", "#4472C4", "#70AD47"];
+const THEME_SHADES = [0.8, 0.6, 0.4, -0.25, -0.5];
+const STANDARD_COLORS = ["#C00000", "#FF0000", "#FFC000", "#FFFF00", "#92D050", "#00B050", "#00B0F0", "#0070C0", "#002060", "#7030A0"];
+const HIGHLIGHTS = ["#FFFF00", "#00FF00", "#00FFFF", "#FF00FF", "#0000FF", "#FF0000", "#000080", "#008080", "#008000", "#800080", "#800000", "#808000", "#808080", "#C0C0C0"];
 
 type RibbonPage = "home" | "insert" | "table";
 
 export class Ribbon {
   readonly el: HTMLElement;
   private readonly borders = new BorderMenu();
+  private readonly colorDialog = new ColorDialog();
   private page: RibbonPage = "home";
 
   constructor(host: HTMLElement, private readonly actions: RibbonHost) {
@@ -106,7 +110,7 @@ export class Ribbon {
 
   private onMouseDown = (event: MouseEvent): void => {
     const target = event.target as HTMLElement;
-    if (target.closest("select, option, input, textarea")) {
+    if (target.closest("select, option, input, textarea, .ho-word-color-dialog")) {
       return;
     }
     event.preventDefault();
@@ -256,6 +260,18 @@ export class Ribbon {
       this.sync();
       return;
     }
+    const custom = el.closest<HTMLElement>("[data-custom-color]");
+    if (custom?.dataset.customColor === "text" || custom?.dataset.customColor === "fill") {
+      const kind = custom.dataset.customColor;
+      this.closeDrops();
+      const state = this.actions.formatState();
+      const initial = kind === "text" ? state.color : state.highlight;
+      this.colorDialog.open(initial && initial !== "none" ? initial : "#000000", (hex) => {
+        this.actions.applyFormat(kind === "text" ? { type: "color", value: hex } : { type: "highlight", value: hex });
+        this.sync();
+      });
+      return;
+    }
     const commentId = el.closest<HTMLElement>("[data-comment-id]")?.dataset.commentId;
     if (commentId) {
       this.actions.showComment(commentId);
@@ -270,7 +286,7 @@ export class Ribbon {
       this.sync();
       return;
     }
-    if (el.closest("[data-keep-drop]")) {
+    if (el.closest("[data-keep-drop], .ho-word-color-dialog")) {
       return;
     }
     const toggle = el.closest<HTMLElement>("[data-drop-toggle]");
@@ -637,54 +653,69 @@ export class Ribbon {
         </section>
         <section class="ho-word-group">
           <div class="ho-word-group-body ho-word-font">
-            <select data-select="font">${FONTS.map((font) => `<option value="${font}">${font}</option>`).join("")}</select>
-            <select data-select="size">${SIZES.map((size) => `<option value="${size}">${size}</option>`).join("")}</select>
-            <button type="button" data-act="size-up" title="增大字号">A+</button>
-            <button type="button" data-act="size-down" title="减小字号">A-</button>
-            <button type="button" data-act="bold" title="加粗 (Ctrl+B)"><b>B</b></button>
-            <button type="button" data-act="italic" title="倾斜 (Ctrl+I)"><i>I</i></button>
-            <button type="button" data-act="underline" title="下划线 (Ctrl+U)"><u>U</u></button>
-            <button type="button" data-act="strike" title="删除线"><s>S</s></button>
-            <button type="button" data-act="superscript" title="上标">x²</button>
-            <button type="button" data-act="subscript" title="下标">x₂</button>
-            <div class="ho-word-drop">
-              <button type="button" data-drop-toggle title="字体颜色"><span data-swatch="color"></span>A</button>
-              <div class="ho-word-palette">${TEXT_COLORS.map((color) => `<button type="button" data-color="${color}" style="background:${color}"></button>`).join("")}</div>
+            <div class="ho-word-row">
+              <select data-select="font">${FONTS.map((font) => `<option value="${font}">${font}</option>`).join("")}</select>
+              <select data-select="size">${SIZES.map((size) => `<option value="${size}">${size}</option>`).join("")}</select>
+              <button type="button" data-act="size-up" title="增大字号">A+</button>
+              <button type="button" data-act="size-down" title="减小字号">A-</button>
+              <button type="button" data-act="clear" title="清除格式">Aa</button>
             </div>
-            <div class="ho-word-drop">
-              <button type="button" data-drop-toggle title="底纹"><span data-swatch="highlight"></span>底</button>
-              <div class="ho-word-palette">${FILLS.map((fill) => `<button type="button" data-fill="${fill}" style="background:${fill === "none" ? "#fff" : fill}"></button>`).join("")}</div>
+            <div class="ho-word-row">
+              <button type="button" data-act="bold" title="加粗 (Ctrl+B)"><b>B</b></button>
+              <button type="button" data-act="italic" title="倾斜 (Ctrl+I)"><i>I</i></button>
+              <button type="button" data-act="underline" title="下划线 (Ctrl+U)"><u>U</u></button>
+              <button type="button" data-act="strike" title="删除线"><s>S</s></button>
+              <button type="button" data-act="subscript" title="下标">x₂</button>
+              <button type="button" data-act="superscript" title="上标">x²</button>
+              <div class="ho-word-drop">
+                <button type="button" data-drop-toggle title="底纹"><span data-swatch="highlight"></span>底</button>
+                <div class="ho-word-palette ho-word-palette-fill">
+                  <button type="button" data-fill="none" class="ho-word-palette-none">无颜色</button>
+                  ${HIGHLIGHTS.map((fill) => `<button type="button" data-fill="${fill}" style="background:${fill}"></button>`).join("")}
+                  ${moreColors("fill")}
+                </div>
+              </div>
+              <div class="ho-word-drop">
+                <button type="button" data-drop-toggle title="字体颜色"><span data-swatch="color"></span>A</button>
+                <div class="ho-word-palette ho-word-palette-text">
+                  ${themeColors().map((color) => `<button type="button" data-color="${color}" style="background:${color}"></button>`).join("")}
+                  ${moreColors("text")}
+                </div>
+              </div>
             </div>
-            <button type="button" data-act="clear" title="清除格式">Aa</button>
           </div>
           <span>字体</span>
         </section>
         <section class="ho-word-group">
-          <div class="ho-word-group-body">
-            <button type="button" data-act="align-left" title="左对齐">≡</button>
-            <button type="button" data-act="align-center" title="居中">≣</button>
-            <button type="button" data-act="align-right" title="右对齐">≡</button>
-            <button type="button" data-act="align-both" title="两端对齐">☰</button>
-            <select data-select="indent" title="首行缩进" aria-label="缩进">
-              <option value="none">无缩进</option>
-              <option value="first2">首行2字</option>
-              <option value="hang2">悬挂2字</option>
-              <option value="left2">左缩2字</option>
-              <option value="right2">右缩2字</option>
-            </select>
-            <select data-select="spacing" title="行距" aria-label="行距">
-              <option value="1">单倍</option>
-              <option value="1.5">1.5倍</option>
-              <option value="2">2倍</option>
-              <option value="exact28">固定28磅</option>
-            </select>
-            <select data-select="para-gap" title="段前段后" aria-label="段距">
-              <option value="0">段距0</option>
-              <option value="before6">段前6磅</option>
-              <option value="after6">段后6磅</option>
-              <option value="both6">前后6磅</option>
-            </select>
-            ${this.outlineMarkup()}
+          <div class="ho-word-group-body ho-word-para">
+            <div class="ho-word-row">
+              ${this.outlineMarkup()}
+              <select data-select="indent" title="首行缩进" aria-label="缩进">
+                <option value="none">无缩进</option>
+                <option value="first2">首行2字</option>
+                <option value="hang2">悬挂2字</option>
+                <option value="left2">左缩2字</option>
+                <option value="right2">右缩2字</option>
+              </select>
+            </div>
+            <div class="ho-word-row">
+              <button type="button" data-act="align-left" title="左对齐">≡</button>
+              <button type="button" data-act="align-center" title="居中">≣</button>
+              <button type="button" data-act="align-right" title="右对齐">≡</button>
+              <button type="button" data-act="align-both" title="两端对齐">☰</button>
+              <select data-select="spacing" title="行距" aria-label="行距">
+                <option value="1">单倍</option>
+                <option value="1.5">1.5倍</option>
+                <option value="2">2倍</option>
+                <option value="exact28">固定28磅</option>
+              </select>
+              <select data-select="para-gap" title="段前段后" aria-label="段距">
+                <option value="0">段距0</option>
+                <option value="before6">段前6磅</option>
+                <option value="after6">段后6磅</option>
+                <option value="both6">前后6磅</option>
+              </select>
+            </div>
           </div>
           <span>段落</span>
         </section>
@@ -762,6 +793,25 @@ export class Ribbon {
       </div>
     `;
   }
+}
+
+function themeColors(): string[] {
+  const rows = [THEME_BASES, ...THEME_SHADES.map((amount) => THEME_BASES.map((base) => mixColor(base, amount))), STANDARD_COLORS];
+  return rows.flat();
+}
+
+function mixColor(hex: string, amount: number): string {
+  const value = Number.parseInt(hex.slice(1), 16);
+  const mix = (channel: number) => {
+    const next = amount >= 0 ? channel + (255 - channel) * amount : channel * (1 + amount);
+    return Math.max(0, Math.min(255, Math.round(next)));
+  };
+  const channels = [mix((value >> 16) & 255), mix((value >> 8) & 255), mix(value & 255)];
+  return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
+}
+
+function moreColors(kind: "text" | "fill"): string {
+  return `<button type="button" data-custom-color="${kind}" class="ho-word-palette-more">其他颜色...</button>`;
 }
 
 function reviewList(items: { id: string; author: string; text: string }[], kind: "comment" | "note"): string {

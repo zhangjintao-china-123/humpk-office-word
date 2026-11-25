@@ -105,6 +105,8 @@ if (demoName === "toc") {
   void openNamedDocx("/mix-demo.docx", "mix-demo.docx");
 } else if (demoName === "table") {
   void openNamedDocx("/table-demo.docx", "table-demo.docx");
+} else if (demoName === "span") {
+  void openNamedDocx("/table-span-demo.docx", "table-span-demo.docx");
 } else if (demoName === "link") {
   void openNamedDocx("/link-demo.docx", "link-demo.docx");
 } else if (demoName === "review") {

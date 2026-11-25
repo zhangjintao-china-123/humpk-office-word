@@ -25,8 +25,8 @@ export class PagePainter {
     draw.beginPath();
     this.corner(draw, left, top, -mark, -mark);
     this.corner(draw, right, top, mark, -mark);
-    this.corner(draw, left, bottom, -mark, mark);
-    this.corner(draw, right, bottom, mark, mark);
+    this.corner(draw, left, bottom, -mark, 0);
+    this.corner(draw, right, bottom, mark, 0);
     draw.stroke();
   }
 

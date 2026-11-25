@@ -16,6 +16,8 @@ import { LineMetrics } from "../line/LineMetrics";
 import { LinePositioner } from "../line/LinePositioner";
 import { LayoutToken, gluedWidth } from "../token/LayoutToken";
 import { TokenBuilder } from "../token/TokenBuilder";
+import { paginateTableRows } from "../page/Paginator";
+import { headerRowCount } from "../table/TableMetrics";
 import { WrapScanline } from "./WrapScanline";
 
 interface Span {
@@ -468,36 +470,22 @@ export class WrapFlow {
       lines.push(line);
       return y + height;
     }
-    let row = 0;
-    let cursor = y;
-    while (row < heights.length) {
-      let rem = pageH - (cursor % pageH);
-      if (rem < (heights[row] ?? 0) && rem < pageH) {
-        cursor += rem;
-        rem = pageH;
-      }
-      const from = row;
-      let used = 0;
-      while (row < heights.length && used + (heights[row] ?? 0) <= rem) {
-        used += heights[row] ?? 0;
-        row += 1;
-      }
-      if (row === from) {
-        used = heights[row] ?? 0;
-        row += 1;
-      }
-      const slice = this.marker(token, "table");
-      slice.top = cursor;
-      slice.height = used;
-      slice.fullHeight = used;
-      slice.tableRowFrom = from;
-      slice.tableRowTo = row;
-      slice.isFirst = from === 0;
-      slice.isLast = row >= heights.length;
-      lines.push(slice);
-      cursor += used;
-    }
-    return this.afterSection(lines.at(-1)!, cursor, pageH);
+    const laid = paginateTableRows(heights, headerRowCount(table), y, pageH);
+    laid.slices.forEach((slice, index) => {
+      const line = this.marker(token, "table");
+      line.top = slice.top;
+      line.height = slice.height;
+      line.fullHeight = slice.height;
+      line.tableRowFrom = slice.from;
+      line.tableRowTo = slice.to;
+      line.tableHeaderRows = slice.headerRows;
+      line.tableClipTop = slice.clipTop;
+      line.isFirst = slice.from === 0 && slice.clipTop <= 0;
+      line.isLast = index === laid.slices.length - 1;
+      lines.push(line);
+    });
+    const last = laid.slices.length ? lines.at(-1) : undefined;
+    return last ? this.afterSection(last, laid.y, pageH) : laid.y;
   }
 
   private marker(token: LayoutToken, type: "page" | "table"): Line {

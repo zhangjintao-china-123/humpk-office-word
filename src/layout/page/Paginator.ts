@@ -3,6 +3,119 @@ import type { Paragraph } from "../../model/block/Paragraph";
 import { flagOn } from "../../model/style/ParagraphAttrs";
 import { headerRowCount } from "../table/TableMetrics";
 
+export interface TablePageSlice {
+  from: number;
+  to: number;
+  clipTop: number;
+  height: number;
+  headerRows: number;
+  top: number;
+}
+
+/** 按页切开表格。放得下的整行挪到下一页；一行高过一页时只占用本页版心，余下的跳过页脚接到后页。 */
+export function paginateTableRows(
+  heights: number[],
+  headerCount: number,
+  startY: number,
+  pageHeight: number,
+): { slices: TablePageSlice[]; y: number } {
+  const slices: TablePageSlice[] = [];
+  const page = Math.max(1, pageHeight);
+  let y = startY;
+  let row = 0;
+  let into = 0;
+  let guard = 0;
+
+  while (row < heights.length && guard < 100000) {
+    guard += 1;
+    let rem = page - (y % page);
+    if (rem < 0.5) {
+      y += rem;
+      rem = page;
+    }
+    const rowLeft = Math.max(0, (heights[row] ?? 0) - into);
+    const headers = row >= headerCount ? sumHeights(heights, 0, headerCount) : 0;
+    const headerFits = headers > 0.5 && headers < page - 0.5;
+    const atTop = rem >= page - 0.5;
+    const freshBody = page - (headerFits ? headers : 0);
+    if (into < 0.5 && rowLeft <= freshBody + 0.5 && !atTop) {
+      const need = (headerFits ? headers : 0) + rowLeft;
+      if (rem < need - 0.5) {
+        y += rem;
+        continue;
+      }
+    }
+
+    let prefix = 0;
+    let room = rem;
+    if (headerFits && atTop) {
+      prefix = headers;
+      room -= headers;
+    }
+
+    const from = row;
+    const clipTop = into;
+    let used = 0;
+    while (row < heights.length) {
+      const left = Math.max(0, (heights[row] ?? 0) - (row === from ? into : 0));
+      if (left <= room + 0.5) {
+        used += left;
+        room -= left;
+        row += 1;
+        into = 0;
+        continue;
+      }
+      break;
+    }
+
+    if (row < heights.length && used <= 0.5) {
+      const left = Math.max(0, (heights[row] ?? 0) - into);
+      const take = Math.min(left, Math.max(0, room));
+      if (take <= 0.5) {
+        if (!atTop) {
+          y += rem;
+          continue;
+        }
+        break;
+      }
+      used = take;
+      into += take;
+      if (into >= (heights[row] ?? 0) - 0.5) {
+        into = 0;
+        row += 1;
+      }
+    }
+
+    if (prefix + used <= 0.5) {
+      if (!atTop) {
+        y += rem;
+        continue;
+      }
+      break;
+    }
+
+    slices.push({
+      from,
+      to: row === from ? from + 1 : row,
+      clipTop,
+      height: prefix + used,
+      headerRows: prefix > 0 ? headerCount : 0,
+      top: y,
+    });
+    y += prefix + used;
+  }
+
+  return { slices, y };
+}
+
+function sumHeights(heights: number[], start: number, count: number): number {
+  let sum = 0;
+  for (let i = 0; i < count; i += 1) {
+    sum += heights[start + i] ?? 0;
+  }
+  return sum;
+}
+
 export class Paginator {
   paginate(lines: Line[], pageHeight: number): Line[] {
     const height = Math.max(1, pageHeight);
@@ -216,51 +329,16 @@ export class Paginator {
       return y + line.height;
     }
 
-    const headerCount = headerRowCount(table);
-    let row = 0;
-    while (row < heights.length) {
-      let rem = pageHeight - (y % pageHeight);
-      const rowHeight = heights[row] ?? 0;
-      if (rem < rowHeight && rem < pageHeight) {
-        y += rem;
-        rem = pageHeight;
-      }
-      const headers = row >= headerCount ? this.sumRange(heights, 0, headerCount) : 0;
-      const wantHeader = headers > 0 && headers + rowHeight <= pageHeight;
-      if (wantHeader && headers + rowHeight > rem && rem < pageHeight) {
-        y += rem;
-        rem = pageHeight;
-      }
-      let prefix = 0;
-      if (wantHeader && headers + rowHeight <= rem) {
-        prefix = headers;
-        rem -= headers;
-      }
-      const from = row;
-      let used = 0;
-      while (row < heights.length && used + (heights[row] ?? 0) <= rem) {
-        used += heights[row] ?? 0;
-        row += 1;
-      }
-      if (row === from) {
-        used = heights[row] ?? 0;
-        row += 1;
-      }
-      const slice = this.cloneTableLine(line, from, row, prefix + used);
-      slice.tableHeaderRows = prefix > 0 ? headerCount : 0;
-      slice.top = y;
-      result.push(slice);
-      y += prefix + used;
+    const laid = paginateTableRows(heights, headerRowCount(table), y, pageHeight);
+    for (const slice of laid.slices) {
+      const copy = this.cloneTableLine(line, slice.from, slice.to, slice.height);
+      copy.tableHeaderRows = slice.headerRows;
+      copy.tableClipTop = slice.clipTop;
+      copy.isFirst = slice.from === 0 && slice.clipTop <= 0;
+      copy.top = slice.top;
+      result.push(copy);
     }
-    return y;
-  }
-
-  private sumRange(heights: number[], start: number, count: number): number {
-    let sum = 0;
-    for (let i = 0; i < count; i += 1) {
-      sum += heights[start + i] ?? 0;
-    }
-    return sum;
+    return laid.y;
   }
 
   private cloneTableLine(source: Line, from: number, to: number, height: number): Line {

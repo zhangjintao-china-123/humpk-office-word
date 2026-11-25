@@ -94,10 +94,52 @@ describe("表格标题行跨页", () => {
     line.startNode = new LinkedNode(word);
     line.height = 150;
     const placed = new Paginator().paginate([line], 100);
-    expect(placed.map((item) => [item.tableRowFrom, item.tableRowTo, item.tableHeaderRows, item.height, item.top])).toEqual([
-      [0, 2, 0, 70, 0],
-      [2, 3, 1, 70, 100],
-      [3, 4, 1, 70, 200],
+    expect(placed.map((item) => [item.tableRowFrom, item.tableRowTo, item.tableHeaderRows, item.height, item.top, item.tableClipTop])).toEqual([
+      [0, 2, 0, 70, 0, 0],
+      [2, 3, 1, 70, 100, 0],
+      [3, 4, 1, 70, 200, 0],
+    ]);
+  });
+
+  it("一行高过一页时只占版心，余下的接到下一页", () => {
+    const word = new Word();
+    word.kind = "table";
+    word.table = new Table();
+    word.table.rowHeights = [250];
+    word.table.rows = [new TableRow()];
+    const line = new Line();
+    line.type = "table";
+    line.startNode = new LinkedNode(word);
+    line.height = 250;
+    const placed = new Paginator().paginate([line], 100);
+    expect(placed.map((item) => [item.tableRowFrom, item.tableRowTo, item.tableClipTop, item.height, item.top])).toEqual([
+      [0, 1, 0, 100, 0],
+      [0, 1, 100, 100, 100],
+      [0, 1, 200, 50, 200],
+    ]);
+    for (const item of placed) {
+      expect(item.top % 100 + item.height).toBeLessThanOrEqual(100);
+    }
+  });
+
+  it("页中放不下的超高行先用掉本页剩余版心", () => {
+    const lead = new Line();
+    lead.height = 40;
+    lead.fullHeight = 40;
+    const word = new Word();
+    word.kind = "table";
+    word.table = new Table();
+    word.table.rowHeights = [250];
+    word.table.rows = [new TableRow()];
+    const line = new Line();
+    line.type = "table";
+    line.startNode = new LinkedNode(word);
+    line.height = 250;
+    const placed = new Paginator().paginate([lead, line], 100);
+    expect(placed.slice(1).map((item) => [item.tableClipTop, item.height, item.top])).toEqual([
+      [0, 60, 40],
+      [60, 100, 100],
+      [160, 90, 200],
     ]);
   });
 });

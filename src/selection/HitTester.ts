@@ -1,4 +1,5 @@
 import type { Block } from "../model/block/Block";
+import type { Paragraph } from "../model/block/Paragraph";
 import type { Document } from "../model/document/Document";
 import type { HeaderFooterType } from "../model/document/DocumentKind";
 import type { Line } from "../model/line/Line";
@@ -9,10 +10,11 @@ import type { Word } from "../model/inline/Word";
 import type { StoryEditor } from "../editor/StoryEditor";
 import type { PageOrigin } from "../editor/StoryEditor";
 import type { PageSetup } from "../render/page/PageSetup";
-import { TableGeometry, type TableCellBox } from "../render/table/TableGeometry";
+import { cellVisibleRect, TableGeometry, type TableCellBox } from "../render/table/TableGeometry";
 import { cellContentHeight, cellContentOrigin } from "../layout/table/TableMetrics";
 import { CaretPos } from "./CaretPos";
 import { storyKind, storySection, type StoryRef } from "./StoryRef";
+import { guidesFromBoxes, pickGuide, type TableGuide, type TableGuideKind } from "./TableGuides";
 
 export interface HitContext {
   pageSetup: PageSetup;
@@ -84,6 +86,66 @@ export class HitTester {
     return null;
   }
 
+  /** 指针靠近表格竖线或横线时，返回可以拖的那一条。嵌套表优先。 */
+  tableGuide(worldX: number, worldY: number, ctx: HitContext, slop: number): TableGuide | null {
+    const best: { current: { guide: TableGuide; dist: number; depth: number } | null } = { current: null };
+    const take = (guide: TableGuide | null, dist: number, depth: number) => {
+      if (!guide) {
+        return;
+      }
+      const current = best.current;
+      const closer = current == null || dist < current.dist - 0.01;
+      const nested = current != null && Math.abs(dist - current.dist) <= 0.01 && depth > current.depth;
+      if (closer || nested) {
+        best.current = { guide, dist, depth };
+      }
+    };
+    const visit = (lines: Line[], story: StoryRef, paginate: boolean, originX: number, originY: number, depth: number) => {
+      for (const line of lines) {
+        const table = line.startNode?.data.table;
+        const paragraph = line.paragraph;
+        const boxes = this.placeTableLine(line, ctx, paginate, originX, originY);
+        if (!table || !paragraph || !boxes) {
+          continue;
+        }
+        const found = pickGuide(guidesFromBoxes(boxes), worldX, worldY, slop);
+        if (found) {
+          take(guideFromLine(table, story, paragraph, line, found.segment.kind, found.segment.index), found.dist, depth);
+        }
+        for (const box of boxes) {
+          const nested: StoryRef = { slot: "cell", cell: box.cell };
+          const inner = this.storyLines(nested, ctx);
+          const origin = cellContentOrigin(table, box, cellContentHeight(inner));
+          visit(inner, nested, false, origin.x, origin.y, depth + 1);
+        }
+      }
+    };
+    if (ctx.body) {
+      visit(ctx.body.lines, { slot: "body" }, true, 0, 0, 0);
+    }
+    for (const slot of ["header", "footer"] as const) {
+      for (let i = 0; i < ctx.origins.length; i += 1) {
+        const at = ctx.bandAt?.(slot, i);
+        const type = at?.type ?? ctx.bandType?.(slot, i) ?? "default";
+        const editor = at?.editor ?? this.bandEditor(ctx, slot, type);
+        const origin = ctx.origins[i];
+        if (!editor || !origin) {
+          continue;
+        }
+        const story: StoryRef = { slot, kind: type, sectionIndex: at?.sectionIndex ?? 0 };
+        visit(
+          editor.lines,
+          story,
+          false,
+          origin.x + ctx.pageSetup.contentLeft(),
+          origin.y + ctx.pageSetup.bandTop(slot),
+          0,
+        );
+      }
+    }
+    return best.current?.guide ?? null;
+  }
+
   private collectHandles(
     lines: Line[],
     story: StoryRef,
@@ -94,9 +156,14 @@ export class HitTester {
     found: TableHandle[],
   ): void {
     for (const placed of this.tablePlacements(lines, ctx, paginate, originX, originY)) {
-      if (placed.boxes.length && placed.line.tableRowFrom <= 0 && placed.line.startNode) {
+      if (
+        placed.boxes.length &&
+        placed.line.tableRowFrom <= 0 &&
+        placed.line.tableClipTop <= 0 &&
+        placed.line.startNode
+      ) {
         const left = Math.min(...placed.boxes.map((box) => box.x));
-        const top = Math.min(...placed.boxes.map((box) => box.y));
+        const top = Math.min(...placed.boxes.map((box) => box.visibleY ?? box.y));
         found.push({
           story,
           node: placed.line.startNode,
@@ -203,12 +270,15 @@ export class HitTester {
       return { x: frame.x + frame.insetLeft, y: frame.y + frame.insetTop + line.top };
     }
     if (story.slot === "cell") {
-      const box = this.cellBoxes(story.cell, ctx)[0];
+      const boxes = this.cellBoxes(story.cell, ctx);
+      const table = this.findTable(story.cell, ctx);
+      const inner = this.storyLines(story, ctx);
+      const contentH = cellContentHeight(inner);
+      const box = boxes.find((item) => this.lineHitsSlice(item, line, table, contentH)) ?? boxes[0];
       if (!box) {
         return null;
       }
-      const lines = this.storyLines(story, ctx);
-      const origin = cellContentOrigin(this.findTable(story.cell, ctx), box, cellContentHeight(lines));
+      const origin = cellContentOrigin(table, box, contentH);
       return { x: origin.x, y: origin.y + line.top };
     }
     if (!ctx.origins.length) {
@@ -240,6 +310,15 @@ export class HitTester {
     const left = origin.x + ctx.pageSetup.contentLeft();
     const top = origin.y + ctx.pageSetup.bandTop(slot);
     return { x: left, y: top + line.top };
+  }
+
+  private lineHitsSlice(box: TableCellBox, line: Line, table: Table | undefined, contentH: number): boolean {
+    const origin = cellContentOrigin(table, box, contentH);
+    const top = origin.y + line.top;
+    const bottom = top + Math.max(line.height, 1);
+    const visTop = box.visibleY ?? box.y;
+    const visBottom = visTop + (box.visibleHeight ?? box.height);
+    return bottom > visTop + 0.5 && top < visBottom - 0.5;
   }
 
   cellBoxes(cell: TableCell, ctx: HitContext): TableCellBox[] {
@@ -457,7 +536,8 @@ export class HitTester {
   ): CaretPos | null {
     for (const placed of this.tablePlacements(lines, ctx, paginate, originX, originY)) {
       for (const box of placed.boxes) {
-        if (!this.contains(worldX, worldY, box.x, box.y, box.width, box.height)) {
+        const rect = cellVisibleRect(box);
+        if (rect.height <= 0 || !this.contains(worldX, worldY, rect.x, rect.y, rect.width, rect.height)) {
           continue;
         }
         const story: StoryRef = { slot: "cell", cell: box.cell };
@@ -493,6 +573,41 @@ export class HitTester {
     }
   }
 
+  private placeTableLine(
+    line: Line,
+    ctx: HitContext,
+    paginate: boolean,
+    originX: number,
+    originY: number,
+  ): TableCellBox[] | null {
+    const table = line.startNode?.data.table;
+    if (line.type !== "table" || !table) {
+      return null;
+    }
+    let x = originX + line.leftBlankWidth;
+    let y = originY + line.top;
+    if (paginate) {
+      const pageH = ctx.pageSetup.contentHeight;
+      const pageIndex = Math.min(ctx.origins.length - 1, Math.floor(line.top / pageH));
+      const origin = ctx.origins[pageIndex];
+      if (!origin) {
+        return null;
+      }
+      x = origin.x + ctx.pageSetup.contentLeft() + line.leftBlankWidth;
+      y = origin.y + ctx.pageSetup.contentTop() + (line.top - pageIndex * pageH);
+    }
+    return this.tables.boxesForSlice(
+      table,
+      line.tableRowFrom,
+      line.tableRowTo || table.rows.length,
+      line.tableHeaderRows,
+      x,
+      y,
+      line.tableClipTop,
+      line.height,
+    );
+  }
+
   private tablePlacements(
     lines: Line[],
     ctx: HitContext,
@@ -524,6 +639,8 @@ export class HitTester {
           line.tableHeaderRows,
           x,
           y,
+          line.tableClipTop,
+          line.height,
         ),
       });
     }
@@ -859,6 +976,31 @@ function blockForDrawing(document: Document, drawing: Drawing): Block | undefine
 
 /** 与 StoryPainter 共用：字框顶到基线约占字高的 0.85。 */
 const BASELINE_RATIO = 0.85;
+
+function guideFromLine(
+  table: Table,
+  story: StoryRef,
+  paragraph: Paragraph,
+  line: Line,
+  kind: TableGuideKind,
+  index: number,
+): TableGuide | null {
+  const widths = table.columnWidths.slice();
+  if (!widths.length) {
+    return null;
+  }
+  if (kind === "row") {
+    const height = table.rowHeights[index];
+    if (height == null) {
+      return null;
+    }
+    return { table, story, paragraph, kind, index, size: height, widths, indent: line.leftBlankWidth };
+  }
+  if (index < 0 || index >= widths.length) {
+    return null;
+  }
+  return { table, story, paragraph, kind, index, size: widths[index] ?? 0, widths, indent: line.leftBlankWidth };
+}
 
 /**
  * 光标跟着当前字，不跟着这一行最高的图形或字号。

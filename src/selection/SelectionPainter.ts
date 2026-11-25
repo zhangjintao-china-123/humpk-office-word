@@ -1,4 +1,5 @@
 import type { Draw } from "../render/canvas/Draw";
+import { cellVisibleRect, type TableCellBox } from "../render/table/TableGeometry";
 import type { LinkedNode } from "../model/list/LinkedList";
 import type { Word } from "../model/inline/Word";
 import type { Document } from "../model/document/Document";
@@ -23,7 +24,7 @@ export class SelectionPainter {
     for (const range of selection.normalized()) {
       if (range.mode === "cell" && range.story.slot === "cell") {
         for (const box of this.hit.cellBoxes(range.story.cell, ctx)) {
-          draw.fillRect(box.x, box.y, box.width, box.height);
+          this.fillCell(draw, box);
         }
         continue;
       }
@@ -46,14 +47,14 @@ export class SelectionPainter {
     const cover = coverFlow(owner.document, owner.story, flow.anchor, flow.focus);
     for (const cell of cover.fullCells) {
       for (const box of this.hit.cellBoxes(cell, ctx)) {
-        draw.fillRect(box.x, box.y, box.width, box.height);
+        this.fillCell(draw, box);
       }
     }
     for (const table of cover.tables) {
       for (const row of table.table.rows) {
         for (const cell of row.cells) {
           for (const box of this.hit.cellBoxes(cell, ctx)) {
-            draw.fillRect(box.x, box.y, box.width, box.height);
+            this.fillCell(draw, box);
           }
         }
       }
@@ -61,6 +62,14 @@ export class SelectionPainter {
     for (const glyph of cover.glyphs) {
       this.paintNode(draw, glyph.node, glyph.story, ctx);
     }
+  }
+
+  private fillCell(draw: Draw, box: TableCellBox): void {
+    const rect = cellVisibleRect(box);
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+    draw.fillRect(rect.x, rect.y, rect.width, rect.height);
   }
 
   private ownerOf(pos: CaretPos, ctx: HitContext): { document: Document; story: StoryRef } | null {

@@ -30,6 +30,13 @@ import { OutlineCommand, type OutlineAction } from "../../edit/OutlineCommand";
 import { InsertCommand } from "../../edit/InsertCommand";
 import { ReplaceCommand } from "../../edit/ReplaceCommand";
 import { TableBorderCommand } from "../../edit/TableBorderCommand";
+import {
+  applyColumnWidths,
+  applyRowHeight,
+  restoreTableMetrics,
+  snapTableMetrics,
+  TableMetricCommand,
+} from "../../edit/TableResize";
 import { TableStructureCommand } from "../../edit/TableStructureCommand";
 import { TocCommand } from "../../edit/TocCommand";
 import { TableBorderApplier, type TableBorderMode, type TableBorderPen } from "../../edit/TableBorderApplier";
@@ -44,6 +51,7 @@ import { CaretView } from "../../selection/CaretView";
 import { FindPainter } from "../../selection/FindPainter";
 import { HitTester, type CaretBox, type HitContext } from "../../selection/HitTester";
 import { PointerController } from "../../selection/PointerController";
+import { TableResizeController } from "../../selection/TableResizeController";
 import { Selection } from "../../selection/Selection";
 import { SelectionPainter } from "../../selection/SelectionPainter";
 import { SelectionFragment } from "../../selection/SelectionFragment";
@@ -88,6 +96,7 @@ export class Workspace {
   private findQueryKey = "";
   private readonly selectionPainter: SelectionPainter;
   private readonly pointer: PointerController;
+  private readonly tableResize: TableResizeController;
   private readonly contextMenu: ContextMenuController;
   private readonly caret: CaretView;
   private readonly selectionText = new SelectionText();
@@ -150,6 +159,28 @@ export class Workspace {
       },
     });
     this.pointer.attach(this.root);
+    this.tableResize = new TableResizeController({
+      clientToWorld: (x, y) => this.clientToWorld(x, y),
+      zoom: () => this.viewport.zoom || 1,
+      guideAt: (x, y, slop) => this.hit.tableGuide(x, y, this.hitContext(), slop),
+      previewColumns: (guide, widths, indent, adjustIndent) => {
+        applyColumnWidths(guide.table, widths, adjustIndent ? indent : undefined);
+        this.reflowTable(guide.story, guide.paragraph);
+      },
+      previewRow: (guide, height) => {
+        applyRowHeight(guide.table, guide.index, height);
+        this.reflowTable(guide.story, guide.paragraph);
+      },
+      commit: (guide, before) => {
+        const after = snapTableMetrics(guide.table);
+        this.history.do(new TableMetricCommand(this, guide.table, guide.story, guide.paragraph, before, after));
+      },
+      revert: (guide, before) => {
+        restoreTableMetrics(guide.table, before);
+        this.reflowTable(guide.story, guide.paragraph);
+      },
+    });
+    this.tableResize.attach(this.root);
     this.root.addEventListener("dblclick", this.onDoubleClick);
     this.contextMenu = new ContextMenuController({
       selection: this.selection,
@@ -647,9 +678,18 @@ export class Workspace {
   }
 
   hitClient(clientX: number, clientY: number): CaretPos | null {
-    const rect = this.root.getBoundingClientRect();
-    const world = this.viewport.cssToWorld(clientX - rect.left, clientY - rect.top);
+    const world = this.clientToWorld(clientX, clientY);
     return this.hit.hit(world.x, world.y, this.hitContext());
+  }
+
+  private clientToWorld(clientX: number, clientY: number): { x: number; y: number } {
+    const rect = this.root.getBoundingClientRect();
+    return this.viewport.cssToWorld(clientX - rect.left, clientY - rect.top);
+  }
+
+  private reflowTable(story: StoryRef, paragraph: Paragraph): void {
+    this.relayout.apply(new EditImpact(story, [paragraph]));
+    this.paint();
   }
 
   paint(): void {
@@ -833,6 +873,7 @@ export class Workspace {
 
   dispose(): void {
     this.input.detach();
+    this.tableResize.detach();
     this.pointer.detach();
     this.contextMenu.detach();
     this.caret.remove();

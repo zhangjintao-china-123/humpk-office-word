@@ -14,7 +14,7 @@ import { ptToPx } from "../../shared/units";
 import { imageCache, type ImageCache } from "../image/ImageCache";
 import type { Table } from "../../model/table/Table";
 import { TableBorderPainter } from "../table/TableBorderPainter";
-import { TableGeometry, type TableCellBox } from "../table/TableGeometry";
+import { cellVisibleRect, TableGeometry, type TableCellBox } from "../table/TableGeometry";
 
 /** 画正文行、行内图和表格切片。 */
 
@@ -355,7 +355,16 @@ export class StoryPainter {
     const to = line.tableRowTo || table.rows.length;
     const sliceH = line.height || this.tables.sliceHeight(table, from, to);
     const originX = x + line.leftBlankWidth;
-    const boxes = this.tables.boxesForSlice(table, from, to, line.tableHeaderRows, originX, top);
+    const boxes = this.tables.boxesForSlice(
+      table,
+      from,
+      to,
+      line.tableHeaderRows,
+      originX,
+      top,
+      line.tableClipTop,
+      sliceH,
+    );
 
     draw.save();
     draw.beginPath();
@@ -363,9 +372,10 @@ export class StoryPainter {
     draw.clip();
 
     for (const box of boxes) {
-      this.borders.paint(draw, box, table);
+      this.borders.paintFill(draw, box);
       const lines = box.cell.document.paragraphs.toArray().flatMap((paragraph) => paragraph.lines);
       this.paintCell(draw, table, lines, box, pageNumber, fields);
+      this.borders.paintEdges(draw, box, table);
     }
     draw.restore();
   }
@@ -379,9 +389,10 @@ export class StoryPainter {
     fields?: FieldView,
   ): void {
     const origin = cellContentOrigin(table, box, cellContentHeight(lines));
+    const vis = cellVisibleRect(box);
     draw.save();
     draw.beginPath();
-    draw.rect(box.x, box.y, box.width, box.height);
+    draw.rect(vis.x, vis.y, vis.width, vis.height);
     draw.clip();
     for (const line of lines) {
       this.paintLine(draw, line, origin.x, origin.y + line.top, pageNumber, fields);
