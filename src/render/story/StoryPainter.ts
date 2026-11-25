@@ -5,7 +5,7 @@ import { Line } from "../../model/line/Line";
 import type { Drawing } from "../../model/inline/Drawing";
 import type { Block } from "../../model/block/Block";
 import type { Word } from "../../model/inline/Word";
-import { cellContentHeight, cellContentOrigin } from "../../layout/table/TableMetrics";
+import { cellDocumentHeight, cellContentOrigin } from "../../layout/table/TableMetrics";
 import { fillColorOf, fontCss } from "../../layout/measure/FontSpec";
 import { paintShape } from "../graphic/ShapePainter";
 import type { MathView } from "../../model/math/MathExpr";
@@ -389,14 +389,25 @@ export class StoryPainter {
     pageNumber?: number,
     fields?: FieldView,
   ): void {
-    const origin = cellContentOrigin(table, box, cellContentHeight(lines));
+    const origin = cellContentOrigin(table, box, cellDocumentHeight(box.cell.document));
     const vis = cellVisibleRect(box);
     draw.save();
     draw.beginPath();
     draw.rect(vis.x, vis.y, vis.width, vis.height);
     draw.clip();
+    const anchors = box.cell.document.anchors;
+    for (const anchor of anchors) {
+      if (anchor.behind) {
+        this.paintDrawing(draw, anchor.drawing, origin.x + anchor.x, origin.y + anchor.y);
+      }
+    }
     for (const line of lines) {
       this.paintLine(draw, line, origin.x, origin.y + line.top, pageNumber, fields);
+    }
+    for (const anchor of anchors) {
+      if (!anchor.behind) {
+        this.paintDrawing(draw, anchor.drawing, origin.x + anchor.x, origin.y + anchor.y);
+      }
     }
     draw.restore();
   }

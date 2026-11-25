@@ -73,6 +73,24 @@ describe("FormatCommand", () => {
     expect(patch.caret.node?.data.getStyle()?.bold).toBe(true);
   });
 
+  it("字体颜色可设主题色，自动则清掉颜色", () => {
+    const document = doc("a");
+    const selection = new Selection();
+    selection.collapse(new CaretPos(body, document.words.head, false));
+    const ctx: EditContext = {
+      mutator: new Mutator(),
+      relayout: { apply: () => false } as unknown as Relayout,
+      selection,
+      documentOf: () => document,
+      afterEdit: () => undefined,
+    };
+    const history = new History();
+    history.do(new FormatCommand(ctx, { type: "color", value: "#C00000" }));
+    expect(document.words.head!.data.getStyle()?.color).toBe("#C00000");
+    history.do(new FormatCommand(ctx, { type: "color", value: "auto" }));
+    expect(document.words.head!.data.getStyle()?.color).toBeUndefined();
+  });
+
   it("段落对齐写到 attrs", () => {
     const document = doc("a");
     const selection = new Selection();
@@ -111,6 +129,30 @@ describe("FormatCommand", () => {
     history.undo();
     expect(document.paragraphs.head!.data.attrs.before).toBeUndefined();
     expect(document.paragraphs.head!.data.attrs.line).toBe("360");
+  });
+
+  it("增加缩进每次左移两字，减少缩进可以撤回到 0", () => {
+    const document = doc("a");
+    const selection = new Selection();
+    selection.collapse(new CaretPos(body, document.words.head, false));
+    const ctx: EditContext = {
+      mutator: new Mutator(),
+      relayout: { apply: () => false } as unknown as Relayout,
+      selection,
+      documentOf: () => document,
+      afterEdit: () => undefined,
+    };
+    const history = new History();
+    history.do(new FormatCommand(ctx, { type: "indentStep", value: 1 }));
+    expect(document.paragraphs.head!.data.attrs.leftChars).toBe(200);
+    history.do(new FormatCommand(ctx, { type: "indentStep", value: 1 }));
+    expect(document.paragraphs.head!.data.attrs.leftChars).toBe(400);
+    history.do(new FormatCommand(ctx, { type: "indentStep", value: -1 }));
+    expect(document.paragraphs.head!.data.attrs.leftChars).toBe(200);
+    history.do(new FormatCommand(ctx, { type: "indentStep", value: -1 }));
+    expect(document.paragraphs.head!.data.attrs.leftChars).toBeUndefined();
+    history.undo();
+    expect(document.paragraphs.head!.data.attrs.leftChars).toBe(200);
   });
 
   it("上标可以来回切换，标题样式改整段字号", () => {

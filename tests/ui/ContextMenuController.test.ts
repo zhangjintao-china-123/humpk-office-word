@@ -43,6 +43,16 @@ describe("ContextMenuBuilder", () => {
     expect(table.map((item) => item.action)).toEqual(text.map((item) => item.action));
     expect(table.every((item) => item.enabled)).toBe(true);
   });
+
+  it("图片菜单剪切复制粘贴删除都可用", () => {
+    const items = builder.build("picture", true);
+    expect(items.map((item) => [item.action, item.enabled])).toEqual([
+      ["cut", true],
+      ["copy", true],
+      ["paste", true],
+      ["delete", true],
+    ]);
+  });
 });
 
 describe("ContextMenuController", () => {
@@ -110,6 +120,52 @@ describe("ContextMenuController", () => {
     scroll.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 8, clientY: 8 }));
     expect(selection.primaryRange()?.mode).toBe("cell");
     expect(controller.menu.isOpen()).toBe(true);
+    controller.detach();
+  });
+
+  it("右键点中图片时选中图片并弹出图片菜单", () => {
+    const model = doc("ab");
+    const selection = new Selection();
+    selection.collapse(new CaretPos(body, model.words.head, false));
+    const picture = {
+      drawing: { width: 40, height: 24 } as never,
+      paragraph: model.paragraphs.head!.data,
+      story: body,
+      x: 0,
+      y: 0,
+      width: 40,
+      height: 24,
+      behind: false,
+    };
+    let selected = 0;
+    const host = document.createElement("div");
+    const scroll = document.createElement("div");
+    const controller = new ContextMenuController({
+      selection,
+      hitClient: () => new CaretPos(body, model.words.head, false),
+      pictureAtClient: () => picture,
+      selectPicture: () => {
+        selected += 1;
+      },
+      onSelectionChange: () => {
+        throw new Error("picture menu should not collapse caret");
+      },
+      copy: () => undefined,
+      cut: () => undefined,
+      paste: () => undefined,
+      deleteSelection: () => undefined,
+    });
+    controller.attach(host, scroll);
+    scroll.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 12, clientY: 12 }));
+    expect(selected).toBe(1);
+    expect(selection.isCollapsed()).toBe(true);
+    expect(controller.menu.isOpen()).toBe(true);
+    expect([...controller.menu.el.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+      "剪切",
+      "复制",
+      "粘贴",
+      "删除",
+    ]);
     controller.detach();
   });
 });

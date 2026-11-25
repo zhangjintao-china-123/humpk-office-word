@@ -7,6 +7,7 @@ import {
   type ColumnResizeMode,
   type TableMetricSnap,
 } from "../edit/TableResize";
+import { applyResizeCursor } from "./ResizeCursor";
 import { type TableGuide, type TableGuideKind } from "./TableGuides";
 
 export interface TableResizeHost {
@@ -192,18 +193,8 @@ export class TableResizeController {
     return GUIDE_SLOP_PX / (this.host.zoom() || 1);
   }
 
-  private setCursor(cursor: string, locked: boolean): void {
-    if (this.element) {
-      this.element.style.cursor = cursor;
-    }
-    const root = document.documentElement;
-    if (locked && cursor) {
-      root.style.setProperty("--ho-resize-cursor", cursor);
-      root.classList.add("ho-table-resize");
-    } else {
-      root.classList.remove("ho-table-resize");
-      root.style.removeProperty("--ho-resize-cursor");
-    }
+  private setCursor(cursor: string, _locked = false): void {
+    applyResizeCursor(this, this.element, cursor);
   }
 
   private clearCursor(): void {

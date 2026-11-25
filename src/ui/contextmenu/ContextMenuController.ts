@@ -1,4 +1,5 @@
 import type { CaretPos } from "../../selection/CaretPos";
+import type { PictureBox } from "../../selection/HitTester";
 import type { Selection } from "../../selection/Selection";
 import { SelectionText } from "../../selection/SelectionText";
 import { ContextMenu } from "./ContextMenu";
@@ -8,6 +9,8 @@ import type { ContextMenuAction, ContextMenuKind } from "./ContextMenuItem";
 export interface ContextMenuHost {
   selection: Selection;
   hitClient(clientX: number, clientY: number): CaretPos | null;
+  pictureAtClient?(clientX: number, clientY: number): PictureBox | null;
+  selectPicture?(box: PictureBox): void;
   onSelectionChange(): void;
   copy(): Promise<void> | void;
   cut(): Promise<void> | void;
@@ -44,6 +47,12 @@ export class ContextMenuController {
 
   private onContextMenu = (event: MouseEvent): void => {
     event.preventDefault();
+    const picture = this.host.pictureAtClient?.(event.clientX, event.clientY);
+    if (picture) {
+      this.host.selectPicture?.(picture);
+      this.menu.show(event.clientX, event.clientY, this.builder.build("picture", true));
+      return;
+    }
     const pos = this.host.hitClient(event.clientX, event.clientY);
     if (pos && !this.selectionText.covers(this.host.selection, pos)) {
       this.host.selection.collapse(pos);

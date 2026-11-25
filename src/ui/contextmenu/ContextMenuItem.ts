@@ -1,6 +1,6 @@
 export type ContextMenuAction = "cut" | "copy" | "paste" | "delete";
 
-export type ContextMenuKind = "text" | "table";
+export type ContextMenuKind = "text" | "table" | "picture";
 
 export interface ContextMenuItem {
   action: ContextMenuAction;

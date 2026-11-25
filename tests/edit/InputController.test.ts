@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EditContext } from "../../src/edit/EditContext";
+import { DeleteCommand } from "../../src/edit/DeleteCommand";
 import { History } from "../../src/edit/History";
 import { InputController, type InputHost } from "../../src/edit/InputController";
 import { Mutator } from "../../src/edit/Mutator";
@@ -39,9 +40,10 @@ function hostOf(document: Document, selection: Selection): InputHost {
     documentOf: () => document,
     afterEdit: () => undefined,
   };
+  const history = new History();
   return {
     ...ctx,
-    history: new History(),
+    history,
     hitTester: new HitTester(),
     hitContext: () => ({ pageSetup: { contentHeight: 400 } as never, origins: [], body: undefined }),
     caretCss: () => null,
@@ -50,6 +52,9 @@ function hostOf(document: Document, selection: Selection): InputHost {
     copy: () => undefined,
     cut: () => undefined,
     paste: () => undefined,
+    deleteContent: (direction) => {
+      history.do(new DeleteCommand(ctx, direction));
+    },
   };
 }
 

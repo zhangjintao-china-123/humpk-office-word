@@ -1,6 +1,7 @@
 import { Block } from "../model/block/Block";
 import { Paragraph } from "../model/block/Paragraph";
 import type { Document } from "../model/document/Document";
+import type { Drawing } from "../model/inline/Drawing";
 import type { Table } from "../model/table/Table";
 import { Word } from "../model/inline/Word";
 import type { LinkedNode } from "../model/list/LinkedList";
@@ -324,12 +325,13 @@ export class Mutator {
   applyParagraphAttrs(
     document: Document,
     range: SelRange,
-    patch: Partial<ParagraphAttrs>,
+    patch: Partial<ParagraphAttrs> | ((attrs: ParagraphAttrs) => Partial<ParagraphAttrs>),
   ): { paragraph: Paragraph; attrs: Paragraph["attrs"] }[] {
     const paragraphs = this.paragraphsIn(range);
     const snapshots = paragraphs.map((paragraph) => ({ paragraph, attrs: { ...paragraph.attrs } }));
     for (const paragraph of paragraphs) {
-      paragraph.attrs = { ...paragraph.attrs, ...patch };
+      const next = typeof patch === "function" ? patch(paragraph.attrs) : patch;
+      paragraph.attrs = { ...paragraph.attrs, ...next };
       paragraph.changed = true;
     }
     this.syncAll(document, paragraphs);
@@ -629,6 +631,45 @@ export class Mutator {
     return block;
   }
 
+  insertDrawing(document: Document, story: StoryRef, pos: CaretPos, drawing: Drawing): MutationPatch {
+    const original = pos;
+    const caret = this.prepare(document, story, pos);
+    const paragraph = caret.node?.data.paragraph;
+    if (!caret.node || !paragraph || paragraph.isTable || caret.node.data.kind === "table") {
+      return this.emptyPatch(story, original);
+    }
+    const block = new Block();
+    block.drawing = drawing;
+    const word = new Word();
+    word.kind = "drawing";
+    word.drawing = drawing;
+    word.block = block;
+    word.paragraph = paragraph;
+    paragraph.changed = true;
+    const node = caret.after
+      ? document.words.insertAfter(caret.node, word)
+      : document.words.insertBefore(caret.node, word);
+    const after: LinkedNode<Word>[] = [];
+    let current = node.next;
+    while (current && current.data.paragraph === paragraph) {
+      after.push(current);
+      current = current.next;
+    }
+    this.cloneBlocks(after);
+    const dirty = new Set<Paragraph>([paragraph]);
+    this.syncAll(document, dirty);
+    return {
+      story,
+      impact: this.impact(story, dirty, "split"),
+      caret: new CaretPos(story, node, true),
+      originalCaret: original,
+      inserted: [node],
+      removed: [],
+      createdParagraphs: [],
+      removedParagraphs: [],
+    };
+  }
+
   insertPageBreak(document: Document, story: StoryRef, pos: CaretPos): MutationPatch {
     const original = pos;
     const caret = this.prepare(document, story, pos);
@@ -774,14 +815,27 @@ export class Mutator {
         empty.style = this.styleFrom(paragraph, styled);
       }
       empty.text = "";
-      paragraph.blocks = [empty];
+      paragraph.blocks = this.keepAnchors(paragraph.blocks, [empty]);
     } else {
-      paragraph.blocks = order;
+      paragraph.blocks = this.keepAnchors(paragraph.blocks, order);
     }
     const enter = nodes.find((node) => node.data.isEnterChar());
     if (enter) {
       enter.data.block = paragraph.blocks.at(-1) ?? null;
     }
+  }
+
+  private keepAnchors(previous: Block[], order: Block[]): Block[] {
+    const anchors = previous.filter((block) => block.drawing?.position === "anchor" && !order.includes(block));
+    if (!anchors.length) {
+      return order;
+    }
+    const next = order.slice();
+    for (const anchor of anchors) {
+      const index = Math.min(Math.max(0, previous.indexOf(anchor)), next.length);
+      next.splice(index, 0, anchor);
+    }
+    return next;
   }
 
   private nodesOf(document: Document, paragraph: Paragraph): LinkedNode<Word>[] {

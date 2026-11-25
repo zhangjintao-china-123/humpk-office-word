@@ -134,7 +134,7 @@ export class Paginator {
       const line = lines[index];
       if (line.type === "page") {
         line.top = y;
-        line.height = remaining() === height ? 0 : remaining();
+        line.height = pageBreakAdvance(y, height, result.at(-1)?.type === "page");
         line.fullHeight = line.height;
         result.push(line);
         y += line.height;
@@ -364,6 +364,18 @@ function atPageTop(y: number, pageHeight: number): boolean {
   }
   const rem = pageHeight - (y % pageHeight);
   return rem >= pageHeight - 0.5;
+}
+
+/** 分页符把后面的内容推到下页。紧挨着的第二个分页符在页顶时再占满一页，形成空白页。 */
+export function pageBreakAdvance(y: number, pageHeight: number, prevIsPage: boolean): number {
+  if (!Number.isFinite(pageHeight) || pageHeight <= 0) {
+    return 0;
+  }
+  const rem = pageHeight - (y % pageHeight);
+  if (atPageTop(y, pageHeight)) {
+    return prevIsPage ? pageHeight : 0;
+  }
+  return rem;
 }
 
 function remainingAt(y: number, pageHeight: number): number {

@@ -16,7 +16,7 @@ import { LineMetrics } from "../line/LineMetrics";
 import { LinePositioner } from "../line/LinePositioner";
 import { LayoutToken, gluedWidth } from "../token/LayoutToken";
 import { TokenBuilder } from "../token/TokenBuilder";
-import { paginateTableRows } from "../page/Paginator";
+import { pageBreakAdvance, paginateTableRows } from "../page/Paginator";
 import { headerRowCount } from "../table/TableMetrics";
 import { WrapScanline } from "./WrapScanline";
 
@@ -448,9 +448,8 @@ export class WrapFlow {
       lines.push(line);
       return y;
     }
-    const rem = pageH - (y % pageH);
     line.top = y;
-    line.height = rem === pageH ? 0 : rem;
+    line.height = pageBreakAdvance(y, pageH, lines.at(-1)?.type === "page");
     line.fullHeight = line.height;
     lines.push(line);
     return y + line.height;

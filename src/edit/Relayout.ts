@@ -4,7 +4,7 @@ import type { Table, TableCell } from "../model/table/Table";
 import type { StoryEditor } from "../editor/StoryEditor";
 import type { PageSetup } from "../render/page/PageSetup";
 import { MIN_ROW_HEIGHT } from "../layout/LayoutConstants";
-import { cellInsets } from "../layout/table/TableMetrics";
+import { cellDocumentHeight, cellInsets } from "../layout/table/TableMetrics";
 import { FallbackMeasurer } from "../layout/measure/FallbackMeasurer";
 import { CanvasMeasurer } from "../layout/measure/CanvasMeasurer";
 import type { ITextMeasurer } from "../layout/measure/ITextMeasurer";
@@ -154,10 +154,7 @@ export class Relayout {
   }
 
   private contentHeight(document: Document): number {
-    return document.paragraphs
-      .toArray()
-      .flatMap((paragraph) => paragraph.lines)
-      .reduce((sum, line) => sum + (line.sharesBand ? 0 : line.height), 0);
+    return cellDocumentHeight(document);
   }
 
   private sumRange(heights: number[], start: number, count: number): number {

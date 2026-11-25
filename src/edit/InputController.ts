@@ -1,6 +1,6 @@
 import { moveLeft, moveLineEnd, moveLineStart, movePage, moveRight, moveVertical } from "./CaretMotion";
 import { moveInFlow } from "../selection/MainWalk";
-import { DeleteCommand } from "./DeleteCommand";
+import type { DeleteDirection } from "./DeleteCommand";
 import { EditImpact } from "./EditImpact";
 import type { EditContext } from "./EditContext";
 import { FormatCommand, type FormatAction } from "./FormatCommand";
@@ -23,6 +23,7 @@ export interface InputHost extends EditContext {
   copy(): Promise<void> | void;
   cut(): Promise<void> | void;
   paste(data?: DataTransfer | null): Promise<void> | void;
+  deleteContent(direction: DeleteDirection): void;
 }
 
 export class InputController {
@@ -167,11 +168,13 @@ export class InputController {
       const key = event.key.toLowerCase();
       if (key === "c") {
         event.preventDefault();
+        event.stopPropagation();
         void this.host.copy();
         return;
       }
       if (key === "x") {
         event.preventDefault();
+        event.stopPropagation();
         this.resetColumn();
         void this.host.cut();
         return;
@@ -199,13 +202,13 @@ export class InputController {
     if (event.key === "Backspace") {
       event.preventDefault();
       this.resetColumn();
-      this.host.history.do(new DeleteCommand(this.host, "backward"));
+      this.host.deleteContent("backward");
       return;
     }
     if (event.key === "Delete") {
       event.preventDefault();
       this.resetColumn();
-      this.host.history.do(new DeleteCommand(this.host, "forward"));
+      this.host.deleteContent("forward");
       return;
     }
     if (

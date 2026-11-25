@@ -98,7 +98,7 @@ export class SelectionPainter {
 
   private paintNode(draw: Draw, node: LinkedNode<Word>, story: StoryRef, ctx: HitContext): void {
     const word = node.data;
-    if ((word.kind !== "text" && word.kind !== "drawing") || word.isEnterChar()) {
+    if (word.kind !== "text" || word.isEnterChar()) {
       return;
     }
     const box = this.hit.wordBox(new CaretPos(story, node, false), ctx);
@@ -106,6 +106,31 @@ export class SelectionPainter {
       return;
     }
     draw.fillRect(box.x, box.y, box.width, box.height);
+  }
+
+  paintPictureHandles(draw: Draw, box: { x: number; y: number; width: number; height: number }): void {
+    draw.setStroke("#2b579a", 1.5);
+    draw.setLineDash([]);
+    draw.strokeRect(box.x, box.y, box.width, box.height);
+    const size = 8;
+    const centers = [
+      [box.x, box.y],
+      [box.x + box.width / 2, box.y],
+      [box.x + box.width, box.y],
+      [box.x + box.width, box.y + box.height / 2],
+      [box.x + box.width, box.y + box.height],
+      [box.x + box.width / 2, box.y + box.height],
+      [box.x, box.y + box.height],
+      [box.x, box.y + box.height / 2],
+    ];
+    for (const [cx, cy] of centers) {
+      draw.setFill("#ffffff");
+      draw.beginPath();
+      draw.ellipse(cx, cy, size / 2, size / 2);
+      draw.fill();
+      draw.setStroke("#2b579a", 1);
+      draw.stroke();
+    }
   }
 
   paintTableHandles(draw: Draw, ctx: HitContext): void {

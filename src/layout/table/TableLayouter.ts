@@ -4,7 +4,7 @@ import type { Table, TableCell } from "../../model/table/Table";
 import { WordStreamBuilder } from "../../model/flatten/WordStreamBuilder";
 import { MIN_ROW_HEIGHT } from "../LayoutConstants";
 import type { LayoutConstraints } from "../LayoutConstraints";
-import { cellInsets, resolveColumnWidths } from "./TableMetrics";
+import { cellDocumentHeight, cellInsets, resolveColumnWidths } from "./TableMetrics";
 
 export class TableLayouter {
   constructor(private readonly layoutCell: (document: Document, width: number) => Line[]) {}
@@ -22,8 +22,8 @@ export class TableLayouter {
         if (cell.document.words.length === 0) {
           words.buildStoryOnly(cell.document);
         }
-        const lines = this.layoutCell(cell.document, Math.max(20, width - margin.left - margin.right));
-        const content = lines.reduce((sum, line) => sum + (line.sharesBand ? 0 : line.height), 0);
+        this.layoutCell(cell.document, Math.max(20, width - margin.left - margin.right));
+        const content = cellDocumentHeight(cell.document);
         const spanned = Math.max(1, cell.rowSpan);
         const start = table.rows[cell.rowIndex];
         if (start?.heightRule === "exact") {

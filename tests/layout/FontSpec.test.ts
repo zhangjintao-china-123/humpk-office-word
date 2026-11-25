@@ -16,6 +16,9 @@ describe("fontCss", () => {
     expect(cssFontStack("楷体")).toContain('"Kaiti SC"');
     expect(cssFontStack("仿宋")).toContain('"STFangsong"');
     expect(cssFontStack("微软雅黑")).toContain('"PingFang SC"');
+    expect(cssFontStack("等线")).toContain('"DengXian"');
+    expect(cssFontStack("苹方")).toContain('"PingFang SC"');
+    expect(cssFontStack("华文楷体")).toContain('"STKaiti"');
     expect(cssFontStack("Arial")).toBe('"Arial"');
   });
 });

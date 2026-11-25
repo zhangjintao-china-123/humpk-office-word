@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Block } from "../../src/model/block/Block";
 import { Paragraph } from "../../src/model/block/Paragraph";
 import { Document } from "../../src/model/document/Document";
+import { Drawing } from "../../src/model/inline/Drawing";
 import { WordStreamBuilder } from "../../src/model/flatten/WordStreamBuilder";
 import { CaretPos } from "../../src/selection/CaretPos";
 import { SelRange } from "../../src/selection/SelRange";
@@ -43,5 +44,25 @@ describe("SelectionFragment", () => {
       { text: "加粗", style: { bold: true, color: "#C00000", fontSizePx: 21 } },
       { text: "普通", style: {} },
     ]);
+  });
+
+  it("选中图片时带上绘图数据", () => {
+    const document = new Document();
+    const paragraph = new Paragraph(1);
+    const drawing = new Drawing();
+    drawing.url = "data:image/png;base64,xx";
+    drawing.width = 80;
+    drawing.height = 40;
+    const block = new Block();
+    block.drawing = drawing;
+    paragraph.addBlock(block);
+    document.addParagraph(paragraph);
+    new WordStreamBuilder().buildStoryOnly(document);
+    const node = document.words.head!;
+    const selection = new Selection();
+    selection.setRange(new SelRange(body, new CaretPos(body, node, false), new CaretPos(body, node, true)));
+    const payload = fragment.extract(selection);
+    expect(payload.empty).toBe(false);
+    expect(payload.paragraphs[0].runs[0].drawing).toMatchObject({ url: drawing.url, width: 80, height: 40 });
   });
 });

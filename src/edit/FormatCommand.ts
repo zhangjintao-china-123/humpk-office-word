@@ -30,6 +30,7 @@ export type FormatAction =
   | { type: "subscript" }
   | { type: "style"; value: "normal" | "heading1" | "heading2" | "heading3" }
   | { type: "indent"; value: "none" | "first2" | "hang2" | "left2" | "right2" }
+  | { type: "indentStep"; value: 1 | -1 }
   | { type: "lineSpacing"; value: "1" | "1.5" | "2" | "exact28" }
   | { type: "paraGap"; value: "0" | "before6" | "after6" | "both6" }
   | { type: "clear" };
@@ -69,6 +70,7 @@ export class FormatCommand implements EditCommand {
     const paragraphAction =
       this.action.type === "align" ||
       this.action.type === "indent" ||
+      this.action.type === "indentStep" ||
       this.action.type === "lineSpacing" ||
       this.action.type === "paraGap";
     if (paragraphAction || this.action.type === "style") {
@@ -130,12 +132,15 @@ export class FormatCommand implements EditCommand {
     }
     this.story = range.story;
     if (paragraphOnly) {
+      const action = this.action;
       const alignPatch =
-        this.action.type === "align"
-          ? { textAlign: this.action.value }
-          : this.action.type === "indent" || this.action.type === "lineSpacing" || this.action.type === "paraGap"
-            ? paragraphPatch(this.action)
-            : {};
+        action.type === "align"
+          ? { textAlign: action.value }
+          : action.type === "indentStep"
+            ? (attrs: ParagraphAttrs) => indentStepPatch(attrs, action.value)
+            : action.type === "indent" || action.type === "lineSpacing" || action.type === "paraGap"
+              ? paragraphPatch(action)
+              : {};
       const before = this.ctx.mutator.applyParagraphAttrs(document, range, alignPatch);
       this.paraSnaps.push(
         ...before.map((item) => ({
@@ -260,7 +265,7 @@ export class FormatCommand implements EditCommand {
       case "fontSizePt":
         return { fontSizePx: ptToPx(this.action.value), fontSizeHalfPoint: this.action.value * 2 };
       case "color":
-        return { color: this.action.value };
+        return this.action.value === "auto" || this.action.value === "none" ? { color: undefined } : { color: this.action.value };
       case "highlight":
         return this.action.value === "none"
           ? { backgroundColor: undefined, highlight: undefined }
@@ -339,7 +344,7 @@ export function paragraphPatch(
     if (action.value === "right2") {
       return { rightChars: 200, rightTwip: undefined };
     }
-    return { ...clearFirst, leftChars: undefined, rightChars: undefined, leftTwip: undefined, rightTwip: undefined };
+    return { ...clearFirst };
   }
   if (action.type === "lineSpacing") {
     if (action.value === "1.5") {
@@ -364,6 +369,20 @@ export function paragraphPatch(
     return { ...clear, before: "120", after: "120" };
   }
   return { ...clear, before: "0", after: "0" };
+}
+
+const INDENT_STEP_CHARS = 200;
+const INDENT_STEP_TWIP = 360;
+
+export function indentStepPatch(attrs: ParagraphAttrs, dir: 1 | -1): Partial<ParagraphAttrs> {
+  const chars = attrs.leftChars ?? 0;
+  const twip = attrs.leftTwip ?? 0;
+  if (chars > 0 || twip <= 0) {
+    const next = Math.max(0, chars + dir * INDENT_STEP_CHARS);
+    return { leftChars: next || undefined, leftTwip: undefined };
+  }
+  const next = Math.max(0, twip + dir * INDENT_STEP_TWIP);
+  return { leftTwip: next || undefined };
 }
 
 export function indentPreset(attrs: ParagraphAttrs | undefined): "none" | "first2" | "hang2" | "left2" | "right2" {

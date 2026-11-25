@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { InsertObjectCommand } from "../../src/edit/InsertObjectCommand";
+import { Drawing } from "../../src/model/inline/Drawing";
 import type { EditContext } from "../../src/edit/EditContext";
 import { History } from "../../src/edit/History";
 import { Mutator } from "../../src/edit/Mutator";
@@ -65,6 +66,37 @@ describe("InsertObjectCommand", () => {
     history.do(new InsertObjectCommand(ctx(document, selection), { type: "pageBreak" }));
     history.undo();
     expect(document.paragraphs.head!.data.blocks.some((block) => block.charType === "page")).toBe(false);
+    expect(document.paragraphs.head!.data.getFullText()).toBe("ab");
+  });
+
+  it("空白页插入两个分页符，撤销后文字还原", () => {
+    const document = doc("ab");
+    const selection = new Selection();
+    selection.collapse(new CaretPos(body, document.words.head!, true));
+    const history = new History();
+    history.do(new InsertObjectCommand(ctx(document, selection), { type: "blankPage" }));
+    const pages = document.paragraphs.head!.data.blocks.filter((block) => block.charType === "page");
+    expect(pages).toHaveLength(2);
+    history.undo();
+    expect(document.paragraphs.head!.data.blocks.some((block) => block.charType === "page")).toBe(false);
+    expect(document.paragraphs.head!.data.getFullText()).toBe("ab");
+  });
+
+  it("插入行内图片，撤销后去掉", () => {
+    const document = doc("ab");
+    const selection = new Selection();
+    selection.collapse(new CaretPos(body, document.words.head!, true));
+    const drawing = new Drawing();
+    drawing.url = "data:image/png;base64,xx";
+    drawing.width = 80;
+    drawing.height = 40;
+    const history = new History();
+    history.do(new InsertObjectCommand(ctx(document, selection), { type: "picture", drawing }));
+    const picture = document.paragraphs.head!.data.blocks.find((block) => block.drawing);
+    expect(picture?.drawing?.width).toBe(80);
+    expect(selection.caret()?.node?.data.kind).toBe("drawing");
+    history.undo();
+    expect(document.paragraphs.head!.data.blocks.some((block) => block.drawing)).toBe(false);
     expect(document.paragraphs.head!.data.getFullText()).toBe("ab");
   });
 

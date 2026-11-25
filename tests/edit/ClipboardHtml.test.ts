@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Clipboard, payloadFromData } from "../../src/edit/Clipboard";
 import { clipboardHtml, parseClipboardHtml } from "../../src/edit/ClipboardHtml";
 import { ClipboardPayload } from "../../src/edit/ClipboardPayload";
+import { Drawing } from "../../src/model/inline/Drawing";
 
 function io(store: { text: string; html: string }) {
   return {
@@ -104,5 +105,24 @@ describe("系统剪贴板 HTML", () => {
     const read = parseClipboardHtml(clipboardHtml(payload));
     expect(read?.table?.columnWidths).toEqual([120, 40]);
     expect(read?.table?.rows[0].cells[1].paragraphs[0].runs[0].style.underline).toBe("single");
+  });
+
+  it("图片写入 HTML 后能读回宽高和地址", () => {
+    const drawing = new Drawing();
+    drawing.url = "data:image/png;base64,xx";
+    drawing.width = 64;
+    drawing.height = 32;
+    const payload = ClipboardPayload.picture(drawing);
+    expect(payload.empty).toBe(false);
+    const html = clipboardHtml(payload);
+    expect(html).toContain("<img");
+    expect(html).toContain(drawing.url);
+    const read = parseClipboardHtml(html);
+    expect(read?.paragraphs[0].runs[0].drawing).toMatchObject({ url: drawing.url, width: 64, height: 32 });
+  });
+
+  it("外来 HTML 里的 img 也能当成图片粘贴", () => {
+    const payload = parseClipboardHtml('<p><img src="data:image/png;base64,yy" width="50" height="20"></p>');
+    expect(payload?.paragraphs[0].runs[0].drawing).toMatchObject({ url: "data:image/png;base64,yy", width: 50, height: 20 });
   });
 });

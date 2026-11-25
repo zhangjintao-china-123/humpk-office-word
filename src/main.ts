@@ -16,13 +16,15 @@ app.className = "ho-word-app";
 app.innerHTML = `
   <div id="ribbon"></div>
   <input id="file" type="file" accept=".docx" hidden />
+  <input id="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml" hidden />
   <div id="workspace"></div>
 `;
 
 const ribbonHost = app.querySelector<HTMLElement>("#ribbon");
 const fileInput = app.querySelector<HTMLInputElement>("#file");
+const imageInput = app.querySelector<HTMLInputElement>("#image");
 const workspaceHost = app.querySelector<HTMLElement>("#workspace");
-if (!ribbonHost || !fileInput || !workspaceHost) {
+if (!ribbonHost || !fileInput || !imageInput || !workspaceHost) {
   throw new Error("app chrome missing");
 }
 
@@ -48,8 +50,15 @@ const ribbon = new Ribbon(ribbonHost, {
   saveFile: () => {
     void downloadDocx();
   },
-  insertTable: () => workspace.insertTable(),
+  insertTable: (rows, cols) => workspace.insertTable(rows, cols),
   insertPageBreak: () => workspace.insertPageBreak(),
+  insertBlankPage: () => workspace.insertBlankPage(),
+  insertPicture: () => imageInput.click(),
+  applyPictureWrap: (wrap) => workspace.applyPictureWrap(wrap),
+  applyPicturePlace: (place) => workspace.applyPicturePlace(place),
+  applyPictureSize: (width, height, lock) => workspace.applyPictureSize(width, height, lock),
+  editHeader: () => workspace.editHeader(),
+  editFooter: () => workspace.editFooter(),
   insertTableRow: () => workspace.insertTableRow(),
   deleteTableRow: () => workspace.deleteTableRow(),
   insertTableColumn: () => workspace.insertTableColumn(),
@@ -175,6 +184,18 @@ fileInput.addEventListener("change", async () => {
   }
   await openNamedDocx(await file.arrayBuffer(), file.name);
   fileInput.value = "";
+});
+
+imageInput.addEventListener("change", async () => {
+  const file = imageInput.files?.[0];
+  if (!file) {
+    return;
+  }
+  try {
+    await workspace.insertPictureFile(file);
+  } finally {
+    imageInput.value = "";
+  }
 });
 
 async function openNamedDocx(source: ArrayBuffer | string, name: string): Promise<void> {

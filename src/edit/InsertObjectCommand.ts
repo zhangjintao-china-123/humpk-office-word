@@ -1,16 +1,22 @@
 import { Block } from "../model/block/Block";
 import { Paragraph } from "../model/block/Paragraph";
 import { Document } from "../model/document/Document";
+import type { Drawing } from "../model/inline/Drawing";
 import { Table, TableCell, TableColumn, TableRow, type TableBorder, type TableBorders } from "../model/table/Table";
 import { WordStreamBuilder } from "../model/flatten/WordStreamBuilder";
 import { CaretPos } from "../selection/CaretPos";
+import { SelRange } from "../selection/SelRange";
 import type { EditCommand } from "./EditCommand";
 import type { EditContext } from "./EditContext";
 import type { MutationPatch } from "./MutationPatch";
 
-export type InsertObjectAction = { type: "table"; rows: number; cols: number } | { type: "pageBreak" };
+export type InsertObjectAction =
+  | { type: "table"; rows: number; cols: number }
+  | { type: "pageBreak" }
+  | { type: "blankPage" }
+  | { type: "picture"; drawing: Drawing };
 
-/** 在光标处插入一张空表，或一个分页符。 */
+/** 在光标处插入表格、分页符、空白页或图片。 */
 export class InsertObjectCommand implements EditCommand {
   private patches: MutationPatch[] = [];
   private played = false;
@@ -53,10 +59,31 @@ export class InsertObjectCommand implements EditCommand {
       pos = deleted.caret;
       this.ctx.relayout.apply(deleted.impact);
     }
+    if (this.action.type === "blankPage") {
+      const first = this.ctx.mutator.insertPageBreak(document, range.story, pos);
+      if (!first.inserted.length) {
+        return;
+      }
+      this.patches.push(first);
+      this.ctx.relayout.apply(first.impact);
+      const second = this.ctx.mutator.insertPageBreak(document, range.story, first.caret);
+      if (second.inserted.length) {
+        this.patches.push(second);
+        this.ctx.relayout.apply(second.impact);
+        this.placeCaret(second);
+        this.ctx.afterEdit(second.impact);
+        return;
+      }
+      this.placeCaret(first);
+      this.ctx.afterEdit(first.impact);
+      return;
+    }
     const patch =
       this.action.type === "pageBreak"
         ? this.ctx.mutator.insertPageBreak(document, range.story, pos)
-        : this.ctx.mutator.insertTable(document, range.story, pos, blankTable(this.action.rows, this.action.cols));
+        : this.action.type === "picture"
+          ? this.ctx.mutator.insertDrawing(document, range.story, pos, this.action.drawing)
+          : this.ctx.mutator.insertTable(document, range.story, pos, blankTable(this.action.rows, this.action.cols));
     if (!patch.inserted.length) {
       return;
     }
@@ -80,6 +107,13 @@ export class InsertObjectCommand implements EditCommand {
   }
 
   private placeCaret(patch: MutationPatch): void {
+    if (this.action.type === "picture") {
+      const node = patch.inserted.find((item) => item.data.kind === "drawing");
+      if (node) {
+        this.ctx.selection.setRange(new SelRange(patch.story, new CaretPos(patch.story, node, false), new CaretPos(patch.story, node, true)));
+        return;
+      }
+    }
     if (this.action.type !== "table") {
       this.ctx.selection.collapse(patch.caret);
       return;

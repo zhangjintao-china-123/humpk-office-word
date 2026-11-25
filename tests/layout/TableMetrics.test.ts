@@ -11,7 +11,9 @@ import { FallbackMeasurer } from "../../src/layout/measure/FallbackMeasurer";
 import { Paginator } from "../../src/layout/page/Paginator";
 import { StoryLayout } from "../../src/layout/StoryLayout";
 import { TableLayouter } from "../../src/layout/table/TableLayouter";
-import { resolveColumnWidths, tableOffset } from "../../src/layout/table/TableMetrics";
+import { cellDocumentHeight, resolveColumnWidths, tableOffset } from "../../src/layout/table/TableMetrics";
+import { PlacedAnchor } from "../../src/model/inline/PlacedAnchor";
+import { Drawing } from "../../src/model/inline/Drawing";
 
 describe("表格宽度和对齐", () => {
   it("百分比表宽把网格列放大到版心", () => {
@@ -141,6 +143,24 @@ describe("表格标题行跨页", () => {
       [60, 100, 100],
       [160, 90, 200],
     ]);
+  });
+
+  it("格子高度把浮动图算进去", () => {
+    const document = new Document();
+    const paragraph = new Paragraph(1);
+    paragraph.addBlock(new Block());
+    document.addParagraph(paragraph);
+    const line = new Line();
+    line.height = 16;
+    paragraph.lines = [line];
+    const drawing = new Drawing();
+    drawing.width = 40;
+    drawing.height = 80;
+    const placed = new PlacedAnchor(drawing, paragraph);
+    placed.y = 4;
+    placed.height = 80;
+    document.anchors = [placed];
+    expect(cellDocumentHeight(document)).toBe(84);
   });
 });
 

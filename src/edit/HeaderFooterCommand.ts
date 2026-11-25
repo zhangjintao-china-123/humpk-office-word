@@ -10,7 +10,7 @@ import type { EditCommand } from "./EditCommand";
 import type { EditContext } from "./EditContext";
 import { EditImpact } from "./EditImpact";
 
-export type HeaderFooterAction = "page" | "title" | "even";
+export type HeaderFooterAction = "page" | "title" | "even" | "header" | "footer";
 
 interface BandSnap {
   sectionIndex: number;
@@ -101,6 +101,10 @@ function applyAction(document: Document, action: HeaderFooterAction, host: Heade
     }
     return;
   }
+  if (action === "header" || action === "footer") {
+    ensureStory(section, action, target.type);
+    return;
+  }
   const story = ensureStory(section, target.slot, target.type);
   if (hasPageField(story)) {
     return;
@@ -143,10 +147,7 @@ function capture(document: Document, action: HeaderFooterAction, host: HeaderFoo
         paragraphs: story ? story.paragraphs.toArray() : [],
       };
     }),
-    focus:
-      action === "page"
-        ? { slot: target.slot, kind: target.type, sectionIndex: target.sectionIndex }
-        : (host.selection.caret()?.story ?? { slot: "body" }),
+    focus: focusOf(action, target, host, document),
   };
 }
 
@@ -156,6 +157,9 @@ function bandKeys(
 ): Array<{ sectionIndex: number; slot: "header" | "footer"; type: HeaderFooterType }> {
   if (action === "page") {
     return [target];
+  }
+  if (action === "header" || action === "footer") {
+    return [{ sectionIndex: target.sectionIndex, slot: action, type: target.type }];
   }
   if (action === "title") {
     return [
@@ -225,6 +229,25 @@ function ensureStory(section: Section, slot: "header" | "footer", type: HeaderFo
   new WordStreamBuilder().buildStoryOnly(story);
   map.set(type, story);
   return story;
+}
+
+function focusOf(
+  action: HeaderFooterAction,
+  target: { sectionIndex: number; slot: "header" | "footer"; type: HeaderFooterType },
+  host: HeaderFooterHost,
+  document: Document,
+): StoryRef {
+  if (action === "header" || action === "footer") {
+    const section = document.sections[target.sectionIndex];
+    if (section && mapOf(section, action).get(target.type)) {
+      return { slot: action, kind: target.type, sectionIndex: target.sectionIndex };
+    }
+    return host.selection.caret()?.story ?? { slot: "body" };
+  }
+  if (action === "page") {
+    return { slot: target.slot, kind: target.type, sectionIndex: target.sectionIndex };
+  }
+  return host.selection.caret()?.story ?? { slot: "body" };
 }
 
 function mapOf(section: Section, slot: "header" | "footer"): Map<HeaderFooterType, Document> {

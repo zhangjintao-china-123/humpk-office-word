@@ -23,10 +23,9 @@ export class PagePainter {
 
     draw.setStroke(CORNER_COLOR, 1);
     draw.beginPath();
-    this.corner(draw, left, top, -mark, -mark);
-    this.corner(draw, right, top, mark, -mark);
-    this.corner(draw, left, bottom, -mark, 0);
-    this.corner(draw, right, bottom, mark, 0);
+    for (const item of textAreaCorners(left, top, right, bottom, mark)) {
+      this.corner(draw, item.x, item.y, item.dx, item.dy);
+    }
     draw.stroke();
   }
 
@@ -36,4 +35,14 @@ export class PagePainter {
     draw.moveTo(x, y);
     draw.lineTo(x, y + dy);
   }
+}
+
+/** 版心四角的直角标：上边伸进页眉，下边伸进页脚。 */
+export function textAreaCorners(left: number, top: number, right: number, bottom: number, mark = CORNER_MARK) {
+  return [
+    { x: left, y: top, dx: -mark, dy: -mark },
+    { x: right, y: top, dx: mark, dy: -mark },
+    { x: left, y: bottom, dx: -mark, dy: mark },
+    { x: right, y: bottom, dx: mark, dy: mark },
+  ];
 }

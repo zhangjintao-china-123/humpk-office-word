@@ -99,6 +99,20 @@ export function payloadFromData(data: { getData(format: string): string } | null
   return text ? ClipboardPayload.plain(text) : undefined;
 }
 
+export function imageFileFromData(data: DataTransfer | null | undefined): File | null {
+  if (!data) {
+    return null;
+  }
+  const files = data.files ? [...data.files] : [];
+  const named = files.find((file) => file.type.startsWith("image/"));
+  if (named) {
+    return named;
+  }
+  const items = data.items ? [...data.items] : [];
+  const item = items.find((entry) => entry.kind === "file" && entry.type.startsWith("image/"));
+  return item?.getAsFile() ?? null;
+}
+
 function systemClipboard(): ClipboardIO | undefined {
   const clip = typeof navigator === "undefined" ? undefined : navigator.clipboard;
   if (!clip && typeof document === "undefined") {

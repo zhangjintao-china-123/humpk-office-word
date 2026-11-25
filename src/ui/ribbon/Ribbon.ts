@@ -1,10 +1,17 @@
 import type { FormatAction } from "../../edit/FormatCommand";
 import type { FindQuery, FindStatus } from "../../edit/Find";
 import type { OutlineAction } from "../../edit/OutlineCommand";
+import type { PicturePlace, PictureWrap } from "../../edit/PictureTransform";
 import type { TableBorderFlags, TableBorderMode, TableBorderPen } from "../../edit/TableBorderApplier";
+import { cmToPx, pxToCm } from "../../shared/units";
+import { cssFontStack } from "../../layout/measure/FontSpec";
 import { ZOOM_LEVELS } from "../workspace/ZoomLevels";
 import { BorderMenu } from "./BorderMenu";
 import { ColorDialog } from "./ColorDialog";
+import { normalizeColor, textColorPaletteMarkup } from "./ColorPalette";
+import { fontSelectMarkup, isListedFont } from "./FontList";
+import { iconButton, RibbonIcons } from "./RibbonIcons";
+import { paintTableGrid, tableGridMarkup } from "./TableGrid";
 
 export interface RibbonHost {
   applyFormat(action: FormatAction): void;
@@ -17,8 +24,15 @@ export interface RibbonHost {
   formatState(): RibbonState;
   openFile(): void;
   saveFile(): void;
-  insertTable(): void;
+  insertTable(rows?: number, cols?: number): void;
   insertPageBreak(): void;
+  insertBlankPage(): void;
+  insertPicture(): void;
+  applyPictureWrap(wrap: PictureWrap): void;
+  applyPicturePlace(place: PicturePlace): void;
+  applyPictureSize(widthPx: number, heightPx: number, lockAspect: boolean): void;
+  editHeader(): void;
+  editFooter(): void;
   insertTableRow(): void;
   deleteTableRow(): void;
   insertTableColumn(): void;
@@ -60,6 +74,7 @@ export interface RibbonState {
   highlight: string;
   align: string;
   indent: "none" | "first2" | "hang2" | "left2" | "right2";
+  canIndentLess: boolean;
   lineSpacing: "1" | "1.5" | "2" | "exact28";
   paraGap: "0" | "before6" | "after6" | "both6";
   vertAlign?: "superscript" | "subscript" | "baseline";
@@ -69,6 +84,12 @@ export interface RibbonState {
   hasDoc: boolean;
   caption: string;
   inTable: boolean;
+  inPicture: boolean;
+  pictureWrap?: PictureWrap;
+  picturePlace?: PicturePlace | "custom";
+  pictureWidth?: number;
+  pictureHeight?: number;
+  pictureLock?: boolean;
   borderPen: TableBorderPen;
   borderFlags?: TableBorderFlags;
   titlePg: boolean;
@@ -82,20 +103,17 @@ export interface RibbonState {
   zoom: number;
 }
 
-const FONTS = ["宋体", "黑体", "楷体", "仿宋", "微软雅黑", "Times New Roman", "Arial", "Calibri"];
 const SIZES = [8, 9, 10, 10.5, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72];
-const THEME_BASES = ["#FFFFFF", "#000000", "#E7E6E6", "#44546A", "#5B9BD5", "#ED7D31", "#A5A5A5", "#FFC000", "#4472C4", "#70AD47"];
-const THEME_SHADES = [0.8, 0.6, 0.4, -0.25, -0.5];
-const STANDARD_COLORS = ["#C00000", "#FF0000", "#FFC000", "#FFFF00", "#92D050", "#00B050", "#00B0F0", "#0070C0", "#002060", "#7030A0"];
 const HIGHLIGHTS = ["#FFFF00", "#00FF00", "#00FFFF", "#FF00FF", "#0000FF", "#FF0000", "#000080", "#008080", "#008000", "#800080", "#800000", "#808000", "#808080", "#C0C0C0"];
 
-type RibbonPage = "home" | "insert" | "table";
+type RibbonPage = "home" | "insert" | "table" | "picture";
 
 export class Ribbon {
   readonly el: HTMLElement;
   private readonly borders = new BorderMenu();
   private readonly colorDialog = new ColorDialog();
   private page: RibbonPage = "home";
+  private hadPicture = false;
 
   constructor(host: HTMLElement, private readonly actions: RibbonHost) {
     this.el = host;
@@ -103,6 +121,7 @@ export class Ribbon {
     host.innerHTML = this.markup();
     host.addEventListener("mousedown", this.onMouseDown);
     host.addEventListener("click", this.onClick);
+    host.addEventListener("mouseover", this.onTableGridHover);
     host.addEventListener("change", this.onChange);
     host.addEventListener("keydown", this.onKeyDown);
     this.sync();
@@ -135,13 +154,10 @@ export class Ribbon {
     const font = this.el.querySelector<HTMLSelectElement>("[data-select=font]");
     const size = this.el.querySelector<HTMLSelectElement>("[data-select=size]");
     if (font) {
-      if (state.fontFamily && !FONTS.includes(state.fontFamily)) {
-        const extra = document.createElement("option");
-        extra.value = state.fontFamily;
-        extra.textContent = state.fontFamily;
-        font.append(extra);
+      if (state.fontFamily && !isListedFont(state.fontFamily)) {
+        this.ensureDocFont(font, state.fontFamily);
       }
-      font.value = state.fontFamily || FONTS[0];
+      font.value = state.fontFamily || "宋体";
     }
     if (size) {
       const nearest = SIZES.reduce((best, item) =>
@@ -155,8 +171,12 @@ export class Ribbon {
     }
     const color = this.el.querySelector<HTMLElement>("[data-swatch=color]");
     if (color) {
-      color.style.background = state.color || "#111111";
+      color.style.background = state.color && state.color !== "auto" ? state.color : "#111111";
     }
+    const current = normalizeColor(state.color);
+    this.el.querySelectorAll<HTMLElement>(".ho-word-palette-text [data-color]").forEach((button) => {
+      button.classList.toggle("is-on", normalizeColor(button.dataset.color) === current);
+    });
     const fill = this.el.querySelector<HTMLElement>("[data-swatch=highlight]");
     if (fill) {
       fill.style.background = state.highlight && state.highlight !== "none" ? state.highlight : "#ffffff";
@@ -186,8 +206,36 @@ export class Ribbon {
     if (tableTab) {
       tableTab.hidden = !state.inTable;
     }
+    const pictureTab = this.el.querySelector<HTMLButtonElement>("[data-tab=picture]");
+    if (pictureTab) {
+      pictureTab.hidden = !state.inPicture;
+    }
+    if (state.inPicture && !this.hadPicture) {
+      this.showPage("picture");
+    } else if (!state.inPicture && this.page === "picture") {
+      this.showPage("home");
+    }
+    this.hadPicture = state.inPicture;
     if (!state.inTable && this.page === "table") {
       this.showPage("home");
+    }
+    this.el.querySelectorAll<HTMLElement>("[data-picture-wrap]").forEach((button) => {
+      button.classList.toggle("is-on", button.dataset.pictureWrap === state.pictureWrap);
+    });
+    this.el.querySelectorAll<HTMLElement>("[data-picture-place]").forEach((button) => {
+      button.classList.toggle("is-on", button.dataset.picturePlace === state.picturePlace);
+    });
+    const width = this.el.querySelector<HTMLInputElement>("[data-picture-size=width]");
+    const height = this.el.querySelector<HTMLInputElement>("[data-picture-size=height]");
+    if (width && document.activeElement !== width) {
+      width.value = cmText(state.pictureWidth);
+    }
+    if (height && document.activeElement !== height) {
+      height.value = cmText(state.pictureHeight);
+    }
+    const lock = this.el.querySelector<HTMLInputElement>("[data-picture-lock]");
+    if (lock) {
+      lock.checked = state.pictureLock !== false;
     }
     const zoom = this.el.querySelector<HTMLSelectElement>("[data-select=zoom]");
     if (zoom) {
@@ -209,17 +257,36 @@ export class Ribbon {
         zoom.value = option.value;
       }
     }
-    this.setSelect("indent", state.indent);
-    this.setSelect("spacing", state.lineSpacing);
-    this.setSelect("para-gap", state.paraGap);
-    this.setSelect("style", state.paragraphStyle);
+    this.setDisabled("indent-less", !state.canIndentLess);
+    this.markChoice("[data-indent]", firstLineKind(state.indent));
+    this.markChoice("[data-spacing]", state.lineSpacing);
+    this.markChoice("[data-gap]", state.paraGap);
+    this.markChoice("[data-style]", state.paragraphStyle);
   }
 
-  private setSelect(name: string, value: string): void {
-    const select = this.el.querySelector<HTMLSelectElement>(`[data-select=${name}]`);
-    if (select && select.value !== value) {
-      select.value = value;
+  private ensureDocFont(select: HTMLSelectElement, family: string): void {
+    if ([...select.options].some((option) => option.value === family)) {
+      return;
     }
+    let group = select.querySelector<HTMLOptGroupElement>("optgroup[data-doc-fonts]");
+    if (!group) {
+      group = document.createElement("optgroup");
+      group.label = "文档字体";
+      group.dataset.docFonts = "1";
+      select.append(group);
+    }
+    const extra = document.createElement("option");
+    extra.value = family;
+    extra.textContent = family;
+    extra.style.fontFamily = cssFontStack(family);
+    group.append(extra);
+  }
+
+  private markChoice(selector: string, value: string): void {
+    this.el.querySelectorAll<HTMLElement>(selector).forEach((item) => {
+      const key = item.dataset.indent ?? item.dataset.spacing ?? item.dataset.gap ?? item.dataset.style;
+      item.classList.toggle("is-on", key === value);
+    });
   }
 
   private onClick = (event: Event): void => {
@@ -260,13 +327,48 @@ export class Ribbon {
       this.sync();
       return;
     }
+    const indent = el.closest<HTMLElement>("[data-indent]")?.dataset.indent;
+    if (indent && isIndent(indent)) {
+      this.actions.applyFormat({ type: "indent", value: indent });
+      this.closeDrops();
+      this.sync();
+      return;
+    }
+    const spacing = el.closest<HTMLElement>("[data-spacing]")?.dataset.spacing;
+    if (spacing && isSpacing(spacing)) {
+      this.actions.applyFormat({ type: "lineSpacing", value: spacing });
+      this.closeDrops();
+      this.sync();
+      return;
+    }
+    const gap = el.closest<HTMLElement>("[data-gap]")?.dataset.gap;
+    if (gap && isGap(gap)) {
+      this.actions.applyFormat({ type: "paraGap", value: gap });
+      this.closeDrops();
+      this.sync();
+      return;
+    }
+    const style = el.closest<HTMLElement>("[data-style]")?.dataset.style;
+    if (style && isStyle(style)) {
+      this.actions.applyFormat({ type: "style", value: style });
+      this.closeDrops();
+      this.sync();
+      return;
+    }
+    const tableCell = el.closest<HTMLElement>("[data-table-rows]");
+    if (tableCell?.dataset.tableRows && tableCell.dataset.tableCols) {
+      this.actions.insertTable(Number(tableCell.dataset.tableRows), Number(tableCell.dataset.tableCols));
+      this.closeDrops();
+      this.sync();
+      return;
+    }
     const custom = el.closest<HTMLElement>("[data-custom-color]");
     if (custom?.dataset.customColor === "text" || custom?.dataset.customColor === "fill") {
       const kind = custom.dataset.customColor;
       this.closeDrops();
       const state = this.actions.formatState();
       const initial = kind === "text" ? state.color : state.highlight;
-      this.colorDialog.open(initial && initial !== "none" ? initial : "#000000", (hex) => {
+      this.colorDialog.open(initial && initial !== "none" && initial !== "auto" ? initial : "#000000", (hex) => {
         this.actions.applyFormat(kind === "text" ? { type: "color", value: hex } : { type: "highlight", value: hex });
         this.sync();
       });
@@ -303,8 +405,22 @@ export class Ribbon {
       }
       return;
     }
+    const wrap = el.closest<HTMLElement>("[data-picture-wrap]")?.dataset.pictureWrap;
+    if (wrap && isPictureWrap(wrap)) {
+      this.actions.applyPictureWrap(wrap);
+      this.closeDrops();
+      this.sync();
+      return;
+    }
+    const place = el.closest<HTMLElement>("[data-picture-place]")?.dataset.picturePlace;
+    if (place && isPicturePlace(place)) {
+      this.actions.applyPicturePlace(place);
+      this.closeDrops();
+      this.sync();
+      return;
+    }
     const tab = el.closest<HTMLElement>("[data-tab]");
-    if (tab?.dataset.tab === "home" || tab?.dataset.tab === "insert" || tab?.dataset.tab === "table") {
+    if (tab?.dataset.tab === "home" || tab?.dataset.tab === "insert" || tab?.dataset.tab === "table" || tab?.dataset.tab === "picture") {
       this.closeDrops();
       this.showPage(tab.dataset.tab);
       return;
@@ -335,6 +451,14 @@ export class Ribbon {
       this.actions.insertTable();
     } else if (act === "insert-page-break") {
       this.actions.insertPageBreak();
+    } else if (act === "insert-blank-page") {
+      this.actions.insertBlankPage();
+    } else if (act === "insert-picture") {
+      this.actions.insertPicture();
+    } else if (act === "edit-header") {
+      this.actions.editHeader();
+    } else if (act === "edit-footer") {
+      this.actions.editFooter();
     } else if (act === "insert-row") {
       this.actions.insertTableRow();
     } else if (act === "delete-row") {
@@ -386,6 +510,10 @@ export class Ribbon {
       this.actions.applyFormat({ type: "align", value: "right" });
     } else if (act === "align-both") {
       this.actions.applyFormat({ type: "align", value: "both" });
+    } else if (act === "indent-less") {
+      this.actions.applyFormat({ type: "indentStep", value: -1 });
+    } else if (act === "indent-more") {
+      this.actions.applyFormat({ type: "indentStep", value: 1 });
     } else if (act === "find-open") {
       this.openFind();
     } else if (act === "find-replace") {
@@ -461,17 +589,18 @@ export class Ribbon {
     if (select.dataset.select === "zoom") {
       this.actions.setZoom(Number(select.value));
     }
-    if (select.dataset.select === "indent" && isIndent(select.value)) {
-      this.actions.applyFormat({ type: "indent", value: select.value });
+    const size = (event.target as HTMLElement).dataset.pictureSize;
+    if (size === "width" || size === "height") {
+      const width = Number(this.el.querySelector<HTMLInputElement>("[data-picture-size=width]")?.value);
+      const height = Number(this.el.querySelector<HTMLInputElement>("[data-picture-size=height]")?.value);
+      const lock = this.el.querySelector<HTMLInputElement>("[data-picture-lock]")?.checked !== false;
+      this.actions.applyPictureSize(cmToPxSafe(width), cmToPxSafe(height), lock);
     }
-    if (select.dataset.select === "spacing" && isSpacing(select.value)) {
-      this.actions.applyFormat({ type: "lineSpacing", value: select.value });
-    }
-    if (select.dataset.select === "para-gap" && isGap(select.value)) {
-      this.actions.applyFormat({ type: "paraGap", value: select.value });
-    }
-    if (select.dataset.select === "style" && isStyle(select.value)) {
-      this.actions.applyFormat({ type: "style", value: select.value });
+    if ((event.target as HTMLElement).hasAttribute("data-picture-lock")) {
+      const width = Number(this.el.querySelector<HTMLInputElement>("[data-picture-size=width]")?.value);
+      const height = Number(this.el.querySelector<HTMLInputElement>("[data-picture-size=height]")?.value);
+      const lock = (event.target as HTMLInputElement).checked;
+      this.actions.applyPictureSize(cmToPxSafe(width), cmToPxSafe(height), lock);
     }
     this.sync();
   };
@@ -582,10 +711,25 @@ export class Ribbon {
     }
   }
 
+  private onTableGridHover = (event: Event): void => {
+    const cell = (event.target as HTMLElement).closest<HTMLElement>("[data-table-rows]");
+    const grid = this.el.querySelector<HTMLElement>(".ho-word-table-grid");
+    if (!cell || !grid?.contains(cell)) {
+      return;
+    }
+    const rows = Number(cell.dataset.tableRows);
+    const cols = Number(cell.dataset.tableCols);
+    paintTableGrid(grid, rows, cols);
+    const label = this.el.querySelector("[data-table-size]");
+    if (label) {
+      label.textContent = `${rows} × ${cols} 表格`;
+    }
+  };
+
   private linkMarkup(): string {
     return `
       <div class="ho-word-drop">
-        <button type="button" data-drop-toggle title="插入或修改超链接">链接</button>
+        <button type="button" class="ho-word-big" data-drop-toggle title="插入或修改超链接">${RibbonIcons.link}<span>链接</span></button>
         <div class="ho-word-outline-menu ho-word-link-menu">
           <label class="ho-word-link-row" data-keep-drop>
             <input data-link-url placeholder="https:// 或 #书签" />
@@ -594,6 +738,71 @@ export class Ribbon {
           <button type="button" data-act="clear-link">取消链接</button>
         </div>
       </div>`;
+  }
+
+  private commentMarkup(): string {
+    return `
+      <div class="ho-word-drop">
+        <button type="button" class="ho-word-big" data-drop-toggle title="新建批注">${RibbonIcons.comment}<span>批注</span></button>
+        <div class="ho-word-outline-menu ho-word-review-menu">
+          <textarea data-comment-text data-keep-drop placeholder="批注内容"></textarea>
+          <button type="button" data-act="add-comment">插入批注</button>
+          <div class="ho-word-review-list" data-comment-list></div>
+        </div>
+      </div>`;
+  }
+
+  private headerMarkup(): string {
+    return `
+      <div class="ho-word-drop">
+        <button type="button" class="ho-word-big" data-drop-toggle title="页眉">${RibbonIcons.header}<span>页眉</span></button>
+        <div class="ho-word-outline-menu">
+          <button type="button" data-act="edit-header">编辑页眉</button>
+          <div class="ho-word-border-split"></div>
+          <button type="button" data-act="title-page">首页不同</button>
+          <button type="button" data-act="even-odd">奇偶页不同</button>
+        </div>
+      </div>`;
+  }
+
+  private pictureWrapMarkup(): string {
+    const items: Array<{ id: PictureWrap; label: string }> = [
+      { id: "inline", label: "嵌入型" },
+      { id: "square", label: "四周型" },
+      { id: "tight", label: "紧密型" },
+      { id: "through", label: "穿越型" },
+      { id: "topBottom", label: "上下型" },
+      { id: "behind", label: "衬于文字下方" },
+      { id: "front", label: "浮于文字上方" },
+    ];
+    return `<div class="ho-word-drop">
+      <button type="button" class="ho-word-big" data-drop-toggle title="文字环绕">${RibbonIcons.wrap}<span>环绕文字</span></button>
+      <div class="ho-word-outline-menu">
+        ${items.map((item) => `<button type="button" data-picture-wrap="${item.id}">${item.label}</button>`).join("")}
+      </div>
+    </div>`;
+  }
+
+  private picturePlaceMarkup(): string {
+    const places: PicturePlace[] = [
+      "top-left",
+      "top-center",
+      "top-right",
+      "middle-left",
+      "middle-center",
+      "middle-right",
+      "bottom-left",
+      "bottom-center",
+      "bottom-right",
+    ];
+    return `<div class="ho-word-drop">
+      <button type="button" class="ho-word-big" data-drop-toggle title="位置">${RibbonIcons.position}<span>位置</span></button>
+      <div class="ho-word-outline-menu ho-word-picture-places">
+        <div class="ho-word-picture-place-grid">
+          ${places.map((place) => `<button type="button" data-picture-place="${place}" title="${placeLabel(place)}"></button>`).join("")}
+        </div>
+      </div>
+    </div>`;
   }
 
   private outlineMarkup(): string {
@@ -606,7 +815,7 @@ export class Ribbon {
     }).join("");
     return `
       <div class="ho-word-drop ho-word-outline-drop">
-        <button type="button" data-drop-toggle title="大纲编号。Tab 降低一级，Shift+Tab 提升一级">大纲</button>
+        <button type="button" data-drop-toggle title="大纲编号。Tab 降低一级，Shift+Tab 提升一级">${RibbonIcons.list}</button>
         <div class="ho-word-outline-menu">
           <button type="button" data-outline="apply">套用大纲</button>
           <div class="ho-word-border-split"></div>
@@ -628,6 +837,7 @@ export class Ribbon {
           <button type="button" data-tab="home" class="is-on">开始</button>
           <button type="button" data-tab="insert">插入</button>
           <button type="button" data-tab="table" hidden>表格工具</button>
+          <button type="button" data-tab="picture" hidden>图片工具</button>
         </div>
         <div class="ho-word-qat">
           <button type="button" data-act="undo" title="撤销 (Ctrl+Z)">撤销</button>
@@ -644,17 +854,19 @@ export class Ribbon {
       </div>
       <div class="ho-word-ribbon-page" data-page="home">
         <section class="ho-word-group">
-          <div class="ho-word-group-body">
-            <button type="button" data-act="paste" title="粘贴 (Ctrl+V)">粘贴</button>
-            <button type="button" data-act="cut" title="剪切 (Ctrl+X)">剪切</button>
-            <button type="button" data-act="copy" title="复制 (Ctrl+C)">复制</button>
+          <div class="ho-word-group-body ho-word-clip">
+            <button type="button" class="ho-word-big" data-act="paste" title="粘贴 (Ctrl+V)">${RibbonIcons.paste}<span>粘贴</span></button>
+            <div class="ho-word-stack">
+              <button type="button" data-act="cut" title="剪切 (Ctrl+X)">${RibbonIcons.cut}<span>剪切</span></button>
+              <button type="button" data-act="copy" title="复制 (Ctrl+C)">${RibbonIcons.copy}<span>复制</span></button>
+            </div>
           </div>
           <span>剪贴板</span>
         </section>
         <section class="ho-word-group">
           <div class="ho-word-group-body ho-word-font">
             <div class="ho-word-row">
-              <select data-select="font">${FONTS.map((font) => `<option value="${font}">${font}</option>`).join("")}</select>
+              <select data-select="font" title="字体">${fontSelectMarkup()}</select>
               <select data-select="size">${SIZES.map((size) => `<option value="${size}">${size}</option>`).join("")}</select>
               <button type="button" data-act="size-up" title="增大字号">A+</button>
               <button type="button" data-act="size-down" title="减小字号">A-</button>
@@ -664,11 +876,11 @@ export class Ribbon {
               <button type="button" data-act="bold" title="加粗 (Ctrl+B)"><b>B</b></button>
               <button type="button" data-act="italic" title="倾斜 (Ctrl+I)"><i>I</i></button>
               <button type="button" data-act="underline" title="下划线 (Ctrl+U)"><u>U</u></button>
-              <button type="button" data-act="strike" title="删除线"><s>S</s></button>
+              <button type="button" data-act="strike" title="删除线"><s>abc</s></button>
               <button type="button" data-act="subscript" title="下标">x₂</button>
               <button type="button" data-act="superscript" title="上标">x²</button>
               <div class="ho-word-drop">
-                <button type="button" data-drop-toggle title="底纹"><span data-swatch="highlight"></span>底</button>
+                <button type="button" class="ho-word-color-cmd" data-drop-toggle title="突出显示">${RibbonIcons.highlight}<span data-swatch="highlight"></span></button>
                 <div class="ho-word-palette ho-word-palette-fill">
                   <button type="button" data-fill="none" class="ho-word-palette-none">无颜色</button>
                   ${HIGHLIGHTS.map((fill) => `<button type="button" data-fill="${fill}" style="background:${fill}"></button>`).join("")}
@@ -676,11 +888,8 @@ export class Ribbon {
                 </div>
               </div>
               <div class="ho-word-drop">
-                <button type="button" data-drop-toggle title="字体颜色"><span data-swatch="color"></span>A</button>
-                <div class="ho-word-palette ho-word-palette-text">
-                  ${themeColors().map((color) => `<button type="button" data-color="${color}" style="background:${color}"></button>`).join("")}
-                  ${moreColors("text")}
-                </div>
+                <button type="button" class="ho-word-color-cmd" data-drop-toggle title="字体颜色"><span class="ho-word-color-letter">A</span><span data-swatch="color"></span></button>
+                ${textColorPaletteMarkup()}
               </div>
             </div>
           </div>
@@ -690,80 +899,113 @@ export class Ribbon {
           <div class="ho-word-group-body ho-word-para">
             <div class="ho-word-row">
               ${this.outlineMarkup()}
-              <select data-select="indent" title="首行缩进" aria-label="缩进">
-                <option value="none">无缩进</option>
-                <option value="first2">首行2字</option>
-                <option value="hang2">悬挂2字</option>
-                <option value="left2">左缩2字</option>
-                <option value="right2">右缩2字</option>
-              </select>
+              ${iconButton("indent-less", "减少缩进", RibbonIcons.indentLess)}
+              ${iconButton("indent-more", "增加缩进", RibbonIcons.indentMore)}
+              <div class="ho-word-drop">
+                <button type="button" data-drop-toggle title="首行和悬挂缩进">${RibbonIcons.firstLine}</button>
+                <div class="ho-word-outline-menu">
+                  <button type="button" data-indent="none">无首行缩进</button>
+                  <button type="button" data-indent="first2">首行 2 字</button>
+                  <button type="button" data-indent="hang2">悬挂 2 字</button>
+                </div>
+              </div>
             </div>
             <div class="ho-word-row">
-              <button type="button" data-act="align-left" title="左对齐">≡</button>
-              <button type="button" data-act="align-center" title="居中">≣</button>
-              <button type="button" data-act="align-right" title="右对齐">≡</button>
-              <button type="button" data-act="align-both" title="两端对齐">☰</button>
-              <select data-select="spacing" title="行距" aria-label="行距">
-                <option value="1">单倍</option>
-                <option value="1.5">1.5倍</option>
-                <option value="2">2倍</option>
-                <option value="exact28">固定28磅</option>
-              </select>
-              <select data-select="para-gap" title="段前段后" aria-label="段距">
-                <option value="0">段距0</option>
-                <option value="before6">段前6磅</option>
-                <option value="after6">段后6磅</option>
-                <option value="both6">前后6磅</option>
-              </select>
+              ${iconButton("align-left", "左对齐", RibbonIcons.alignLeft)}
+              ${iconButton("align-center", "居中", RibbonIcons.alignCenter)}
+              ${iconButton("align-right", "右对齐", RibbonIcons.alignRight)}
+              ${iconButton("align-both", "两端对齐", RibbonIcons.alignBoth)}
+              <div class="ho-word-drop">
+                <button type="button" data-drop-toggle title="行距和段距">${RibbonIcons.spacing}</button>
+                <div class="ho-word-outline-menu">
+                  <button type="button" data-spacing="1">1.0</button>
+                  <button type="button" data-spacing="1.5">1.5</button>
+                  <button type="button" data-spacing="2">2.0</button>
+                  <button type="button" data-spacing="exact28">固定 28 磅</button>
+                  <div class="ho-word-border-split"></div>
+                  <button type="button" data-gap="0">段距 0</button>
+                  <button type="button" data-gap="before6">段前 6 磅</button>
+                  <button type="button" data-gap="after6">段后 6 磅</button>
+                  <button type="button" data-gap="both6">段前段后 6 磅</button>
+                </div>
+              </div>
             </div>
           </div>
           <span>段落</span>
         </section>
         <section class="ho-word-group">
-          <div class="ho-word-group-body">
-            <select data-select="style" title="段落样式" aria-label="样式">
-              <option value="normal">正文</option>
-              <option value="heading1">标题 1</option>
-              <option value="heading2">标题 2</option>
-              <option value="heading3">标题 3</option>
-            </select>
+          <div class="ho-word-group-body ho-word-styles">
+            ${styleCard("normal", "正文", "AaBbCcDdEe")}
+            ${styleCard("heading1", "标题 1", "AaBbCc")}
+            ${styleCard("heading2", "标题 2", "AaBbCc")}
+            ${styleCard("heading3", "标题 3", "AaBbCc")}
           </div>
           <span>样式</span>
         </section>
         <section class="ho-word-group">
-          <div class="ho-word-group-body">
-            <button type="button" data-act="find-open" title="查找 (Ctrl+F)">查找</button>
-            <button type="button" data-act="find-replace" title="替换 (Ctrl+H)">替换</button>
+          <div class="ho-word-group-body ho-word-edit">
+            <button type="button" data-act="find-open" title="查找 (Ctrl+F)">${RibbonIcons.find}<span>查找</span></button>
+            <button type="button" data-act="find-replace" title="替换 (Ctrl+H)">${RibbonIcons.replace}<span>替换</span></button>
           </div>
           <span>编辑</span>
         </section>
       </div>
       <div class="ho-word-ribbon-page" data-page="insert" hidden>
         <section class="ho-word-group">
-          <div class="ho-word-group-body">
-            <button type="button" data-act="insert-page-break" title="从这里另起一页">分页</button>
+          <div class="ho-word-group-body ho-word-insert">
+            <button type="button" class="ho-word-big" data-act="insert-blank-page" title="在光标处插入一页空白">${RibbonIcons.blankPage}<span>空白页</span></button>
+            <button type="button" class="ho-word-big" data-act="insert-page-break" title="从这里另起一页">${RibbonIcons.pageBreak}<span>分页符</span></button>
           </div>
           <span>页面</span>
         </section>
         <section class="ho-word-group">
-          <div class="ho-word-group-body">
-            <button type="button" data-act="insert-table" title="插入 3×3 表格">表格</button>
+          <div class="ho-word-group-body ho-word-insert">
+            ${tableGridMarkup()}
           </div>
           <span>表格</span>
         </section>
         <section class="ho-word-group">
-          <div class="ho-word-group-body">
+          <div class="ho-word-group-body ho-word-insert">
+            <button type="button" class="ho-word-big" data-act="insert-picture" title="插入图片">${RibbonIcons.picture}<span>图片</span></button>
+          </div>
+          <span>插图</span>
+        </section>
+        <section class="ho-word-group">
+          <div class="ho-word-group-body ho-word-insert">
             ${this.linkMarkup()}
           </div>
           <span>链接</span>
         </section>
         <section class="ho-word-group">
-          <div class="ho-word-group-body">
-            <button type="button" data-act="page-number" title="在页眉或页脚插入页码">页码</button>
-            <button type="button" data-act="title-page" title="首页使用不同的页眉页脚">首页</button>
-            <button type="button" data-act="even-odd" title="奇偶页使用不同的页眉页脚">奇偶</button>
+          <div class="ho-word-group-body ho-word-insert">
+            ${this.commentMarkup()}
+          </div>
+          <span>批注</span>
+        </section>
+        <section class="ho-word-group">
+          <div class="ho-word-group-body ho-word-insert">
+            ${this.headerMarkup()}
+            <button type="button" class="ho-word-big" data-act="edit-footer" title="编辑页脚">${RibbonIcons.footer}<span>页脚</span></button>
+            <button type="button" class="ho-word-big" data-act="page-number" title="在页眉或页脚插入页码">${RibbonIcons.pageNumber}<span>页码</span></button>
           </div>
           <span>页眉和页脚</span>
+        </section>
+      </div>
+      <div class="ho-word-ribbon-page" data-page="picture" hidden>
+        <section class="ho-word-group">
+          <div class="ho-word-group-body ho-word-insert">
+            ${this.pictureWrapMarkup()}
+            ${this.picturePlaceMarkup()}
+          </div>
+          <span>排列</span>
+        </section>
+        <section class="ho-word-group">
+          <div class="ho-word-group-body ho-word-picture-size">
+            <label>宽度<input type="number" min="0.2" step="0.1" data-picture-size="width" title="宽度（厘米）" /></label>
+            <label>高度<input type="number" min="0.2" step="0.1" data-picture-size="height" title="高度（厘米）" /></label>
+            <label class="ho-word-picture-lock"><input type="checkbox" data-picture-lock checked />锁定纵横比</label>
+          </div>
+          <span>大小</span>
         </section>
       </div>
       <div class="ho-word-ribbon-page" data-page="table" hidden>
@@ -795,23 +1037,19 @@ export class Ribbon {
   }
 }
 
-function themeColors(): string[] {
-  const rows = [THEME_BASES, ...THEME_SHADES.map((amount) => THEME_BASES.map((base) => mixColor(base, amount))), STANDARD_COLORS];
-  return rows.flat();
-}
-
-function mixColor(hex: string, amount: number): string {
-  const value = Number.parseInt(hex.slice(1), 16);
-  const mix = (channel: number) => {
-    const next = amount >= 0 ? channel + (255 - channel) * amount : channel * (1 + amount);
-    return Math.max(0, Math.min(255, Math.round(next)));
-  };
-  const channels = [mix((value >> 16) & 255), mix((value >> 8) & 255), mix(value & 255)];
-  return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
-}
-
 function moreColors(kind: "text" | "fill"): string {
-  return `<button type="button" data-custom-color="${kind}" class="ho-word-palette-more">其他颜色...</button>`;
+  return `<button type="button" data-custom-color="${kind}" class="ho-word-palette-more">更多颜色...</button>`;
+}
+
+function styleCard(id: "normal" | "heading1" | "heading2" | "heading3", name: string, sample: string): string {
+  return `<button type="button" class="ho-word-style-card" data-style="${id}" title="${name}">
+      <span class="ho-word-style-preview ho-word-style-${id}">${sample}</span>
+      <span>${name}</span>
+    </button>`;
+}
+
+function firstLineKind(indent: RibbonState["indent"]): "none" | "first2" | "hang2" {
+  return indent === "first2" || indent === "hang2" ? indent : "none";
 }
 
 function reviewList(items: { id: string; author: string; text: string }[], kind: "comment" | "note"): string {
@@ -838,6 +1076,37 @@ function isGap(value: string): value is "0" | "before6" | "after6" | "both6" {
 
 function isStyle(value: string): value is "normal" | "heading1" | "heading2" | "heading3" {
   return value === "normal" || value === "heading1" || value === "heading2" || value === "heading3";
+}
+
+function isPictureWrap(value: string): value is PictureWrap {
+  return value === "inline" || value === "square" || value === "tight" || value === "through" || value === "topBottom" || value === "behind" || value === "front";
+}
+
+function isPicturePlace(value: string): value is PicturePlace {
+  return value === "top-left" || value === "top-center" || value === "top-right" || value === "middle-left" || value === "middle-center" || value === "middle-right" || value === "bottom-left" || value === "bottom-center" || value === "bottom-right";
+}
+
+function placeLabel(place: PicturePlace): string {
+  const names: Record<PicturePlace, string> = {
+    "top-left": "左上",
+    "top-center": "上中",
+    "top-right": "右上",
+    "middle-left": "左中",
+    "middle-center": "正中",
+    "middle-right": "右中",
+    "bottom-left": "左下",
+    "bottom-center": "下中",
+    "bottom-right": "右下",
+  };
+  return names[place];
+}
+
+function cmText(px: number | undefined): string {
+  return pxToCm(px ?? 0).toFixed(2);
+}
+
+function cmToPxSafe(cm: number): number {
+  return cmToPx(Number.isFinite(cm) ? cm : 0);
 }
 
 function escapeHtml(value: string): string {

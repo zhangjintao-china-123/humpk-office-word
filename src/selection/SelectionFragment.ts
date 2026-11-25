@@ -1,4 +1,4 @@
-import { ClipboardPayload, type ClipboardParagraph, type ClipboardRun } from "../edit/ClipboardPayload";
+import { ClipboardPayload, snapshotDrawing, type ClipboardParagraph, type ClipboardRun } from "../edit/ClipboardPayload";
 import { TableSnapshot } from "../edit/TableSnapshot";
 import type { Document } from "../model/document/Document";
 import type { Word } from "../model/inline/Word";
@@ -81,6 +81,15 @@ export class SelectionFragment {
         tables.push(word.table);
         continue;
       }
+      if (word.kind === "drawing" && word.drawing && !word.block?.math) {
+        if (!current) {
+          current = this.startParagraph(word);
+          run = null;
+        }
+        current.runs.push({ text: "", style: {}, drawing: snapshotDrawing(word.drawing) });
+        run = null;
+        continue;
+      }
       if (word.kind !== "text") {
         continue;
       }
@@ -156,7 +165,11 @@ export class SelectionFragment {
   }
 
   private joinText(paragraphs: ClipboardParagraph[]): string {
-    return paragraphs.map((paragraph) => paragraph.runs.map((item) => item.text).join("")).join("\n");
+    return paragraphs
+      .map((paragraph) =>
+        paragraph.runs.map((item) => (item.drawing ? item.text || "\uFFFC" : item.text)).join(""),
+      )
+      .join("\n");
   }
 }
 

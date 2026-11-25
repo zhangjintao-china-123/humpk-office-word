@@ -1,7 +1,7 @@
 import type { ParagraphAttrs } from "../model/style/ParagraphAttrs";
 import type { RunStyle } from "../model/style/RunStyle";
 import { ptToPx, pxToPt } from "../shared/units";
-import { ClipboardPayload, type ClipboardParagraph, type ClipboardRun, type ClipboardTable } from "./ClipboardPayload";
+import { ClipboardPayload, type ClipboardDrawing, type ClipboardParagraph, type ClipboardRun, type ClipboardTable } from "./ClipboardPayload";
 
 const MARK = "humpk-office:";
 
@@ -55,6 +55,11 @@ function paragraphHtml(paragraph: ClipboardParagraph): string {
 }
 
 function runHtml(run: ClipboardRun): string {
+  if (run.drawing?.url) {
+    const width = Math.max(1, Math.round(run.drawing.width));
+    const height = Math.max(1, Math.round(run.drawing.height));
+    return `<img src="${escapeAttr(run.drawing.url)}" width="${width}" height="${height}" />`;
+  }
   let html = escapeText(run.text);
   const style = cssOf(run.style);
   if (style) {
@@ -162,6 +167,10 @@ function collectInline(root: ParentNode, attrs: ParagraphAttrs): ClipboardParagr
   walk(root, {}, runs);
   const paragraphs: ClipboardParagraph[] = [{ attrs, runs: [] }];
   for (const run of mergeRuns(runs)) {
+    if (run.drawing) {
+      paragraphs.at(-1)?.runs.push({ text: run.text, style: { ...run.style }, drawing: run.drawing });
+      continue;
+    }
     const parts = run.text.split("\n");
     parts.forEach((part, index) => {
       if (index > 0) {
@@ -194,6 +203,13 @@ function walk(node: ParentNode, style: RunStyle, runs: ClipboardRun[]): void {
     }
     if (name === "br") {
       runs.push({ text: "\n", style: { ...style } });
+      continue;
+    }
+    if (name === "img") {
+      const drawing = drawingFromImg(element);
+      if (drawing) {
+        runs.push({ text: "", style: { ...style }, drawing });
+      }
       continue;
     }
     walk(element, mergeElementStyle(style, element), runs);
@@ -308,6 +324,10 @@ function mergeRuns(runs: ClipboardRun[]): ClipboardRun[] {
   const merged: ClipboardRun[] = [];
   for (const run of runs) {
     const prev = merged.at(-1);
+    if (run.drawing || prev?.drawing) {
+      merged.push({ text: run.text, style: { ...run.style }, drawing: run.drawing });
+      continue;
+    }
     if (prev && JSON.stringify(prev.style) === JSON.stringify(run.style)) {
       prev.text += run.text;
     } else {
@@ -322,7 +342,24 @@ function isBlock(tag: string): boolean {
 }
 
 function joinText(paragraphs: ClipboardParagraph[]): string {
-  return paragraphs.map((paragraph) => paragraph.runs.map((run) => run.text).join("")).join("\n");
+  return paragraphs
+    .map((paragraph) => paragraph.runs.map((run) => (run.drawing ? run.text || "\uFFFC" : run.text)).join(""))
+    .join("\n");
+}
+
+function drawingFromImg(element: HTMLElement): ClipboardDrawing | undefined {
+  const url = element.getAttribute("src") || "";
+  if (!url) {
+    return undefined;
+  }
+  const width = Number.parseFloat(element.getAttribute("width") || "") || element.getBoundingClientRect?.().width || 160;
+  const height = Number.parseFloat(element.getAttribute("height") || "") || element.getBoundingClientRect?.().height || 120;
+  return {
+    url,
+    sourceUrl: url,
+    width: Math.max(1, width),
+    height: Math.max(1, height),
+  };
 }
 
 function escapeText(text: string): string {

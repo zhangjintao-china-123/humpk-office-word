@@ -153,4 +153,12 @@ describe("TableResizeController", () => {
     dispatch(el, "pointermove", 20, 20);
     expect(el.style.cursor).toBe("");
   });
+
+  it("没碰到格线时不把别人设的缩放光标清掉", () => {
+    const source = guide(hostTable(), "column");
+    const { el } = mount(source);
+    el.style.cursor = "nwse-resize";
+    dispatch(el, "pointermove", 10, 20);
+    expect(el.style.cursor).toBe("nwse-resize");
+  });
 });

@@ -11,6 +11,7 @@ import { SelectionText } from "../../src/selection/SelectionText";
 import type { StoryRef } from "../../src/selection/StoryRef";
 import { Clipboard } from "../../src/edit/Clipboard";
 import { ClipboardPayload } from "../../src/edit/ClipboardPayload";
+import { Drawing } from "../../src/model/inline/Drawing";
 import type { EditContext } from "../../src/edit/EditContext";
 import { DeleteCommand } from "../../src/edit/DeleteCommand";
 import { History } from "../../src/edit/History";
@@ -166,6 +167,39 @@ describe("剪贴板动作", () => {
     expect(inserted.data.getStyle()?.bold).toBe(true);
     expect(inserted.data.getStyle()?.color).toBe("#C00000");
     expect(inserted.next!.data.getStyle()?.bold).toBe(true);
+  });
+
+  it("复制图片后再粘贴得到独立的绘图", async () => {
+    const source = new Document();
+    const paragraph = new Paragraph(1);
+    const drawing = new Drawing();
+    drawing.url = "data:image/png;base64,pic";
+    drawing.width = 80;
+    drawing.height = 40;
+    const block = new Block();
+    block.drawing = drawing;
+    paragraph.addBlock(block);
+    source.addParagraph(paragraph);
+    new WordStreamBuilder().buildStoryOnly(source);
+    const node = source.words.head!;
+    const selection = new Selection();
+    selection.setRange(new SelRange(body, new CaretPos(body, node, false), new CaretPos(body, node, true)));
+    const clipboard = memoryClipboard();
+    await clipboard.write(new SelectionFragment().extract(selection));
+
+    const target = doc("x");
+    const dest = new Selection();
+    dest.collapse(new CaretPos(body, target.words.head, true));
+    const ctx = context(dest, () => target);
+    new History().do(new InsertCommand(ctx, await clipboard.read()));
+    let inserted = target.words.head;
+    while (inserted && inserted.data.kind !== "drawing") {
+      inserted = inserted.next;
+    }
+    expect(inserted?.data.drawing?.url).toBe(drawing.url);
+    expect(inserted?.data.drawing?.width).toBe(80);
+    expect(inserted?.data.drawing).not.toBe(drawing);
+    expect(dest.primaryRange()?.start.node?.data.kind).toBe("drawing");
   });
 
   it("多段粘贴带上后段对齐", async () => {

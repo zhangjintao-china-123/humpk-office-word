@@ -28,6 +28,14 @@ export function pxToEmu(px: number): number {
   return Math.round(px * 9525);
 }
 
+export function pxToCm(px: number): number {
+  return (px * 2.54) / 96;
+}
+
+export function cmToPx(cm: number): number {
+  return (cm * 96) / 2.54;
+}
+
 export function parseNumber(value: string | undefined): number | undefined {
   if (value == null || value === "") {
     return undefined;

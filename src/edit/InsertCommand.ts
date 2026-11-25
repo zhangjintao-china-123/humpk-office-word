@@ -1,12 +1,13 @@
 import { CaretPos } from "../selection/CaretPos";
 import { SelectionText } from "../selection/SelectionText";
-import type { SelRange } from "../selection/SelRange";
+import { SelRange } from "../selection/SelRange";
 import type { StoryRef } from "../selection/StoryRef";
 import type { Document } from "../model/document/Document";
 import type { Paragraph } from "../model/block/Paragraph";
+import type { Drawing } from "../model/inline/Drawing";
 import type { RunStyle } from "../model/style/RunStyle";
 import { consumeFlow } from "./FlowEdit";
-import { ClipboardPayload, type ClipboardParagraph } from "./ClipboardPayload";
+import { ClipboardPayload, drawingFromSnapshot, type ClipboardParagraph } from "./ClipboardPayload";
 import { TableSnapshot } from "./TableSnapshot";
 import type { EditCommand } from "./EditCommand";
 import type { EditContext } from "./EditContext";
@@ -150,6 +151,9 @@ export class InsertCommand implements EditCommand {
         pos = this.insertBreak(document, story, pos, paragraph);
       }
       for (const run of paragraph.runs) {
+        if (run.drawing) {
+          pos = this.insertDrawing(document, story, pos, drawingFromSnapshot(run.drawing), pictureOnly(this.payload));
+        }
         pos = this.insertRun(document, story, pos, run.text, this.styleOf(run.style));
       }
     });
@@ -174,6 +178,31 @@ export class InsertCommand implements EditCommand {
     refreshNumbering(document, patch);
     this.ctx.relayout.apply(patch.impact);
     this.ctx.selection.collapse(patch.caret);
+    this.ctx.afterEdit(patch.impact);
+    return patch.caret;
+  }
+
+  private insertDrawing(
+    document: Document,
+    story: StoryRef,
+    pos: CaretPos,
+    drawing: Drawing,
+    select: boolean,
+  ): CaretPos {
+    const patch = this.ctx.mutator.insertDrawing(document, story, pos, drawing);
+    if (!patch.inserted.length) {
+      return pos;
+    }
+    this.patches.push(patch);
+    this.ctx.relayout.apply(patch.impact);
+    const node = patch.inserted.find((item) => item.data.kind === "drawing");
+    if (select && node) {
+      this.ctx.selection.setRange(
+        new SelRange(story, new CaretPos(story, node, false), new CaretPos(story, node, true)),
+      );
+    } else {
+      this.ctx.selection.collapse(patch.caret);
+    }
     this.ctx.afterEdit(patch.impact);
     return patch.caret;
   }
@@ -217,4 +246,9 @@ export class InsertCommand implements EditCommand {
       return selectionText.cellContentRange(range.story.cell);
     });
   }
+}
+
+function pictureOnly(payload: ClipboardPayload): boolean {
+  const runs = payload.paragraphs.flatMap((paragraph) => paragraph.runs);
+  return !payload.table && runs.length === 1 && !!runs[0]?.drawing && !runs[0].text;
 }

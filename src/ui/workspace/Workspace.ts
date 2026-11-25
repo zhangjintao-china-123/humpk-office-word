@@ -12,20 +12,42 @@ import type { HeaderFooterType } from "../../model/document/DocumentKind";
 import { labelPages, type PageLabel } from "../../model/document/PageLabel";
 import { Section } from "../../model/document/Section";
 import { WordStreamBuilder } from "../../model/flatten/WordStreamBuilder";
+import type { Drawing } from "../../model/inline/Drawing";
 import type { Table, TableCell } from "../../model/table/Table";
 import { DEFAULT_FONT_SIZE } from "../../layout/LayoutConstants";
 import { pxToPt, twipToPx } from "../../shared/units";
 import { linkLabel, parseLinkInput } from "../../model/field/TextLink";
 import { mergeRunStyle, resolveFontFamily, type RunStyle } from "../../model/style/RunStyle";
-import { Clipboard, payloadFromData } from "../../edit/Clipboard";
+import { Clipboard, imageFileFromData, payloadFromData } from "../../edit/Clipboard";
+import { ClipboardPayload } from "../../edit/ClipboardPayload";
 import { CommentCommand } from "../../edit/CommentCommand";
 import { FootnoteCommand } from "../../edit/FootnoteCommand";
 import { HyperlinkCommand } from "../../edit/HyperlinkCommand";
 import { RevisionCommand } from "../../edit/RevisionCommand";
 import { collectStories, findInStories, indexAtOrAfter, indexBefore, type FindHit, type FindQuery, type FindStatus } from "../../edit/Find";
-import { DeleteCommand } from "../../edit/DeleteCommand";
+import { DeleteCommand, type DeleteDirection } from "../../edit/DeleteCommand";
 import { FormatCommand, gapPreset, indentPreset, spacingPreset, stylePreset, type FormatAction } from "../../edit/FormatCommand";
 import { InsertObjectCommand } from "../../edit/InsertObjectCommand";
+import { drawingFromFile } from "../../edit/PictureFile";
+import {
+  applyPicturePlace,
+  applyPictureSize,
+  applyPictureWrap,
+  canDragPicture,
+  findDrawingNode,
+  PictureTransformCommand,
+  pictureWrapOffset,
+  resizedPicture,
+  restorePicture,
+  samePicture,
+  snapPicture,
+  syncPictureStream,
+  picturePlaceOf,
+  pictureWrapOf,
+  type PicturePlace,
+  type PictureSnap,
+  type PictureWrap,
+} from "../../edit/PictureTransform";
 import { OutlineCommand, type OutlineAction } from "../../edit/OutlineCommand";
 import { InsertCommand } from "../../edit/InsertCommand";
 import { ReplaceCommand } from "../../edit/ReplaceCommand";
@@ -49,8 +71,9 @@ import { PageSetup } from "../../render/page/PageSetup";
 import { imageCache } from "../../render/image/ImageCache";
 import { CaretView } from "../../selection/CaretView";
 import { FindPainter } from "../../selection/FindPainter";
-import { HitTester, type CaretBox, type HitContext } from "../../selection/HitTester";
+import { HitTester, type CaretBox, type HitContext, type PictureBox } from "../../selection/HitTester";
 import { PointerController } from "../../selection/PointerController";
+import { PictureTransformController } from "../../selection/PictureTransformController";
 import { TableResizeController } from "../../selection/TableResizeController";
 import { Selection } from "../../selection/Selection";
 import { SelectionPainter } from "../../selection/SelectionPainter";
@@ -96,7 +119,10 @@ export class Workspace {
   private findQueryKey = "";
   private readonly selectionPainter: SelectionPainter;
   private readonly pointer: PointerController;
+  private readonly pictureTransform: PictureTransformController;
   private readonly tableResize: TableResizeController;
+  private pictureFocus: PictureBox | null = null;
+  private holdingPicture = false;
   private readonly contextMenu: ContextMenuController;
   private readonly caret: CaretView;
   private readonly selectionText = new SelectionText();
@@ -159,6 +185,18 @@ export class Workspace {
       },
     });
     this.pointer.attach(this.root);
+    this.pictureTransform = new PictureTransformController({
+      clientToWorld: (x, y) => this.clientToWorld(x, y),
+      zoom: () => this.viewport.zoom || 1,
+      selectedPicture: () => this.selectedPicture(),
+      pictureAt: (x, y) => this.hit.pictureAt(x, y, this.hitContext()),
+      selectPicture: (box) => this.selectPicture(box),
+      previewResize: (box, start, handle, dx, dy, lock) => this.previewPictureResize(box, start, handle, dx, dy, lock),
+      previewMove: (box, start, dx, dy) => this.previewPictureMove(box, start, dx, dy),
+      commit: (box, before) => this.commitPicture(box, before),
+      revert: (box, before) => this.revertPicture(box, before),
+    });
+    this.pictureTransform.attach(this.root);
     this.tableResize = new TableResizeController({
       clientToWorld: (x, y) => this.clientToWorld(x, y),
       zoom: () => this.viewport.zoom || 1,
@@ -185,6 +223,8 @@ export class Workspace {
     this.contextMenu = new ContextMenuController({
       selection: this.selection,
       hitClient: (x, y) => this.hitClient(x, y),
+      pictureAtClient: (x, y) => this.pictureAtClient(x, y),
+      selectPicture: (box) => this.selectPicture(box),
       onSelectionChange: () => {
         this.input.resetColumn();
         this.input.clearPending();
@@ -193,7 +233,7 @@ export class Workspace {
       copy: () => this.copy(),
       cut: () => this.cut(),
       paste: () => this.paste(),
-      deleteSelection: () => this.deleteSelection(),
+      deleteSelection: () => this.deleteContent("backward"),
     });
     this.contextMenu.attach(host, this.root);
     this.layout();
@@ -208,6 +248,7 @@ export class Workspace {
     this.body?.dispose();
     this.disposeBands();
     this.selection.clear();
+    this.pictureFocus = null;
     this.history.clear();
     this.invalidateFind();
     this.applyPageSetup(document);
@@ -274,6 +315,11 @@ export class Workspace {
   }
 
   async copy(): Promise<void> {
+    const picture = this.selectedPicture();
+    if (picture) {
+      await this.clipboard.write(ClipboardPayload.picture(picture.drawing));
+      return;
+    }
     if (!this.selectionText.hasCopyableContent(this.selection)) {
       return;
     }
@@ -284,6 +330,11 @@ export class Workspace {
   }
 
   async cut(): Promise<void> {
+    if (this.selectedPicture()) {
+      await this.copy();
+      this.deleteContent("backward");
+      return;
+    }
     if (!this.selectionText.hasCopyableContent(this.selection)) {
       return;
     }
@@ -293,7 +344,16 @@ export class Workspace {
 
   async paste(data?: DataTransfer | null): Promise<void> {
     const offered = payloadFromData(data);
-    const payload = offered && !offered.empty ? offered : await this.clipboard.read();
+    if (offered && !offered.empty) {
+      this.history.do(new InsertCommand(this, offered));
+      return;
+    }
+    const file = imageFileFromData(data ?? undefined);
+    if (file) {
+      await this.insertPictureFile(file);
+      return;
+    }
+    const payload = await this.clipboard.read();
     if (payload.empty) {
       return;
     }
@@ -301,10 +361,14 @@ export class Workspace {
   }
 
   deleteSelection(): void {
-    if (!this.selectionText.hasCopyableContent(this.selection)) {
+    this.deleteContent("backward");
+  }
+
+  deleteContent(direction: DeleteDirection): void {
+    if (this.removeSelectedPicture()) {
       return;
     }
-    this.history.do(new DeleteCommand(this, "backward"));
+    this.history.do(new DeleteCommand(this, direction));
   }
 
   applyTableBorder(mode: TableBorderMode): void {
@@ -429,14 +493,28 @@ export class Workspace {
     this.history.do(new HeaderFooterCommand(this, "page"));
   }
 
-  insertTable(): void {
+  insertTable(rows = 3, cols = 3): void {
     if (!this.body?.document) {
       return;
     }
     if (this.selection.isEmpty()) {
       this.placeCaret();
     }
-    this.history.do(new InsertObjectCommand(this, { type: "table", rows: 3, cols: 3 }));
+    this.history.do(new InsertObjectCommand(this, { type: "table", rows, cols }));
+  }
+
+  editHeader(): void {
+    if (!this.body?.document) {
+      return;
+    }
+    this.history.do(new HeaderFooterCommand(this, "header"));
+  }
+
+  editFooter(): void {
+    if (!this.body?.document) {
+      return;
+    }
+    this.history.do(new HeaderFooterCommand(this, "footer"));
   }
 
   insertPageBreak(): void {
@@ -447,6 +525,62 @@ export class Workspace {
       this.placeCaret();
     }
     this.history.do(new InsertObjectCommand(this, { type: "pageBreak" }));
+  }
+
+  insertBlankPage(): void {
+    if (!this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    this.history.do(new InsertObjectCommand(this, { type: "blankPage" }));
+  }
+
+  async insertPictureFile(file: File): Promise<void> {
+    if (!this.body?.document) {
+      return;
+    }
+    try {
+      const drawing = await drawingFromFile(file, this.pageSetup.contentWidth, this.pageSetup.contentHeight);
+      this.insertPicture(drawing);
+    } catch {
+      return;
+    }
+  }
+
+  applyPictureWrap(wrap: PictureWrap): void {
+    const hit = this.selectedPicture();
+    if (!hit) {
+      return;
+    }
+    this.commitPictureChange(hit, () => applyPictureWrap(hit.drawing, wrap, this.pictureOffset(hit)));
+  }
+
+  applyPicturePlace(place: PicturePlace): void {
+    const hit = this.selectedPicture();
+    if (!hit) {
+      return;
+    }
+    this.commitPictureChange(hit, () => applyPicturePlace(hit.drawing, place));
+  }
+
+  applyPictureSize(widthPx: number, heightPx: number, lockAspect: boolean): void {
+    const hit = this.selectedPicture();
+    if (!hit) {
+      return;
+    }
+    this.commitPictureChange(hit, () => applyPictureSize(hit.drawing, widthPx, heightPx, lockAspect));
+  }
+
+  insertPicture(drawing: Drawing): void {
+    if (!this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    this.history.do(new InsertObjectCommand(this, { type: "picture", drawing }));
   }
 
   toggleTitlePage(): void {
@@ -470,6 +604,8 @@ export class Workspace {
     const run = mergeRunStyle(node?.data.getStyle(), pending);
     const family = run ? resolveFontFamily(run, node?.data.intChar ?? 0) : "宋体";
     const selected = this.selectedTable();
+    const picture = this.selectedPicture();
+    const attrs = pos?.node?.data.paragraph?.attrs;
     return {
       fontFamily: family,
       fontSizePt: Math.round(pxToPt(run.fontSizePx ?? DEFAULT_FONT_SIZE) * 2) / 2,
@@ -477,14 +613,15 @@ export class Workspace {
       italic: !!run.italic,
       underline: !!run.underline && run.underline !== "none",
       strike: !!run.strike,
-      color: run.color ?? "#111111",
+      color: run.color ?? "auto",
       highlight: run.backgroundColor ?? run.highlight ?? "none",
-      align: pos?.node?.data.paragraph?.attrs.textAlign ?? "left",
-      indent: indentPreset(pos?.node?.data.paragraph?.attrs),
-      lineSpacing: spacingPreset(pos?.node?.data.paragraph?.attrs),
-      paraGap: gapPreset(pos?.node?.data.paragraph?.attrs),
+      align: attrs?.textAlign ?? "left",
+      indent: indentPreset(attrs),
+      canIndentLess: (attrs?.leftChars ?? 0) > 0 || (attrs?.leftTwip ?? 0) > 0,
+      lineSpacing: spacingPreset(attrs),
+      paraGap: gapPreset(attrs),
       vertAlign: run.vertAlign,
-      paragraphStyle: stylePreset(pos?.node?.data.paragraph?.attrs),
+      paragraphStyle: stylePreset(attrs),
       listLevel: listLevelOf(pos?.node?.data.paragraph),
       link: linkLabel(pos?.node?.data.block?.link),
       comments: (this.body?.document?.comments ?? []).map((comment) => ({
@@ -499,6 +636,12 @@ export class Workspace {
       hasDoc: !!this.body?.document,
       caption,
       inTable: !!selected,
+      inPicture: !!picture,
+      pictureWrap: picture ? pictureWrapOf(picture.drawing) : undefined,
+      picturePlace: picture ? picturePlaceOf(picture.drawing) : undefined,
+      pictureWidth: picture?.drawing.width,
+      pictureHeight: picture?.drawing.height,
+      pictureLock: picture ? picture.drawing.lockAspect !== false : undefined,
       borderPen: { ...this.borderPen },
       borderFlags: selected ? this.borderApplier.inspect(selected.cells, selected.table) : undefined,
       titlePg: this.currentSection()?.titlePg ?? false,
@@ -547,6 +690,200 @@ export class Workspace {
     this.input.focus();
     this.onSelectionChange();
   };
+
+  selectedPicture(): PictureBox | null {
+    if (this.pictureFocus && this.pictureStillThere(this.pictureFocus)) {
+      return this.livePicture(this.pictureFocus) ?? this.pictureFocus;
+    }
+    return this.pictureFromRange();
+  }
+
+  private pictureFromRange(): PictureBox | null {
+    const range = this.selection.primaryRange()?.normalized();
+    if (!range || range.collapsed() || range.start.node !== range.end.node) {
+      return null;
+    }
+    const node = range.start.node;
+    const drawing = node?.data.drawing;
+    const paragraph = node?.data.paragraph;
+    if (!node || node.data.kind !== "drawing" || !drawing || !paragraph || node.data.block?.math) {
+      return null;
+    }
+    return (
+      this.hit.pictures(this.hitContext()).find((item) => item.drawing === drawing) ?? {
+        drawing,
+        paragraph,
+        story: range.story,
+        node,
+        x: 0,
+        y: 0,
+        width: drawing.width,
+        height: drawing.height,
+        behind: false,
+      }
+    );
+  }
+
+  private removeSelectedPicture(): boolean {
+    const hit = this.selectedPicture();
+    if (!hit) {
+      return false;
+    }
+    const document = this.documentOf(hit.story);
+    if (!document) {
+      return false;
+    }
+    if (hit.drawing.position === "anchor") {
+      hit.drawing.position = "inline";
+      hit.drawing.anchorSet = undefined;
+      syncPictureStream(document, hit.paragraph, hit.drawing);
+    }
+    const node = hit.node && hit.node.data.drawing === hit.drawing ? hit.node : findDrawingNode(document, hit.drawing);
+    if (!node) {
+      return false;
+    }
+    this.pictureFocus = null;
+    this.holdingPicture = true;
+    this.selection.setRange(
+      new SelRange(hit.story, new CaretPos(hit.story, node, false), new CaretPos(hit.story, node, true)),
+    );
+    this.holdingPicture = false;
+    this.history.do(new DeleteCommand(this, "backward"));
+    return true;
+  }
+
+  private selectPicture(box: PictureBox): void {
+    this.holdingPicture = true;
+    this.pictureFocus = box;
+    if (box.node) {
+      this.selection.setRange(
+        new SelRange(box.story, new CaretPos(box.story, box.node, false), new CaretPos(box.story, box.node, true)),
+      );
+    }
+    this.onSelectionChange();
+    this.holdingPicture = false;
+  }
+
+  private previewPictureResize(box: PictureBox, start: PictureSnap, handle: Parameters<typeof resizedPicture>[1], dx: number, dy: number, lockAspect: boolean): void {
+    const next = resizedPicture({ width: start.width, height: start.height }, handle, dx, dy, lockAspect);
+    restorePicture(box.drawing, start);
+    box.drawing.width = next.width;
+    box.drawing.height = next.height;
+    if (start.position === "anchor" || box.drawing.position === "anchor") {
+      this.applyPictureOffset(box, start, next.deltaX, next.deltaY);
+    }
+    this.reflowPicture(box);
+  }
+
+  private previewPictureMove(box: PictureBox, start: PictureSnap, dx: number, dy: number): void {
+    if (!canDragPicture(box.story, start.position)) {
+      return;
+    }
+    restorePicture(box.drawing, start);
+    if (box.drawing.position !== "anchor") {
+      applyPictureWrap(box.drawing, "square", this.pictureOffset(box));
+    }
+    this.applyPictureOffset(box, snapPicture(box.drawing), dx, dy);
+    this.reflowPicture(box);
+  }
+
+  private commitPicture(box: PictureBox, before: PictureSnap): void {
+    const after = snapPicture(box.drawing);
+    if (samePicture(before, after)) {
+      return;
+    }
+    restorePicture(box.drawing, before);
+    this.history.do(new PictureTransformCommand(this, box.drawing, box.story, box.paragraph, before, after));
+    this.refreshPictureFocus(box.drawing, box.story, box.paragraph);
+  }
+
+  private revertPicture(box: PictureBox, before: PictureSnap): void {
+    restorePicture(box.drawing, before);
+    const document = this.documentOf(box.story);
+    if (document) {
+      syncPictureStream(document, box.paragraph, box.drawing);
+    }
+    this.reflowPicture(box);
+  }
+
+  private commitPictureChange(hit: PictureBox, mutate: () => void): void {
+    const before = snapPicture(hit.drawing);
+    mutate();
+    const after = snapPicture(hit.drawing);
+    if (samePicture(before, after)) {
+      restorePicture(hit.drawing, after);
+      return;
+    }
+    restorePicture(hit.drawing, before);
+    this.history.do(new PictureTransformCommand(this, hit.drawing, hit.story, hit.paragraph, before, after));
+    this.refreshPictureFocus(hit.drawing, hit.story, hit.paragraph);
+  }
+
+  private applyPictureOffset(box: PictureBox, start: PictureSnap, dx: number, dy: number): void {
+    const origin = this.pictureOffset(box);
+    const left = (start.anchorSet?.left ?? origin.left) + dx;
+    const top = (start.anchorSet?.top ?? origin.top) + dy;
+    box.drawing.position = "anchor";
+    box.drawing.anchorSet = {
+      ...(start.anchorSet ?? box.drawing.anchorSet),
+      wrapType: start.anchorSet?.wrapType ?? box.drawing.anchorSet?.wrapType ?? "square",
+      wrapSide: start.anchorSet?.wrapSide ?? "both",
+      distLeft: start.anchorSet?.distLeft ?? 8,
+      distRight: start.anchorSet?.distRight ?? 8,
+      distTop: start.anchorSet?.distTop ?? 8,
+      distBottom: start.anchorSet?.distBottom ?? 8,
+      leftFrom: "column",
+      topFrom: "paragraph",
+      left,
+      top,
+      leftAlign: undefined,
+      topAlign: undefined,
+    };
+  }
+
+  private pictureOffset(hit: PictureBox): { left: number; top: number } {
+    const first = hit.paragraph.lines[0];
+    const paragraphOrigin = first ? this.hit.lineOrigin(first, hit.story, this.hitContext()) : null;
+    return pictureWrapOffset(hit, paragraphOrigin, this.hit.worldToStory(hit.x, hit.y, this.hitContext()), first?.top ?? 0);
+  }
+
+  private reflowPicture(box: PictureBox): void {
+    const document = this.documentOf(box.story);
+    if (document) {
+      syncPictureStream(document, box.paragraph, box.drawing);
+    }
+    this.relayout.apply(new EditImpact(box.story, [box.paragraph]));
+    this.paint();
+  }
+
+  private refreshPictureFocus(drawing: Drawing, story: StoryRef, paragraph: Paragraph): void {
+    const live = this.hit.pictures(this.hitContext()).find((item) => item.drawing === drawing);
+    this.pictureFocus = live ?? { drawing, paragraph, story, x: 0, y: 0, width: drawing.width, height: drawing.height, behind: drawing.anchorSet?.behind === true };
+    this.holdingPicture = true;
+    if (this.pictureFocus.node) {
+      this.selection.setRange(
+        new SelRange(
+          this.pictureFocus.story,
+          new CaretPos(this.pictureFocus.story, this.pictureFocus.node, false),
+          new CaretPos(this.pictureFocus.story, this.pictureFocus.node, true),
+        ),
+      );
+    }
+    this.onSelectionChange();
+    this.holdingPicture = false;
+  }
+
+  private pictureStillThere(box: PictureBox): boolean {
+    const document = this.documentOf(box.story);
+    if (!document) {
+      return false;
+    }
+    return document.paragraphs.toArray().some((paragraph) => paragraph.blocks.some((block) => block.drawing === box.drawing));
+  }
+
+  private livePicture(box: PictureBox): PictureBox | null {
+    return this.hit.pictures(this.hitContext()).find((item) => item.drawing === box.drawing) ?? null;
+  }
 
   private selectedTable(): { table: Table; cells: TableCell[]; story: StoryRef } | null {
     const cells: TableCell[] = [];
@@ -682,6 +1019,11 @@ export class Workspace {
     return this.hit.hit(world.x, world.y, this.hitContext());
   }
 
+  pictureAtClient(clientX: number, clientY: number): PictureBox | null {
+    const world = this.clientToWorld(clientX, clientY);
+    return this.hit.pictureAt(world.x, world.y, this.hitContext());
+  }
+
   private clientToWorld(clientX: number, clientY: number): { x: number; y: number } {
     const rect = this.root.getBoundingClientRect();
     return this.viewport.cssToWorld(clientX - rect.left, clientY - rect.top);
@@ -720,8 +1062,17 @@ export class Workspace {
     this.findPainter.paint(draw, this.findHits, ctx);
     this.selectionPainter.paint(draw, this.selection, ctx);
     this.selectionPainter.paintTableHandles(draw, ctx);
+    const picture = this.selectedPicture();
+    if (picture) {
+      this.selectionPainter.paintPictureHandles(draw, picture);
+      this.caret.el.hidden = true;
+    }
     draw.restore();
-    this.caret.sync(this.selection, ctx, this.viewport);
+    if (!picture) {
+      this.caret.sync(this.selection, ctx, this.viewport);
+    } else {
+      this.caret.el.hidden = true;
+    }
   }
 
   documentOf(story: StoryRef): Document | null {
@@ -1119,6 +1470,9 @@ export class Workspace {
   }
 
   private onSelectionChange(): void {
+    if (!this.holdingPicture) {
+      this.pictureFocus = this.pictureFromRange();
+    }
     this.body?.emit(EditorEvents.selectionChange, this.selection);
     this.ensureCaretVisible();
     this.paint();

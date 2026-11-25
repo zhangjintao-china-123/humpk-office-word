@@ -1,3 +1,4 @@
+import type { Document } from "../../model/document/Document";
 import type { Line } from "../../model/line/Line";
 import type { Table, TableCell, TableInsets, TableLength } from "../../model/table/Table";
 import { twipToPx } from "../../shared/units";
@@ -16,6 +17,12 @@ export function cellInsets(table: Table | undefined, cell: TableCell): TableInse
 
 export function cellContentHeight(lines: Line[]): number {
   return lines.reduce((sum, line) => sum + (line.sharesBand ? 0 : line.height), 0);
+}
+
+export function cellDocumentHeight(document: Document): number {
+  const text = cellContentHeight(document.paragraphs.toArray().flatMap((paragraph) => paragraph.lines));
+  const float = document.anchors.reduce((max, anchor) => Math.max(max, anchor.y + anchor.height), 0);
+  return Math.max(text, float);
 }
 
 /** 单元格内容区左上角。垂直对齐在上下边距之间挪动。 */

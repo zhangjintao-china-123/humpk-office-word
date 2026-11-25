@@ -33,6 +33,8 @@ export class Drawing {
   /** 写回用的原始字节。EMF、WMF、TIFF 画布上用的是抽出来的位图，这里仍保留原件。 */
   sourceUrl?: string;
   position: "inline" | "anchor" = "inline";
+  /** 缩放时锁住宽高比，和 Word 图片默认一致。 */
+  lockAspect = true;
   anchorSet?: DrawingAnchor;
   /** 预设形状或文本框。没有 url 时按形状画，不再画灰块。 */
   shape?: GraphicShape;

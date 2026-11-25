@@ -6,6 +6,7 @@ import { Line } from "../../src/model/line/Line";
 import { WordStreamBuilder } from "../../src/model/flatten/WordStreamBuilder";
 import { Table, TableCell, TableRow } from "../../src/model/table/Table";
 import { Drawing } from "../../src/model/inline/Drawing";
+import { PlacedAnchor } from "../../src/model/inline/PlacedAnchor";
 import { Word } from "../../src/model/inline/Word";
 import { PageSetup } from "../../src/render/page/PageSetup";
 import type { StoryEditor } from "../../src/editor/StoryEditor";
@@ -307,6 +308,36 @@ describe("HitTester", () => {
     line.height = 20;
     expect(hit.tableGuide(65, 40, ctx, 4)).toBeNull();
     expect(hit.tableGuide(90, 30, ctx, 4)?.kind).toBe("column");
+  });
+
+  it("单元格浮动图也能点中", () => {
+    const drawing = new Drawing();
+    drawing.width = 40;
+    drawing.height = 24;
+    drawing.position = "anchor";
+    const cellDoc = new Document();
+    const paragraph = new Paragraph(1);
+    const block = new Block();
+    block.drawing = drawing;
+    paragraph.addBlock(block);
+    cellDoc.addParagraph(paragraph);
+    new WordStreamBuilder().buildStoryOnly(cellDoc);
+    const inner = new Line();
+    inner.startNode = cellDoc.words.head;
+    inner.length = cellDoc.words.length;
+    inner.height = 16;
+    inner.paragraph = paragraph;
+    paragraph.lines = [inner];
+    const placed = new PlacedAnchor(drawing, paragraph);
+    placed.width = 40;
+    placed.height = 24;
+    cellDoc.anchors = [placed];
+    const table = grid([[cellDoc, story("b").document]]);
+    const line = tableLineOf(table);
+    const ctx: HitContext = { pageSetup: setup, origins, body: editor([line], hostDoc(table)) };
+    const at = hit.pictureAt(setup.contentLeft() + DEFAULT_CELL_INSETS.left + 8, setup.contentTop() + 8, ctx);
+    expect(at?.drawing).toBe(drawing);
+    expect(at?.story.slot).toBe("cell");
   });
 
   it("字高还没量出来时，光标用这一行的字框", () => {
