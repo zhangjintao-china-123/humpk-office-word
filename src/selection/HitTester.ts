@@ -6,6 +6,8 @@ import type { Line } from "../model/line/Line";
 import type { Table, TableCell } from "../model/table/Table";
 import type { LinkedNode } from "../model/list/LinkedList";
 import type { Drawing } from "../model/inline/Drawing";
+import { textBoxContentGeometry, textBoxLocal, textBoxPoint } from "../model/graphic/TextBoxGeometry";
+import { unrotatePoint } from "../model/graphic/DrawingTransform";
 import type { Word } from "../model/inline/Word";
 import type { StoryEditor } from "../editor/StoryEditor";
 import type { PageOrigin } from "../editor/StoryEditor";
@@ -13,7 +15,7 @@ import type { PageSetup } from "../render/page/PageSetup";
 import { cellVisibleRect, TableGeometry, type TableCellBox } from "../render/table/TableGeometry";
 import { cellContentOrigin, cellDocumentHeight } from "../layout/table/TableMetrics";
 import { CaretPos } from "./CaretPos";
-import { storyKind, storySection, type StoryRef } from "./StoryRef";
+import { isVerticalTextBox, storyKind, storySection, type StoryRef } from "./StoryRef";
 import { guidesFromBoxes, pickGuide, type TableGuide, type TableGuideKind } from "./TableGuides";
 
 export interface HitContext {
@@ -38,6 +40,7 @@ export interface CaretBox {
   x: number;
   y: number;
   height: number;
+  width?: number;
 }
 
 export const TABLE_HANDLE = 14;
@@ -80,7 +83,7 @@ export class HitTester {
     );
   }
 
-  pictures(ctx: HitContext): PictureBox[] {
+  pictures(ctx: HitContext, includeHidden = false): PictureBox[] {
     const found: PictureBox[] = [];
     const seen = new Set<StoryEditor>();
     const add = (editor: StoryEditor | undefined, story: StoryRef) => {
@@ -88,7 +91,7 @@ export class HitTester {
         return;
       }
       seen.add(editor);
-      this.collectPictures(editor, story, ctx, found);
+      this.collectPictures(editor, story, ctx, found, includeHidden);
     };
     if (ctx.body) {
       add(ctx.body, { slot: "body" });
@@ -106,11 +109,22 @@ export class HitTester {
     return found;
   }
 
-  pictureAt(worldX: number, worldY: number, ctx: HitContext): PictureBox | null {
+  pictureAt(worldX: number, worldY: number, ctx: HitContext, textBoxSlop = 3): PictureBox | null {
     const pictures = this.pictures(ctx);
     for (let i = pictures.length - 1; i >= 0; i -= 1) {
       const box = pictures[i];
-      if (this.contains(worldX, worldY, box.x, box.y, box.width, box.height)) {
+      const pt = unrotatePoint(worldX, worldY, box, box.drawing.rotation);
+      if (box.drawing.shape?.text) {
+        const inner = Math.min(textBoxSlop, box.width / 4, box.height / 4);
+        if (this.contains(pt.x, pt.y, box.x + inner, box.y + inner, box.width - inner * 2, box.height - inner * 2)) {
+          return null;
+        }
+        if (this.contains(pt.x, pt.y, box.x - textBoxSlop, box.y - textBoxSlop, box.width + textBoxSlop * 2, box.height + textBoxSlop * 2)) {
+          return box;
+        }
+        continue;
+      }
+      if (this.contains(pt.x, pt.y, box.x, box.y, box.width, box.height)) {
         return box;
       }
     }
@@ -126,7 +140,7 @@ export class HitTester {
     return found;
   }
 
-  private tableHandleAt(worldX: number, worldY: number, ctx: HitContext): TableHandle | null {
+  tableHandleAt(worldX: number, worldY: number, ctx: HitContext): TableHandle | null {
     for (const handle of this.tableHandles(ctx)) {
       if (this.contains(worldX, worldY, handle.x, handle.y, handle.size, handle.size)) {
         return handle;
@@ -195,17 +209,34 @@ export class HitTester {
     return best.current?.guide ?? null;
   }
 
-  private collectPictures(editor: StoryEditor, story: StoryRef, ctx: HitContext, found: PictureBox[]): void {
+  private collectPictures(
+    editor: StoryEditor,
+    story: StoryRef,
+    ctx: HitContext,
+    found: PictureBox[],
+    includeHidden = false,
+  ): void {
     const document = editor.document;
     if (!document) {
       return;
     }
-    this.collectInlinePictures(editor.lines, story, ctx, found);
-    this.collectCellPictures(editor.lines, ctx, found);
-    this.collectAnchorPictures(editor, story, ctx, found);
+    const anchors: PictureBox[] = [];
+    this.collectAnchorPictures(editor, story, ctx, anchors, includeHidden);
+    const behind = anchors.filter((item) => item.behind);
+    const front = anchors.filter((item) => !item.behind);
+    found.push(...behind);
+    this.collectInlinePictures(editor.lines, story, ctx, found, includeHidden);
+    this.collectCellPictures(editor.lines, ctx, found, true, 0, 0, includeHidden);
+    found.push(...front);
   }
 
-  private collectInlinePictures(lines: Line[], story: StoryRef, ctx: HitContext, found: PictureBox[]): void {
+  private collectInlinePictures(
+    lines: Line[],
+    story: StoryRef,
+    ctx: HitContext,
+    found: PictureBox[],
+    includeHidden = false,
+  ): void {
     for (const line of lines) {
       if (line.type === "table" || line.type === "page") {
         continue;
@@ -217,7 +248,13 @@ export class HitTester {
       let node = line.startNode;
       for (let i = 0; i < line.length && node; i += 1) {
         const drawing = node.data.drawing;
-        if (node.data.kind === "drawing" && drawing && !node.data.block?.math && node.data.paragraph) {
+        if (
+          node.data.kind === "drawing" &&
+          drawing &&
+          !node.data.block?.math &&
+          node.data.paragraph &&
+          (includeHidden || !drawing.hidden)
+        ) {
           found.push({
             drawing,
             paragraph: node.data.paragraph,
@@ -235,26 +272,24 @@ export class HitTester {
     }
   }
 
-  private collectCellPictures(lines: Line[], ctx: HitContext, found: PictureBox[]): void {
-    for (const line of lines) {
-      if (line.type !== "table") {
-        continue;
-      }
-      const boxes = this.placeTableLine(line, ctx, true, 0, 0);
-      if (!boxes) {
-        continue;
-      }
-      const table = line.startNode?.data.table;
-      for (const box of boxes) {
+  private collectCellPictures(
+    lines: Line[],
+    ctx: HitContext,
+    found: PictureBox[],
+    paginate = true,
+    originX = 0,
+    originY = 0,
+    includeHidden = false,
+  ): void {
+    for (const placed of this.tablePlacements(lines, ctx, paginate, originX, originY)) {
+      const table = placed.line.startNode?.data.table;
+      for (const box of placed.boxes) {
         const nested: StoryRef = { slot: "cell", cell: box.cell };
         const inner = this.storyLines(nested, ctx);
-        this.collectInlinePictures(inner, nested, ctx, found);
-        if (!table) {
-          continue;
-        }
+        this.collectInlinePictures(inner, nested, ctx, found, includeHidden);
         const origin = cellContentOrigin(table, box, cellDocumentHeight(box.cell.document));
         for (const anchor of box.cell.document.anchors) {
-          if (anchor.drawing.shape?.text || !anchor.paragraph) {
+          if (!anchor.paragraph || (!includeHidden && anchor.drawing.hidden)) {
             continue;
           }
           found.push({
@@ -268,18 +303,43 @@ export class HitTester {
             behind: anchor.behind,
           });
         }
+        this.collectCellPictures(inner, ctx, found, false, origin.x, origin.y, includeHidden);
       }
     }
   }
 
-  private collectAnchorPictures(editor: StoryEditor, story: StoryRef, ctx: HitContext, found: PictureBox[]): void {
+  private collectAnchorPictures(
+    editor: StoryEditor,
+    story: StoryRef,
+    ctx: HitContext,
+    found: PictureBox[],
+    includeHidden = false,
+  ): void {
     const document = editor.document;
     if (!document) {
       return;
     }
     const pageH = Math.max(1, ctx.pageSetup.contentHeight);
     for (const anchor of document.anchors) {
-      if (anchor.drawing.shape?.text || !anchor.paragraph) {
+      if (!anchor.paragraph || (!includeHidden && anchor.drawing.hidden)) {
+        continue;
+      }
+      const paragraph = anchor.paragraph;
+      if (editor.slot === "header" || editor.slot === "footer") {
+        for (let index = 0; index < ctx.origins.length; index += 1) {
+          const at = ctx.bandAt?.(editor.slot, index);
+          const type = at?.type ?? ctx.bandType?.(editor.slot, index) ?? "default";
+          if ((at?.editor ?? this.bandEditor(ctx, editor.slot, type)) !== editor) {
+            continue;
+          }
+          const origin = ctx.origins[index];
+          found.push({
+            drawing: anchor.drawing, paragraph, story,
+            x: origin.x + ctx.pageSetup.contentLeft() + anchor.x,
+            y: origin.y + ctx.pageSetup.bandTop(editor.slot) + anchor.y,
+            width: Math.max(anchor.width, 1), height: Math.max(anchor.height, 1), behind: anchor.behind,
+          });
+        }
         continue;
       }
       const pageIndex = Math.min(ctx.origins.length - 1, Math.max(0, Math.floor(anchor.y / pageH)));
@@ -288,13 +348,10 @@ export class HitTester {
         continue;
       }
       const x = origin.x + ctx.pageSetup.contentLeft() + anchor.x;
-      const y =
-        editor.slot === "header" || editor.slot === "footer"
-          ? origin.y + ctx.pageSetup.bandTop(editor.slot) + anchor.y
-          : origin.y + ctx.pageSetup.contentTop() + (anchor.y - pageIndex * pageH);
+      const y = origin.y + ctx.pageSetup.contentTop() + (anchor.y - pageIndex * pageH);
       found.push({
         drawing: anchor.drawing,
-        paragraph: anchor.paragraph,
+        paragraph,
         story,
         x,
         y,
@@ -315,6 +372,11 @@ export class HitTester {
       x: worldX - page.origin.x - ctx.pageSetup.contentLeft(),
       y: page.index * pageH + (worldY - page.origin.y - ctx.pageSetup.contentTop()),
     };
+  }
+
+  bodyAnchorAt(worldX: number, worldY: number, ctx: HitContext): Paragraph | null {
+    const pos = this.hitBody(worldX, worldY, ctx) ?? this.hitNearestBody(worldX, worldY, ctx);
+    return pos?.node?.data.paragraph ?? null;
   }
 
   private collectHandles(
@@ -390,11 +452,16 @@ export class HitTester {
       return null;
     }
     const word = located.node.data;
+    const width = Math.max(word.kernedWidth, 2);
+    const height = Math.max(located.line.height, 14);
+    if (isVerticalTextBox(pos.story)) {
+      return { x: located.originX - height, y: located.originY + word.left, width: height, height: width };
+    }
     return {
       x: located.originX + word.left,
       y: located.originY,
-      width: Math.max(word.kernedWidth, 2),
-      height: Math.max(located.line.height, 14),
+      width,
+      height,
     };
   }
 
@@ -405,9 +472,12 @@ export class HitTester {
     }
     const { line, originX, originY, node } = located;
     const word = node.data;
-    const x = originX + (pos.after ? word.left + word.kernedWidth : word.left);
+    const advance = word.left + (pos.after ? word.kernedWidth : 0);
     const span = caretSpan(line, word);
-    return { x, y: originY + span.top, height: span.height };
+    if (isVerticalTextBox(pos.story)) {
+      return { x: originX - span.top - span.height, y: originY + advance, width: span.height, height: 1 };
+    }
+    return { x: originX + advance, y: originY + span.top, height: span.height };
   }
 
   storyLines(story: StoryRef, ctx: HitContext): Line[] {
@@ -438,7 +508,7 @@ export class HitTester {
       if (!frame) {
         return null;
       }
-      return { x: frame.x + frame.insetLeft, y: frame.y + frame.insetTop + line.top };
+      return textBoxPoint(frame.text, 0, line.top);
     }
     if (story.slot === "cell") {
       const boxes = this.cellBoxes(story.cell, ctx);
@@ -540,14 +610,17 @@ export class HitTester {
     const frames = this.textboxFrames(ctx);
     for (let i = frames.length - 1; i >= 0; i -= 1) {
       const frame = frames[i];
-      if (!this.contains(worldX, worldY, frame.x, frame.y, frame.width, frame.height)) {
+      if (frame.block.drawing?.hidden) {
+        continue;
+      }
+      const pt = unrotatePoint(worldX, worldY, frame, frame.block.drawing?.rotation);
+      if (!this.contains(pt.x, pt.y, frame.x, frame.y, frame.width, frame.height)) {
         continue;
       }
       const story: StoryRef = { slot: "textbox", block: frame.block };
       const lines = this.storyLines(story, ctx);
-      const localX = worldX - frame.x - frame.insetLeft;
-      const localY = worldY - frame.y - frame.insetTop;
-      return this.hitLines(lines, localX, localY, story) ?? this.fallbackLine(lines, localY, story);
+      const local = textBoxLocal(frame.text, pt.x, pt.y);
+      return this.hitLines(lines, local.x, local.y, story) ?? this.fallbackLine(lines, local.y, story);
     }
     return null;
   }
@@ -581,6 +654,13 @@ export class HitTester {
         const inner = this.storyLines(story, ctx);
         this.scanLines(inner, story, ctx, frames);
         const origin = cellContentOrigin(placed.line.startNode?.data.table, box, cellDocumentHeight(box.cell.document));
+        for (const anchor of box.cell.document.anchors) {
+          const block = anchor.paragraph?.blocks.find((item) => item.drawing === anchor.drawing);
+          const frame = block && textboxFrame(block, origin.x + anchor.x, origin.y + anchor.y);
+          if (frame) {
+            frames.push(frame);
+          }
+        }
         this.scanCellLines(inner, ctx, false, origin.x, origin.y, frames);
       }
     }
@@ -642,48 +722,13 @@ export class HitTester {
   }
 
   private scanAnchors(editor: StoryEditor, ctx: HitContext, frames: TextboxFrame[]): void {
-    const document = editor.document;
-    if (!document) {
-      return;
-    }
-    for (const anchor of document.anchors) {
-      const block = blockForDrawing(document, anchor.drawing);
-      if (!block) {
-        continue;
-      }
-      if (editor.slot !== "header" && editor.slot !== "footer") {
-        const pageH = ctx.pageSetup.contentHeight;
-        const pageIndex = Math.min(ctx.origins.length - 1, Math.max(0, Math.floor(anchor.y / pageH)));
-        const origin = ctx.origins[pageIndex];
-        if (!origin) {
-          continue;
-        }
-        const frame = textboxFrame(
-          block,
-          origin.x + ctx.pageSetup.contentLeft() + anchor.x,
-          origin.y + ctx.pageSetup.contentTop() + (anchor.y - pageIndex * pageH),
-        );
-        if (frame) {
-          frames.push(frame);
-        }
-        continue;
-      }
-      for (let i = 0; i < ctx.origins.length; i += 1) {
-        const at = ctx.bandAt?.(editor.slot, i);
-        const type = at?.type ?? ctx.bandType?.(editor.slot, i) ?? "default";
-        const shown = at?.editor ?? this.bandEditor(ctx, editor.slot, type);
-        if (shown !== editor) {
-          continue;
-        }
-        const origin = ctx.origins[i];
-        const frame = textboxFrame(
-          block,
-          origin.x + ctx.pageSetup.contentLeft() + anchor.x,
-          origin.y + ctx.pageSetup.bandTop(editor.slot) + anchor.y,
-        );
-        if (frame) {
-          frames.push(frame);
-        }
+    const pictures: PictureBox[] = [];
+    this.collectAnchorPictures(editor, this.storyForEditor(editor, ctx), ctx, pictures);
+    for (const picture of pictures) {
+      const block = picture.paragraph.blocks.find((item) => item.drawing === picture.drawing);
+      const frame = block && textboxFrame(block, picture.x, picture.y);
+      if (frame) {
+        frames.push(frame);
       }
     }
   }
@@ -1108,8 +1153,7 @@ interface TextboxFrame {
   y: number;
   width: number;
   height: number;
-  insetLeft: number;
-  insetTop: number;
+  text: ReturnType<typeof textBoxContentGeometry>;
 }
 
 function textboxFrame(block: Block, x: number, y: number): TextboxFrame | null {
@@ -1124,24 +1168,8 @@ function textboxFrame(block: Block, x: number, y: number): TextboxFrame | null {
     y,
     width: Math.max(drawing.width, 1),
     height: Math.max(drawing.height, 1),
-    insetLeft: shape.insets.left,
-    insetTop: shape.insets.top,
+    text: textBoxContentGeometry(drawing, x, y),
   };
-}
-
-function blockForDrawing(document: Document, drawing: Drawing): Block | undefined {
-  let found: Block | undefined;
-  document.paragraphs.each((node) => {
-    if (found) {
-      return;
-    }
-    for (const block of node.data.blocks) {
-      if (block.drawing === drawing) {
-        found = block;
-      }
-    }
-  });
-  return found;
 }
 
 /** 与 StoryPainter 共用：字框顶到基线约占字高的 0.85。 */

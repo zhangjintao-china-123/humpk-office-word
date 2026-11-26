@@ -1,6 +1,7 @@
 import { Block } from "../model/block/Block";
 import { Paragraph } from "../model/block/Paragraph";
 import { Document } from "../model/document/Document";
+import { WordStreamBuilder } from "../model/flatten/WordStreamBuilder";
 import { TableCell, TableColumn, TableRow, type Table } from "../model/table/Table";
 
 export class TableStructure {
@@ -211,6 +212,7 @@ function blankCell(rowIndex: number, colIndex: number): TableCell {
   const paragraph = new Paragraph(1);
   paragraph.addBlock(new Block());
   document.addParagraph(paragraph);
+  new WordStreamBuilder().buildStoryOnly(document);
   const cell = new TableCell(document);
   cell.rowIndex = rowIndex;
   cell.colIndex = colIndex;

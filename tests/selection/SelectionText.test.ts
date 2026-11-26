@@ -3,7 +3,7 @@ import { Block } from "../../src/model/block/Block";
 import { Paragraph } from "../../src/model/block/Paragraph";
 import { Document } from "../../src/model/document/Document";
 import { WordStreamBuilder } from "../../src/model/flatten/WordStreamBuilder";
-import { TableCell } from "../../src/model/table/Table";
+import { Table, TableCell, TableRow } from "../../src/model/table/Table";
 import { CaretPos } from "../../src/selection/CaretPos";
 import { SelRange } from "../../src/selection/SelRange";
 import { Selection } from "../../src/selection/Selection";
@@ -117,5 +117,37 @@ describe("SelectionText", () => {
     cellSel.setRange(new SelRange(story, pos, pos, "cell"));
     expect(text.covers(cellSel, new CaretPos(story, item.document.words.tail, true))).toBe(true);
     expect(text.covers(cellSel, new CaretPos({ slot: "cell", cell: other }, other.document.words.head, false))).toBe(false);
+  });
+
+  it("covers：流式选中整张表时命中控点及表内单元格", () => {
+    const a = cell("a", 0, 0);
+    const b = cell("b", 0, 1);
+    const table = new Table();
+    const row = new TableRow();
+    row.cells = [a, b];
+    table.rows = [row];
+
+    const document = new Document();
+    const para = new Paragraph(1);
+    para.isTable = true;
+    para.table = table;
+    document.addParagraph(para);
+    const afterPara = new Paragraph(2);
+    afterPara.addBlock(new Block());
+    document.addParagraph(afterPara);
+    new WordStreamBuilder().buildStoryOnly(document);
+
+    const tableNode = document.words.head!;
+    const selection = new Selection();
+    selection.setFlow(new CaretPos(body, tableNode, false), new CaretPos(body, tableNode, true));
+
+    expect(text.covers(selection, new CaretPos(body, tableNode, false))).toBe(true);
+    expect(text.covers(selection, new CaretPos({ slot: "cell", cell: a }, a.document.words.head, false))).toBe(true);
+    expect(text.covers(selection, new CaretPos({ slot: "cell", cell: b }, b.document.words.tail, true))).toBe(true);
+    expect(text.covers(selection, new CaretPos(body, document.words.tail, false))).toBe(false);
+
+    const owner = { document, story: body };
+    expect(text.covers(selection, new CaretPos({ slot: "cell", cell: a }, a.document.words.head, false), owner)).toBe(true);
+    expect(text.covers(selection, new CaretPos(body, document.words.tail, false), owner)).toBe(false);
   });
 });

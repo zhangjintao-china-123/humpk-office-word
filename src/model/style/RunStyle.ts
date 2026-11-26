@@ -1,4 +1,5 @@
 export interface RunStyle {
+  characterStyleId?: string;
   fontFamily?: string;
   fontSizePx?: number;
   fontSizeHalfPoint?: number;
@@ -7,6 +8,7 @@ export interface RunStyle {
   highlight?: string;
   bold?: boolean;
   italic?: boolean;
+  smallCaps?: boolean;
   underline?: string;
   strike?: "single" | "double";
   /** baseline 表示取消上下标。 */

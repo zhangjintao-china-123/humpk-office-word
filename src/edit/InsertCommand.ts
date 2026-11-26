@@ -48,6 +48,10 @@ export class InsertCommand implements EditCommand {
     if (consumed) {
       this.patches.push(...consumed);
     }
+    if (this.payload.blocks?.length) {
+      this.pasteBlocks();
+      return;
+    }
     if (this.payload.table) {
       this.pasteTable();
       return;
@@ -80,6 +84,83 @@ export class InsertCommand implements EditCommand {
       this.ctx.relayout.apply(impact);
       this.ctx.selection.collapse(patch.originalCaret);
       this.ctx.afterEdit(impact);
+    }
+  }
+
+  private pasteBlocks(): void {
+    const blocks = this.payload.blocks;
+    if (!blocks?.length) {
+      return;
+    }
+    const range = this.targets()[0];
+    const document = range ? this.ctx.documentOf(range.story) : null;
+    if (!range || !document) {
+      return;
+    }
+    const story = range.story;
+    let pos = range.start;
+    if (!range.collapsed()) {
+      const deleted = this.ctx.mutator.deleteRange(document, story, range);
+      this.patches.push(deleted);
+      pos = deleted.caret;
+      this.ctx.relayout.apply(deleted.impact);
+    }
+
+    let prevType: "paragraph" | "table" | null = null;
+    for (const block of blocks) {
+      if (block.type === "paragraph") {
+        if (prevType === "paragraph") {
+          pos = this.insertBreak(document, story, pos, block.paragraph);
+        } else if (prevType === "table") {
+          const currentPara = pos.node?.data.paragraph;
+          const justCreated =
+            currentPara &&
+            this.patches.at(-1)?.createdParagraphs.some((item) => item.paragraph === currentPara);
+          if (justCreated && currentPara && this.isParagraphEmpty(document, currentPara)) {
+            currentPara.attrs = { ...block.paragraph.attrs };
+            currentPara.inheritedRunStyle = block.paragraph.inheritedRunStyle
+              ? { ...block.paragraph.inheritedRunStyle }
+              : currentPara.inheritedRunStyle;
+            currentPara.changed = true;
+          }
+        }
+        for (const run of block.paragraph.runs) {
+          if (run.drawing) {
+            pos = this.insertDrawing(document, story, pos, drawingFromSnapshot(run.drawing), false);
+          } else if (run.enclosed && run.text) {
+            pos = this.insertEnclosed(document, story, pos, run.text, this.styleOf(run.style), run.enclosed);
+          } else if (run.asianLayout && run.text) {
+            pos = this.insertAsianLayout(document, story, pos, run.text, this.styleOf(run.style), run.asianLayout);
+          } else {
+            pos = this.insertRun(document, story, pos, run.text, this.styleOf(run.style));
+          }
+        }
+        prevType = "paragraph";
+        continue;
+      }
+
+      if (this.shouldSplitBeforeTable(document, pos)) {
+        pos = this.insertBreak(document, story, pos, { attrs: {}, runs: [] });
+      }
+      let insertPos = pos;
+      if (
+        prevType === "paragraph" &&
+        insertPos.node &&
+        !insertPos.after &&
+        insertPos.node.data.isEnterChar() &&
+        insertPos.node.data.paragraph &&
+        this.isParagraphEmpty(document, insertPos.node.data.paragraph)
+      ) {
+        insertPos = new CaretPos(story, insertPos.node, true);
+      }
+      const table = new TableSnapshot().materialize(block.table);
+      const patch = this.ctx.mutator.insertTable(document, story, insertPos, table);
+      this.patches.push(patch);
+      this.ctx.relayout.apply(patch.impact);
+      this.ctx.selection.collapse(patch.caret);
+      this.ctx.afterEdit(patch.impact);
+      pos = patch.caret;
+      prevType = "table";
     }
   }
 
@@ -153,8 +234,13 @@ export class InsertCommand implements EditCommand {
       for (const run of paragraph.runs) {
         if (run.drawing) {
           pos = this.insertDrawing(document, story, pos, drawingFromSnapshot(run.drawing), pictureOnly(this.payload));
+        } else if (run.enclosed && run.text) {
+          pos = this.insertEnclosed(document, story, pos, run.text, this.styleOf(run.style), run.enclosed);
+        } else if (run.asianLayout && run.text) {
+          pos = this.insertAsianLayout(document, story, pos, run.text, this.styleOf(run.style), run.asianLayout);
+        } else {
+          pos = this.insertRun(document, story, pos, run.text, this.styleOf(run.style));
         }
-        pos = this.insertRun(document, story, pos, run.text, this.styleOf(run.style));
       }
     });
   }
@@ -207,6 +293,44 @@ export class InsertCommand implements EditCommand {
     return patch.caret;
   }
 
+  private insertEnclosed(
+    document: Document,
+    story: StoryRef,
+    pos: CaretPos,
+    text: string,
+    style: RunStyle | undefined,
+    enclosed: NonNullable<ClipboardPayload["paragraphs"][number]["runs"][number]["enclosed"]>,
+  ): CaretPos {
+    const patch = this.ctx.mutator.insertEnclosed(document, story, pos, text, style, enclosed);
+    if (!patch.inserted.length) {
+      return pos;
+    }
+    this.patches.push(patch);
+    this.ctx.relayout.apply(patch.impact);
+    this.ctx.selection.collapse(patch.caret);
+    this.ctx.afterEdit(patch.impact);
+    return patch.caret;
+  }
+
+  private insertAsianLayout(
+    document: Document,
+    story: StoryRef,
+    pos: CaretPos,
+    text: string,
+    style: RunStyle | undefined,
+    asianLayout: NonNullable<ClipboardPayload["paragraphs"][number]["runs"][number]["asianLayout"]>,
+  ): CaretPos {
+    const patch = this.ctx.mutator.insertAsianLayout(document, story, pos, text, style, asianLayout);
+    if (!patch.inserted.length) {
+      return pos;
+    }
+    this.patches.push(patch);
+    this.ctx.relayout.apply(patch.impact);
+    this.ctx.selection.collapse(patch.caret);
+    this.ctx.afterEdit(patch.impact);
+    return patch.caret;
+  }
+
   private insertRun(
     document: Document,
     story: StoryRef,
@@ -233,6 +357,48 @@ export class InsertCommand implements EditCommand {
     return this.ctx.pendingRunStyle?.();
   }
 
+  private shouldSplitBeforeTable(document: Document, pos: CaretPos): boolean {
+    const node = pos.node;
+    const paragraph = node?.data.paragraph;
+    if (!node || !paragraph || paragraph.isTable) {
+      return false;
+    }
+    const first = this.firstWordOf(document, paragraph);
+    if (first && node === first && !pos.after) {
+      return false;
+    }
+    let cursor = pos.after ? node.next : node;
+    while (cursor && cursor.data.paragraph === paragraph) {
+      if (!cursor.data.isEnterChar()) {
+        return true;
+      }
+      cursor = cursor.next;
+    }
+    return false;
+  }
+
+  private isParagraphEmpty(document: Document, paragraph: Paragraph): boolean {
+    let node = document.words.head;
+    while (node) {
+      if (node.data.paragraph === paragraph && !node.data.isEnterChar()) {
+        return false;
+      }
+      node = node.next;
+    }
+    return true;
+  }
+
+  private firstWordOf(document: Document, paragraph: Paragraph) {
+    let node = document.words.head;
+    while (node) {
+      if (node.data.paragraph === paragraph) {
+        return node;
+      }
+      node = node.next;
+    }
+    return null;
+  }
+
   private targets(): SelRange[] {
     const ranges = this.ctx.selection.normalized();
     if (!ranges.length) {
@@ -250,5 +416,5 @@ export class InsertCommand implements EditCommand {
 
 function pictureOnly(payload: ClipboardPayload): boolean {
   const runs = payload.paragraphs.flatMap((paragraph) => paragraph.runs);
-  return !payload.table && runs.length === 1 && !!runs[0]?.drawing && !runs[0].text;
+  return !payload.table && !payload.blocks?.length && runs.length === 1 && !!runs[0]?.drawing && !runs[0].text;
 }

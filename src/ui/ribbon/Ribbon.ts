@@ -1,20 +1,75 @@
 import type { FormatAction } from "../../edit/FormatCommand";
+import type {
+  AlignAction,
+  AlignReference,
+  DistributeAction,
+  LayerOrderAction,
+  RotateAction,
+} from "../../edit/ArrangeCommand";
+import type { AsianLayoutAction, AsianLayoutStateInfo } from "../../edit/AsianLayoutCommand";
+import type { EnclosedAction, EnclosedStateInfo } from "../../edit/EnclosedCommand";
+import type { SortOptions, SortTargetInfo } from "../../edit/SortCommand";
+import type { AsianLayoutKind } from "../../model/inline/AsianLayout";
+import type { CaseMode } from "../../edit/ChangeCaseCommand";
+import type { FormatPainterMode } from "../../edit/FormatPainter";
 import type { FindQuery, FindStatus } from "../../edit/Find";
 import type { OutlineAction } from "../../edit/OutlineCommand";
+import {
+  DEFAULT_BULLET,
+  DEFAULT_NUMBERING,
+  multilevelSamples,
+  numberingPresetKey,
+  numberingSamples,
+  PRESET_BULLETS,
+  PRESET_MULTILEVELS,
+  PRESET_NUMBERINGS,
+  type MultilevelLevelSpec,
+  type MultilevelPreset,
+  type MultilevelPreviewRow,
+  type NumberingPreset,
+} from "../../edit/OutlineNumbering";
 import type { PicturePlace, PictureWrap } from "../../edit/PictureTransform";
 import type { TableBorderFlags, TableBorderMode, TableBorderPen } from "../../edit/TableBorderApplier";
-import { cmToPx, pxToCm } from "../../shared/units";
+import { isGalleryStyle, STYLE_GALLERY, type GalleryStyleKey } from "../../model/style/StyleGallery";
+import { isCoverTemplate, type CoverTemplateId } from "../../model/document/CoverPage";
+import {
+  DEFAULT_SHAPE_LINE_WIDTH,
+  SHAPE_PRESET_ITEMS,
+  SHAPE_STYLE_PRESETS,
+  type ShapePreset,
+  type TextBoxDirection,
+  type TextBoxFormat,
+} from "../../model/graphic/Shape";
+import { cmToPx, ptToPx, pxToCm, pxToPt } from "../../shared/units";
 import { cssFontStack } from "../../layout/measure/FontSpec";
 import { ZOOM_LEVELS } from "../workspace/ZoomLevels";
+import { AsianLayoutDialog } from "./AsianLayoutDialog";
 import { BorderMenu } from "./BorderMenu";
+import { BulletDialog } from "./BulletDialog";
 import { ColorDialog } from "./ColorDialog";
-import { normalizeColor, textColorPaletteMarkup } from "./ColorPalette";
+import { coverGalleryMarkup } from "./CoverGalleryMarkup";
+import { EnclosedDialog } from "./EnclosedDialog";
+import { MultilevelDialog } from "./MultilevelDialog";
+import { NumberingDialog } from "./NumberingDialog";
+import { SortDialog } from "./SortDialog";
+import { normalizeColor, shadingColorPaletteMarkup, textColorPaletteMarkup } from "./ColorPalette";
 import { fontSelectMarkup, isListedFont } from "./FontList";
 import { iconButton, RibbonIcons } from "./RibbonIcons";
+import { styleGalleryMarkup } from "./StyleGalleryMarkup";
 import { paintTableGrid, tableGridMarkup } from "./TableGrid";
+import { textBoxToolsMarkup } from "./TextBoxToolsMarkup";
 
 export interface RibbonHost {
   applyFormat(action: FormatAction): void;
+  applyCase?(mode: CaseMode): void;
+  applyEnclosed?(action: EnclosedAction): void;
+  inspectEnclosed?(): EnclosedStateInfo;
+  applyAsianLayout?(action: AsianLayoutAction): void;
+  inspectAsianLayout?(kind?: AsianLayoutKind): AsianLayoutStateInfo;
+  applySort?(options: SortOptions): void;
+  inspectSort?(): SortTargetInfo;
+  toggleShowMarks?(): void;
+  applyShading?(color: string): void;
   applyOutline(action: OutlineAction): void;
   applyTableBorder(mode: TableBorderMode): void;
   setBorderPen(pen: Partial<TableBorderPen>): void;
@@ -25,12 +80,21 @@ export interface RibbonHost {
   openFile(): void;
   saveFile(): void;
   insertTable(rows?: number, cols?: number): void;
+  insertCoverPage(template: CoverTemplateId): void;
+  removeCoverPage(): void;
+  drawTextBox(direction: TextBoxDirection): void;
   insertPageBreak(): void;
   insertBlankPage(): void;
   insertPicture(): void;
   applyPictureWrap(wrap: PictureWrap): void;
   applyPicturePlace(place: PicturePlace): void;
   applyPictureSize(widthPx: number, heightPx: number, lockAspect: boolean): void;
+  applyTextBoxFormat(change: TextBoxFormat): void;
+  applyLayerOrder?(action: LayerOrderAction): void;
+  applyAlign?(action: AlignAction, reference: AlignReference): void;
+  applyDistribute?(action: DistributeAction): void;
+  applyRotate?(action: RotateAction): void;
+  toggleSelectionPane?(): void;
   editHeader(): void;
   editFooter(): void;
   insertTableRow(): void;
@@ -56,6 +120,8 @@ export interface RibbonHost {
   cut(): void;
   copy(): void;
   paste(): void;
+  startFormatPainter?(locked: boolean): void;
+  cancelFormatPainter?(): void;
   findNext(query: FindQuery): FindStatus;
   findPrev(query: FindQuery): FindStatus;
   replaceMatch(query: FindQuery, replacement: string): FindStatus;
@@ -72,34 +138,62 @@ export interface RibbonState {
   strike: boolean;
   color: string;
   highlight: string;
+  shading?: boolean;
+  enclosed?: boolean;
+  asianLayout?: boolean;
+  showMarks?: boolean;
+  paraShading?: string;
   align: string;
   indent: "none" | "first2" | "hang2" | "left2" | "right2";
   canIndentLess: boolean;
   lineSpacing: "1" | "1.5" | "2" | "exact28";
   paraGap: "0" | "before6" | "after6" | "both6";
   vertAlign?: "superscript" | "subscript" | "baseline";
-  paragraphStyle: "normal" | "heading1" | "heading2" | "heading3";
+  paragraphStyle?: GalleryStyleKey;
+  characterStyle?: GalleryStyleKey;
   canUndo: boolean;
   canRedo: boolean;
   hasDoc: boolean;
+  coverTemplate?: CoverTemplateId;
+  drawingTextBox?: TextBoxDirection;
   caption: string;
   inTable: boolean;
   inPicture: boolean;
+  pictureIsTextBox?: boolean;
+  textBoxFormat?: TextBoxFormat;
   pictureWrap?: PictureWrap;
   picturePlace?: PicturePlace | "custom";
   pictureWidth?: number;
   pictureHeight?: number;
   pictureLock?: boolean;
+  selectionPaneOpen?: boolean;
+  pictureCanDistribute?: boolean;
+  pictureRotation?: number;
+  pictureFlipH?: boolean;
+  pictureFlipV?: boolean;
   borderPen: TableBorderPen;
   borderFlags?: TableBorderFlags;
   titlePg: boolean;
   evenAndOdd: boolean;
   /** 当前段的编号级别，从 0 起。没有编号时缺省。 */
   listLevel?: number;
+  /** 当前段的项目符号字符。不是项目符号时缺省。 */
+  bulletGlyph?: string;
+  /** 当前文档中已使用或定义的项目符号字符列表。 */
+  documentBullets?: string[];
+  /** 当前段的编号格式。不是普通编号列表时缺省。 */
+  numberingFormat?: NumberingPreset;
+  /** 当前文档中已使用或定义的编号格式列表。 */
+  documentNumberings?: NumberingPreset[];
+  /** 当前列表的 1~3 级预览行。不在列表中时缺省。 */
+  currentList?: MultilevelPreviewRow[];
+  /** 当前命中的多级列表预设 ID。 */
+  multilevelId?: string;
   link?: string;
   comments?: { id: string; author: string; text: string }[];
   notes?: { id: string; text: string }[];
   revision?: "ins" | "del";
+  formatPainter?: FormatPainterMode;
   zoom: number;
 }
 
@@ -108,12 +202,26 @@ const HIGHLIGHTS = ["#FFFF00", "#00FF00", "#00FFFF", "#FF00FF", "#0000FF", "#FF0
 
 type RibbonPage = "home" | "insert" | "table" | "picture";
 
+let nextGalleryId = 0;
+
 export class Ribbon {
+  private readonly galleryId = ++nextGalleryId;
   readonly el: HTMLElement;
+  private readonly asianDialog = new AsianLayoutDialog();
   private readonly borders = new BorderMenu();
+  private readonly bulletDialog = new BulletDialog();
   private readonly colorDialog = new ColorDialog();
+  private readonly enclosedDialog = new EnclosedDialog();
+  private readonly multilevelDialog = new MultilevelDialog();
+  private readonly numberingDialog = new NumberingDialog();
+  private readonly sortDialog = new SortDialog();
+  private lastParaShading = "#D9D9D9";
+  private recentBullets: string[] = [DEFAULT_BULLET];
+  private recentNumberings: NumberingPreset[] = [DEFAULT_NUMBERING];
+  private customMultilevel?: MultilevelLevelSpec[];
   private page: RibbonPage = "home";
   private hadPicture = false;
+  private alignReference: AlignReference = "margin";
 
   constructor(host: HTMLElement, private readonly actions: RibbonHost) {
     this.el = host;
@@ -121,11 +229,65 @@ export class Ribbon {
     host.innerHTML = this.markup();
     host.addEventListener("mousedown", this.onMouseDown);
     host.addEventListener("click", this.onClick);
+    host.addEventListener("dblclick", this.onDoubleClick);
     host.addEventListener("mouseover", this.onTableGridHover);
     host.addEventListener("change", this.onChange);
     host.addEventListener("keydown", this.onKeyDown);
+    host.addEventListener("scroll", this.onRibbonScroll, true);
+    window.addEventListener("resize", this.placeGallery);
+    document.addEventListener("pointerdown", this.onDocumentDown, true);
+    document.addEventListener("mousedown", this.onDocumentDown, true);
+    document.addEventListener("keydown", this.onDocumentKeyDown, true);
     this.sync();
   }
+
+  destroy(): void {
+    this.el.removeEventListener("mousedown", this.onMouseDown);
+    this.el.removeEventListener("click", this.onClick);
+    this.el.removeEventListener("dblclick", this.onDoubleClick);
+    this.el.removeEventListener("mouseover", this.onTableGridHover);
+    this.el.removeEventListener("change", this.onChange);
+    this.el.removeEventListener("keydown", this.onKeyDown);
+    this.el.removeEventListener("scroll", this.onRibbonScroll, true);
+    window.removeEventListener("resize", this.placeGallery);
+    document.removeEventListener("pointerdown", this.onDocumentDown, true);
+    document.removeEventListener("mousedown", this.onDocumentDown, true);
+    document.removeEventListener("keydown", this.onDocumentKeyDown, true);
+  }
+
+  private onDocumentDown = (event: Event): void => {
+    const target = event.target as Node | null;
+    if (!target) {
+      return;
+    }
+    if (target instanceof Element && target.closest(".ho-word-color-dialog")) {
+      return;
+    }
+    const open = this.el.querySelectorAll<HTMLElement>(".ho-word-drop.is-open");
+    if (!open.length) {
+      return;
+    }
+    for (const drop of open) {
+      if (drop.contains(target)) {
+        return;
+      }
+    }
+    this.closeDrops();
+    if (document.activeElement instanceof HTMLElement && this.el.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
+  };
+
+  private onDocumentKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === "Escape" && this.el.querySelector(".ho-word-drop.is-open")) {
+      const gallery = this.el.querySelector(".ho-word-drop.is-open:has(> [data-ribbon-gallery])");
+      if (gallery?.contains(document.activeElement)) {
+        gallery.querySelector<HTMLButtonElement>("[data-drop-toggle]")?.focus();
+        event.preventDefault();
+      }
+      this.closeDrops();
+    }
+  };
 
   private onMouseDown = (event: MouseEvent): void => {
     const target = event.target as HTMLElement;
@@ -143,12 +305,28 @@ export class Ribbon {
     this.toggle("strike", state.strike);
     this.toggle("superscript", state.vertAlign === "superscript");
     this.toggle("subscript", state.vertAlign === "subscript");
+    this.toggle("shading", !!state.shading);
+    this.toggle("enclosed", !!state.enclosed);
+    this.toggle("show-marks", !!state.showMarks);
+    this.el.querySelector(".ho-word-asian-drop > [data-drop-toggle]")?.classList.toggle("is-on", !!state.asianLayout);
     this.toggle("align-left", state.align === "left" || state.align === "start" || !state.align);
     this.toggle("align-center", state.align === "center");
     this.toggle("align-right", state.align === "right" || state.align === "end");
     this.toggle("align-both", state.align === "both" || state.align === "justify");
     this.toggle("title-page", state.titlePg);
     this.toggle("even-odd", state.evenAndOdd);
+    const painter = state.formatPainter ?? "off";
+    const painterBtn = this.el.querySelector<HTMLButtonElement>("[data-act='format-painter']");
+    if (painterBtn) {
+      painterBtn.classList.toggle("is-on", painter !== "off");
+      painterBtn.classList.toggle("is-locked", painter === "locked");
+      painterBtn.title =
+        painter === "locked"
+          ? "格式刷（连续模式）：再次点击或按 Esc 退出"
+          : painter === "once"
+            ? "格式刷（单次模式）：在目标处单击或拖选以应用格式，按 Esc 退出"
+            : "格式刷：单击刷一次，双击连续刷 (Ctrl+Shift+C / Ctrl+Shift+V)";
+    }
     this.setDisabled("undo", !state.canUndo);
     this.setDisabled("redo", !state.canRedo);
     const font = this.el.querySelector<HTMLSelectElement>("[data-select=font]");
@@ -181,10 +359,25 @@ export class Ribbon {
     if (fill) {
       fill.style.background = state.highlight && state.highlight !== "none" ? state.highlight : "#ffffff";
     }
-    this.borders.sync(this.el, state.borderFlags, state.borderPen.size, state.borderPen.color, state.inTable);
-    this.el.querySelectorAll<HTMLElement>("[data-outline='level']").forEach((button) => {
-      button.classList.toggle("is-on", state.listLevel != null && Number(button.dataset.ilvl) === state.listLevel);
+    const paraShadeSwatch = this.el.querySelector<HTMLElement>("[data-swatch=para-shading]");
+    if (paraShadeSwatch) {
+      paraShadeSwatch.style.background =
+        state.paraShading && state.paraShading !== "none" ? state.paraShading : this.lastParaShading;
+    }
+    const shadeCurrent = state.paraShading && state.paraShading !== "none" ? normalizeColor(state.paraShading) : "none";
+    this.el.querySelectorAll<HTMLElement>(".ho-word-palette-shading [data-para-shade]").forEach((button) => {
+      button.classList.toggle("is-on", normalizeColor(button.dataset.paraShade) === shadeCurrent);
     });
+    this.borders.sync(this.el, state.borderFlags, state.borderPen.size, state.borderPen.color, state.hasDoc);
+    this.el.querySelectorAll<HTMLElement>("[data-outline='level']").forEach((button) => {
+      button.classList.toggle(
+        "is-on",
+        !state.bulletGlyph && !state.numberingFormat && state.listLevel != null && Number(button.dataset.ilvl) === state.listLevel,
+      );
+    });
+    this.syncBullets(state);
+    this.syncNumberings(state);
+    this.syncMultilevel(state);
     const link = this.el.querySelector<HTMLInputElement>("[data-link-url]");
     if (link && document.activeElement !== link) {
       link.value = state.link ?? "";
@@ -209,6 +402,7 @@ export class Ribbon {
     const pictureTab = this.el.querySelector<HTMLButtonElement>("[data-tab=picture]");
     if (pictureTab) {
       pictureTab.hidden = !state.inPicture;
+      pictureTab.textContent = state.pictureIsTextBox ? "文本框工具" : "图片工具";
     }
     if (state.inPicture && !this.hadPicture) {
       this.showPage("picture");
@@ -237,6 +431,24 @@ export class Ribbon {
     if (lock) {
       lock.checked = state.pictureLock !== false;
     }
+    this.toggle("selection-pane", !!state.selectionPaneOpen);
+    this.el.querySelectorAll<HTMLElement>("[data-act=selection-pane]").forEach((button) => {
+      button.classList.toggle("is-on", !!state.selectionPaneOpen);
+      button.setAttribute("aria-pressed", String(!!state.selectionPaneOpen));
+    });
+    this.el.querySelectorAll<HTMLElement>("[data-align-ref]").forEach((button) => {
+      button.classList.toggle("is-on", button.dataset.alignRef === this.alignReference);
+    });
+    this.el.querySelectorAll<HTMLButtonElement>("[data-picture-distribute]").forEach((button) => {
+      button.disabled = !state.pictureCanDistribute;
+    });
+    this.el.querySelectorAll<HTMLElement>("[data-picture-rotate=flipH]").forEach((button) => {
+      button.classList.toggle("is-on", !!state.pictureFlipH);
+    });
+    this.el.querySelectorAll<HTMLElement>("[data-picture-rotate=flipV]").forEach((button) => {
+      button.classList.toggle("is-on", !!state.pictureFlipV);
+    });
+    this.syncTextBoxTools(state.textBoxFormat);
     const zoom = this.el.querySelector<HTMLSelectElement>("[data-select=zoom]");
     if (zoom) {
       const nearest = ZOOM_LEVELS.reduce((best, item) =>
@@ -261,7 +473,34 @@ export class Ribbon {
     this.markChoice("[data-indent]", firstLineKind(state.indent));
     this.markChoice("[data-spacing]", state.lineSpacing);
     this.markChoice("[data-gap]", state.paraGap);
-    this.markChoice("[data-style]", state.paragraphStyle);
+    this.el.querySelectorAll<HTMLButtonElement>("[data-style]").forEach((button) => {
+      const key = button.dataset.style;
+      if (key && isGalleryStyle(key)) {
+        const active = key === (STYLE_GALLERY[key].type === "paragraph" ? state.paragraphStyle : state.characterStyle);
+        button.classList.toggle("is-on", active);
+        button.setAttribute("aria-pressed", String(active));
+      }
+      button.disabled = !state.hasDoc;
+    });
+    this.el.querySelectorAll<HTMLButtonElement>(".ho-word-style-trigger, .ho-word-style-clear").forEach((button) => {
+      button.disabled = !state.hasDoc;
+    });
+    this.el.querySelectorAll<HTMLButtonElement>("[data-cover-template]").forEach((button) => {
+      const active = button.dataset.coverTemplate === state.coverTemplate;
+      button.classList.toggle("is-on", active);
+      button.setAttribute("aria-pressed", String(active));
+      button.disabled = !state.hasDoc;
+    });
+    const coverTrigger = this.el.querySelector<HTMLButtonElement>(".ho-word-cover-trigger");
+    if (coverTrigger) {
+      coverTrigger.disabled = !state.hasDoc;
+    }
+    this.setDisabled("remove-cover", !state.coverTemplate);
+    const textBoxTrigger = this.el.querySelector<HTMLButtonElement>(".ho-word-textbox-trigger");
+    if (textBoxTrigger) {
+      textBoxTrigger.disabled = !state.hasDoc;
+      textBoxTrigger.classList.toggle("is-on", !!state.drawingTextBox);
+    }
   }
 
   private ensureDocFont(select: HTMLSelectElement, family: string): void {
@@ -284,13 +523,125 @@ export class Ribbon {
 
   private markChoice(selector: string, value: string): void {
     this.el.querySelectorAll<HTMLElement>(selector).forEach((item) => {
-      const key = item.dataset.indent ?? item.dataset.spacing ?? item.dataset.gap ?? item.dataset.style;
+      const key = item.dataset.indent ?? item.dataset.spacing ?? item.dataset.gap;
       item.classList.toggle("is-on", key === value);
     });
   }
 
+  private syncTextBoxTools(format: TextBoxFormat | undefined): void {
+    this.el.querySelectorAll<HTMLElement>("[data-textbox-tools]").forEach((group) => {
+      group.hidden = !format;
+    });
+    if (!format) {
+      return;
+    }
+    const direction = format.textDirection ?? "horizontal";
+    const alignment = format.textAlign ?? "start";
+    const preset = format.preset ?? "rect";
+    const lineWidth = format.lineWidth || DEFAULT_SHAPE_LINE_WIDTH;
+    const currentWidth = this.el.querySelector("[data-textbox-current-width]");
+    if (currentWidth) {
+      currentWidth.textContent = `${Number(pxToPt(lineWidth).toFixed(2))} 磅`;
+    }
+    const mark = (button: HTMLElement, active: boolean) => {
+      button.classList.toggle("is-on", active);
+      button.setAttribute("aria-pressed", String(active));
+    };
+    this.el.querySelectorAll<HTMLElement>("[data-shape-preset]").forEach((button) => {
+      mark(button, button.dataset.shapePreset === preset);
+    });
+    this.el.querySelectorAll<HTMLElement>("[data-shape-style]").forEach((button) => {
+      const style = SHAPE_STYLE_PRESETS.find((item) => item.id === button.dataset.shapeStyle);
+      const sameFill = style ? normalizeColor(style.fill) === normalizeColor(format.fill) : false;
+      const sameLine = style ? normalizeColor(style.line) === normalizeColor(format.line) : false;
+      const sameWidth = style ? Math.abs((style.lineWidth ?? DEFAULT_SHAPE_LINE_WIDTH) - lineWidth) < 0.05 : false;
+      mark(button, !!style && sameFill && sameLine && (!style.line || sameWidth));
+    });
+    this.el.querySelectorAll<HTMLElement>("[data-textbox-direction]").forEach((button) => {
+      mark(button, button.dataset.textboxDirection === direction);
+    });
+    this.el.querySelectorAll<HTMLElement>("[data-textbox-align]").forEach((button) => {
+      const value = button.dataset.textboxAlign;
+      if (value === "start") {
+        button.textContent = direction === "vertical" ? "靠右" : "顶端";
+      } else if (value === "end") {
+        button.textContent = direction === "vertical" ? "靠左" : "底端";
+      }
+      mark(button, value === alignment);
+    });
+    this.el.querySelectorAll<HTMLElement>("[data-textbox-line-width]").forEach((button) => {
+      mark(button, Math.abs(ptToPx(Number(button.dataset.textboxLineWidth)) - lineWidth) < 0.01);
+    });
+    for (const target of ["fill", "line"] as const) {
+      const drop = this.el.querySelector(`[data-textbox-paint=${target}]`);
+      const swatch = drop?.querySelector<HTMLElement>("[data-textbox-swatch]");
+      const color = format[target];
+      if (swatch) {
+        swatch.style.backgroundColor = color ?? "";
+        swatch.classList.toggle("is-none", !color);
+      }
+      drop?.querySelectorAll<HTMLElement>("[data-textbox-color]").forEach((button) => {
+        const value = button.dataset.textboxColor;
+        mark(button, color ? value !== "none" && normalizeColor(value) === normalizeColor(color) : value === "none");
+      });
+    }
+  }
+
+  private onTextBoxFormatClick(el: HTMLElement): boolean {
+    if (!el.closest("[data-textbox-tools]")) {
+      return false;
+    }
+    const target = el.closest<HTMLElement>("[data-textbox-paint]")?.dataset.textboxPaint;
+    if ((target === "fill" || target === "line") && el.closest("[data-textbox-custom-color]")) {
+      this.closeDrops();
+      const current = this.actions.formatState().textBoxFormat?.[target];
+      this.colorDialog.open(current ?? (target === "fill" ? "#FFFFFF" : "#41566C"), (hex) => {
+        this.actions.applyTextBoxFormat({ [target]: hex });
+        this.sync();
+      });
+      return true;
+    }
+    const preset = el.closest<HTMLElement>("[data-shape-preset]")?.dataset.shapePreset;
+    const styleId = el.closest<HTMLElement>("[data-shape-style]")?.dataset.shapeStyle;
+    const color = el.closest<HTMLElement>("[data-textbox-color]")?.dataset.textboxColor;
+    const lineWidth = Number(el.closest<HTMLElement>("[data-textbox-line-width]")?.dataset.textboxLineWidth);
+    const direction = el.closest<HTMLElement>("[data-textbox-direction]")?.dataset.textboxDirection;
+    const alignment = el.closest<HTMLElement>("[data-textbox-align]")?.dataset.textboxAlign;
+    let change: TextBoxFormat;
+    if (preset && SHAPE_PRESET_ITEMS.some((item) => item.preset === preset)) {
+      change = { preset: preset as ShapePreset };
+    } else if (styleId) {
+      const style = SHAPE_STYLE_PRESETS.find((item) => item.id === styleId);
+      if (!style) {
+        return false;
+      }
+      change = {
+        fill: style.fill,
+        line: style.line,
+        lineWidth: style.lineWidth ?? DEFAULT_SHAPE_LINE_WIDTH,
+      };
+    } else if (color && (target === "fill" || target === "line")) {
+      change = { [target]: color === "none" ? undefined : color };
+    } else if (lineWidth > 0) {
+      change = { lineWidth: ptToPx(lineWidth) };
+    } else if (direction === "horizontal" || direction === "vertical") {
+      change = { textDirection: direction };
+    } else if (alignment === "start" || alignment === "center" || alignment === "end") {
+      change = { textAlign: alignment };
+    } else {
+      return false;
+    }
+    this.closeDrops();
+    this.actions.applyTextBoxFormat(change);
+    this.sync();
+    return true;
+  }
+
   private onClick = (event: Event): void => {
     const el = event.target as HTMLElement;
+    if (this.onTextBoxFormatClick(el)) {
+      return;
+    }
     const chip = el.closest<HTMLElement>("[data-color], [data-fill], [data-border-color], [data-border]");
     if (chip?.dataset.borderColor) {
       this.actions.setBorderPen({ color: chip.dataset.borderColor });
@@ -301,6 +652,64 @@ export class Ribbon {
       this.actions.applyTableBorder(chip.dataset.border as TableBorderMode);
       this.closeDrops();
       this.sync();
+      return;
+    }
+    const bulletSymbol = el.closest<HTMLElement>("[data-bullet-symbol]")?.dataset.bulletSymbol;
+    if (bulletSymbol) {
+      const symbol = this.rememberBullet(bulletSymbol);
+      this.actions.applyOutline({ type: "bullet", symbol });
+      this.closeDrops();
+      this.sync();
+      return;
+    }
+    if (el.closest("[data-bullet-custom]")) {
+      this.closeDrops();
+      const current = this.actions.formatState().bulletGlyph ?? this.recentBullets[0] ?? DEFAULT_BULLET;
+      this.bulletDialog.open(current, (symbol) => {
+        const picked = this.rememberBullet(symbol);
+        this.actions.applyOutline({ type: "bullet", symbol: picked });
+        this.sync();
+      });
+      return;
+    }
+    const numCard = el.closest<HTMLElement>("[data-num-fmt]");
+    if (numCard?.dataset.numFmt) {
+      const preset = this.rememberNumbering({
+        numFmt: numCard.dataset.numFmt,
+        lvlText: numCard.dataset.numText ?? "%1.",
+        start: Number(numCard.dataset.numStart ?? "1") || 1,
+      });
+      this.actions.applyOutline({ type: "numbering", ...preset });
+      this.closeDrops();
+      this.sync();
+      return;
+    }
+    if (el.closest("[data-num-custom]")) {
+      this.closeDrops();
+      const current = this.actions.formatState().numberingFormat ?? this.recentNumberings[0] ?? DEFAULT_NUMBERING;
+      this.numberingDialog.open(current, (preset) => {
+        const picked = this.rememberNumbering(preset);
+        this.actions.applyOutline({ type: "numbering", ...picked });
+        this.sync();
+      });
+      return;
+    }
+    const multilevelId = el.closest<HTMLElement>("[data-ml-preset]")?.dataset.mlPreset;
+    if (multilevelId) {
+      this.actions.applyOutline({ type: "multilevel", presetId: multilevelId });
+      this.closeDrops();
+      this.sync();
+      return;
+    }
+    const mlCustom = el.closest<HTMLElement>("[data-ml-custom]")?.dataset.mlCustom;
+    if (mlCustom) {
+      this.closeDrops();
+      const title = mlCustom === "style" ? "定义新的列表样式" : "定义新的多级列表";
+      this.multilevelDialog.open(title, this.customMultilevel, (levels, linkHeading) => {
+        this.customMultilevel = levels;
+        this.actions.applyOutline({ type: "multilevel", levels, linkHeading });
+        this.sync();
+      });
       return;
     }
     const outline = el.closest<HTMLElement>("[data-outline]");
@@ -327,6 +736,44 @@ export class Ribbon {
       this.sync();
       return;
     }
+    const paraShade = el.closest<HTMLElement>("[data-para-shade]")?.dataset.paraShade;
+    if (paraShade) {
+      if (paraShade !== "none") {
+        this.lastParaShading = paraShade;
+      }
+      this.actions.applyShading?.(paraShade);
+      this.closeDrops();
+      this.sync();
+      return;
+    }
+    const asianKind = el.closest<HTMLElement>("[data-asian-layout]")?.dataset.asianLayout;
+    if (asianKind) {
+      this.closeDrops();
+      if (asianKind === "remove") {
+        this.actions.applyAsianLayout?.({ type: "remove" });
+        this.sync();
+        return;
+      }
+      if (isAsianKind(asianKind)) {
+        const initial = this.actions.inspectAsianLayout?.(asianKind) ?? {
+          text: "",
+          spec: { kind: asianKind, brackets: "round", fitWidthPx: 48, compress: true },
+          active: false,
+        };
+        this.asianDialog.open(asianKind, initial, (action) => {
+          this.actions.applyAsianLayout?.(action);
+          this.sync();
+        });
+      }
+      return;
+    }
+    const caseMode = el.closest<HTMLElement>("[data-case]")?.dataset.case;
+    if (caseMode && isCaseMode(caseMode)) {
+      this.actions.applyCase?.(caseMode);
+      this.closeDrops();
+      this.sync();
+      return;
+    }
     const indent = el.closest<HTMLElement>("[data-indent]")?.dataset.indent;
     if (indent && isIndent(indent)) {
       this.actions.applyFormat({ type: "indent", value: indent });
@@ -349,9 +796,23 @@ export class Ribbon {
       return;
     }
     const style = el.closest<HTMLElement>("[data-style]")?.dataset.style;
-    if (style && isStyle(style)) {
+    if (style && isGalleryStyle(style)) {
       this.actions.applyFormat({ type: "style", value: style });
       this.closeDrops();
+      this.sync();
+      return;
+    }
+    const cover = el.closest<HTMLElement>("[data-cover-template]")?.dataset.coverTemplate;
+    if (cover && isCoverTemplate(cover)) {
+      this.closeDrops();
+      this.actions.insertCoverPage(cover);
+      this.sync();
+      return;
+    }
+    const textBox = el.closest<HTMLElement>("[data-draw-textbox]")?.dataset.drawTextbox;
+    if (textBox === "horizontal" || textBox === "vertical") {
+      this.closeDrops();
+      this.actions.drawTextBox(textBox);
       this.sync();
       return;
     }
@@ -363,13 +824,18 @@ export class Ribbon {
       return;
     }
     const custom = el.closest<HTMLElement>("[data-custom-color]");
-    if (custom?.dataset.customColor === "text" || custom?.dataset.customColor === "fill") {
+    if (custom?.dataset.customColor === "text" || custom?.dataset.customColor === "fill" || custom?.dataset.customColor === "para-shading") {
       const kind = custom.dataset.customColor;
       this.closeDrops();
       const state = this.actions.formatState();
-      const initial = kind === "text" ? state.color : state.highlight;
+      const initial = kind === "text" ? state.color : kind === "fill" ? state.highlight : state.paraShading;
       this.colorDialog.open(initial && initial !== "none" && initial !== "auto" ? initial : "#000000", (hex) => {
-        this.actions.applyFormat(kind === "text" ? { type: "color", value: hex } : { type: "highlight", value: hex });
+        if (kind === "para-shading") {
+          this.lastParaShading = hex;
+          this.actions.applyShading?.(hex);
+        } else {
+          this.actions.applyFormat(kind === "text" ? { type: "color", value: hex } : { type: "highlight", value: hex });
+        }
         this.sync();
       });
       return;
@@ -401,7 +867,19 @@ export class Ribbon {
       this.closeDrops();
       drop?.classList.toggle("is-open", !open);
       if (drop && !open) {
-        requestAnimationFrame(() => this.placeOpenDrop(drop));
+        const gallery = drop.querySelector("[data-ribbon-gallery]");
+        if (gallery || toggle.hasAttribute("aria-expanded")) {
+          toggle.setAttribute("aria-expanded", "true");
+        }
+        if (gallery) {
+          this.placeGallery();
+          if (event instanceof MouseEvent && event.detail === 0 && document.activeElement === toggle) {
+            const selected = gallery.querySelector<HTMLButtonElement>("button.is-on") ?? gallery.querySelector<HTMLButtonElement>("button");
+            selected?.focus();
+          }
+        } else {
+          requestAnimationFrame(() => this.placeOpenDrop(drop));
+        }
       }
       return;
     }
@@ -415,6 +893,40 @@ export class Ribbon {
     const place = el.closest<HTMLElement>("[data-picture-place]")?.dataset.picturePlace;
     if (place && isPicturePlace(place)) {
       this.actions.applyPicturePlace(place);
+      this.closeDrops();
+      this.sync();
+      return;
+    }
+    const layer = el.closest<HTMLElement>("[data-picture-layer]")?.dataset.pictureLayer;
+    if (layer && isLayerOrderAction(layer)) {
+      this.actions.applyLayerOrder?.(layer);
+      this.closeDrops();
+      this.sync();
+      return;
+    }
+    const alignRef = el.closest<HTMLElement>("[data-align-ref]")?.dataset.alignRef;
+    if (alignRef === "margin" || alignRef === "page") {
+      this.alignReference = alignRef;
+      this.sync();
+      return;
+    }
+    const align = el.closest<HTMLElement>("[data-picture-align]")?.dataset.pictureAlign;
+    if (align && isAlignAction(align)) {
+      this.actions.applyAlign?.(align, this.alignReference);
+      this.closeDrops();
+      this.sync();
+      return;
+    }
+    const distribute = el.closest<HTMLElement>("[data-picture-distribute]")?.dataset.pictureDistribute;
+    if (distribute === "distributeH" || distribute === "distributeV") {
+      this.actions.applyDistribute?.(distribute);
+      this.closeDrops();
+      this.sync();
+      return;
+    }
+    const rotate = el.closest<HTMLElement>("[data-picture-rotate]")?.dataset.pictureRotate;
+    if (rotate && isRotateAction(rotate)) {
+      this.actions.applyRotate?.(rotate);
       this.closeDrops();
       this.sync();
       return;
@@ -447,10 +959,21 @@ export class Ribbon {
       this.actions.copy();
     } else if (act === "paste") {
       this.actions.paste();
+    } else if (act === "format-painter") {
+      const mode = this.actions.formatState().formatPainter ?? "off";
+      if (event instanceof MouseEvent && event.detail >= 2) {
+        this.actions.startFormatPainter?.(true);
+      } else if (mode === "off") {
+        this.actions.startFormatPainter?.(false);
+      } else {
+        this.actions.cancelFormatPainter?.();
+      }
     } else if (act === "insert-table") {
       this.actions.insertTable();
     } else if (act === "insert-page-break") {
       this.actions.insertPageBreak();
+    } else if (act === "remove-cover") {
+      this.actions.removeCoverPage();
     } else if (act === "insert-blank-page") {
       this.actions.insertBlankPage();
     } else if (act === "insert-picture") {
@@ -500,8 +1023,36 @@ export class Ribbon {
       this.actions.toggleTitlePage();
     } else if (act === "even-odd") {
       this.actions.toggleEvenOdd();
-    } else if (act === "bold" || act === "italic" || act === "underline" || act === "strike" || act === "clear" || act === "superscript" || act === "subscript") {
+    } else if (act === "bullet-toggle") {
+      this.actions.applyOutline({ type: "toggleBullet", symbol: this.recentBullets[0] ?? DEFAULT_BULLET });
+    } else if (act === "numbering-toggle") {
+      const latest = this.recentNumberings[0] ?? DEFAULT_NUMBERING;
+      this.actions.applyOutline({ type: "toggleNumbering", ...latest });
+    } else if (act === "bold" || act === "italic" || act === "underline" || act === "strike" || act === "clear" || act === "superscript" || act === "subscript" || act === "shading") {
       this.actions.applyFormat({ type: act });
+    } else if (act === "enclosed") {
+      const initial = this.actions.inspectEnclosed?.() ?? { text: "", shape: "circle", mode: "shrink", active: false };
+      this.enclosedDialog.open(initial, (action) => {
+        this.actions.applyEnclosed?.(action);
+        this.sync();
+      });
+    } else if (act === "sort") {
+      const info = this.actions.inspectSort?.() ?? { mode: "paragraphs", count: 0, columnCount: 1, activeColumn: 0 };
+      this.sortDialog.open(info, (options) => {
+        this.actions.applySort?.(options);
+        this.sync();
+      });
+    } else if (act === "show-marks") {
+      this.actions.toggleShowMarks?.();
+    } else if (act === "selection-pane") {
+      this.actions.toggleSelectionPane?.();
+    } else if (act === "para-shading-toggle") {
+      const current = this.actions.formatState().paraShading;
+      const next =
+        current && current !== "none" && normalizeColor(current) === normalizeColor(this.lastParaShading)
+          ? "none"
+          : this.lastParaShading;
+      this.actions.applyShading?.(next);
     } else if (act === "align-left") {
       this.actions.applyFormat({ type: "align", value: "left" });
     } else if (act === "align-center") {
@@ -536,12 +1087,55 @@ export class Ribbon {
     this.sync();
   };
 
+  private onDoubleClick = (event: MouseEvent): void => {
+    const el = event.target as HTMLElement;
+    if (!el.closest("[data-act='format-painter']")) {
+      return;
+    }
+    this.actions.startFormatPainter?.(true);
+    this.sync();
+  };
+
   private closeDrops(): void {
     this.el.querySelectorAll<HTMLElement>(".ho-word-drop.is-open").forEach((drop) => {
       drop.classList.remove("is-open");
+      drop.querySelector("[data-drop-toggle][aria-expanded]")?.setAttribute("aria-expanded", "false");
       this.clearDropPosition(drop);
     });
   }
+
+  private onRibbonScroll = (event: Event): void => {
+    if (event.target instanceof Element && event.target.matches(".ho-word-ribbon-page")) {
+      this.placeGallery();
+    }
+  };
+
+  private placeGallery = (): void => {
+    const menu = this.el.querySelector<HTMLElement>(".ho-word-drop.is-open > [data-ribbon-gallery]");
+    const anchor = menu?.parentElement?.querySelector("[data-drop-toggle]");
+    if (!anchor || !menu) {
+      return;
+    }
+
+    const rect = anchor.getBoundingClientRect();
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+    if (rect.width && (rect.right <= 0 || rect.left >= viewportWidth)) {
+      this.closeDrops();
+      return;
+    }
+
+    const inset = 8;
+    const gap = 4;
+    const below = window.innerHeight - rect.bottom - gap - inset;
+    const above = rect.top - gap - inset;
+    menu.style.maxHeight = "";
+    const size = menu.getBoundingClientRect();
+    const openAbove = size.height > below && above > below;
+    const height = Math.max(0, openAbove ? above : below);
+    menu.style.maxHeight = `${height}px`;
+    menu.style.left = `${Math.max(inset, Math.min(rect.left, viewportWidth - size.width - inset))}px`;
+    menu.style.top = `${openAbove ? rect.top - gap - Math.min(size.height, height) : rect.bottom + gap}px`;
+  };
 
   /** 窄屏工具栏会横向滚动，菜单改成相对屏幕定位，避免被裁掉。 */
   private placeOpenDrop(drop: HTMLElement): void {
@@ -564,7 +1158,7 @@ export class Ribbon {
   }
 
   private clearDropPosition(drop: HTMLElement): void {
-    const menu = drop.querySelector<HTMLElement>(".ho-word-outline-menu, .ho-word-border-menu, .ho-word-palette");
+    const menu = drop.querySelector<HTMLElement>("[data-ribbon-gallery], .ho-word-outline-menu, .ho-word-border-menu, .ho-word-palette");
     if (!menu) {
       return;
     }
@@ -726,10 +1320,53 @@ export class Ribbon {
     }
   };
 
+  private caseMarkup(): string {
+    return `
+      <div class="ho-word-drop ho-word-case-drop">
+        <button type="button" class="ho-word-case-trigger" data-drop-toggle title="更改大小写">${RibbonIcons.changeCase}${RibbonIcons.chevronDown}</button>
+        <div class="ho-word-outline-menu ho-word-case-menu">
+          <button type="button" data-case="sentence">句首字母大写</button>
+          <button type="button" data-case="lower">小写</button>
+          <button type="button" data-case="upper">大写</button>
+          <button type="button" data-case="title">每个单词首字母大写</button>
+          <button type="button" data-case="toggle">切换大小写</button>
+          <button type="button" data-case="halfwidth">半角</button>
+          <button type="button" data-case="fullwidth">全角</button>
+        </div>
+      </div>
+    `;
+  }
+
+  private asianLayoutMarkup(): string {
+    return `
+      <div class="ho-word-drop ho-word-asian-drop">
+        <button type="button" class="ho-word-asian-trigger" data-drop-toggle title="中文版式">${RibbonIcons.asianLayout}${RibbonIcons.chevronDown}</button>
+        <div class="ho-word-outline-menu ho-word-asian-menu">
+          <button type="button" data-asian-layout="tatechuyoko">纵横混排...</button>
+          <button type="button" data-asian-layout="combine">合并字符...</button>
+          <button type="button" data-asian-layout="twoInOne">双行合一...</button>
+          <button type="button" data-asian-layout="fitWidth">调整宽度...</button>
+          <div class="ho-word-border-split"></div>
+          <button type="button" data-asian-layout="remove">清除中文版式</button>
+        </div>
+      </div>
+    `;
+  }
+
+  private paraShadingMarkup(): string {
+    return `
+      <div class="ho-word-drop ho-word-split ho-word-shading-drop">
+        <button type="button" class="ho-word-color-cmd" data-act="para-shading-toggle" title="底纹">${RibbonIcons.paraShading}<span data-swatch="para-shading"></span></button>
+        <button type="button" class="ho-word-split-arrow" data-drop-toggle title="底纹颜色">${RibbonIcons.chevronDown}</button>
+        ${shadingColorPaletteMarkup()}
+      </div>
+    `;
+  }
+
   private linkMarkup(): string {
     return `
       <div class="ho-word-drop">
-        <button type="button" class="ho-word-big" data-drop-toggle title="插入或修改超链接">${RibbonIcons.link}<span>链接</span></button>
+        <button type="button" class="ho-word-big" data-drop-toggle title="插入或修改超链接">${RibbonIcons.link}<span>链接${RibbonIcons.chevronDown}</span></button>
         <div class="ho-word-outline-menu ho-word-link-menu">
           <label class="ho-word-link-row" data-keep-drop>
             <input data-link-url placeholder="https:// 或 #书签" />
@@ -743,7 +1380,7 @@ export class Ribbon {
   private commentMarkup(): string {
     return `
       <div class="ho-word-drop">
-        <button type="button" class="ho-word-big" data-drop-toggle title="新建批注">${RibbonIcons.comment}<span>批注</span></button>
+        <button type="button" class="ho-word-big" data-drop-toggle title="新建批注">${RibbonIcons.comment}<span>批注${RibbonIcons.chevronDown}</span></button>
         <div class="ho-word-outline-menu ho-word-review-menu">
           <textarea data-comment-text data-keep-drop placeholder="批注内容"></textarea>
           <button type="button" data-act="add-comment">插入批注</button>
@@ -755,7 +1392,7 @@ export class Ribbon {
   private headerMarkup(): string {
     return `
       <div class="ho-word-drop">
-        <button type="button" class="ho-word-big" data-drop-toggle title="页眉">${RibbonIcons.header}<span>页眉</span></button>
+        <button type="button" class="ho-word-big" data-drop-toggle title="页眉">${RibbonIcons.header}<span>页眉${RibbonIcons.chevronDown}</span></button>
         <div class="ho-word-outline-menu">
           <button type="button" data-act="edit-header">编辑页眉</button>
           <div class="ho-word-border-split"></div>
@@ -763,6 +1400,17 @@ export class Ribbon {
           <button type="button" data-act="even-odd">奇偶页不同</button>
         </div>
       </div>`;
+  }
+
+  private textBoxMarkup(): string {
+    const panelId = `ho-word-textbox-options-${this.galleryId}`;
+    return `<div class="ho-word-drop">
+      <button type="button" class="ho-word-big ho-word-textbox-trigger" data-drop-toggle aria-expanded="false" aria-controls="${panelId}" title="插入文本框">${RibbonIcons.textBox}<span>文本框${RibbonIcons.chevronDown}</span></button>
+      <div id="${panelId}" class="ho-word-outline-menu ho-word-textbox-menu" data-ribbon-gallery role="group" aria-label="文本框方向">
+        <button type="button" data-draw-textbox="horizontal">${RibbonIcons.textBox}<span>绘制文本框</span></button>
+        <button type="button" data-draw-textbox="vertical">${RibbonIcons.verticalTextBox}<span>绘制竖排文本框</span></button>
+      </div>
+    </div>`;
   }
 
   private pictureWrapMarkup(): string {
@@ -805,25 +1453,262 @@ export class Ribbon {
     </div>`;
   }
 
+  private bringForwardMarkup(): string {
+    return `<div class="ho-word-drop">
+      <button type="button" class="ho-word-big" data-drop-toggle title="上移一层">${RibbonIcons.bringForward}<span>上移一层${RibbonIcons.chevronDown}</span></button>
+      <div class="ho-word-outline-menu">
+        <button type="button" data-picture-layer="bringForward">上移一层</button>
+        <button type="button" data-picture-layer="bringToFront">置于顶层</button>
+        <button type="button" data-picture-layer="inFrontOfText">浮于文字上方</button>
+      </div>
+    </div>`;
+  }
+
+  private sendBackwardMarkup(): string {
+    return `<div class="ho-word-drop">
+      <button type="button" class="ho-word-big" data-drop-toggle title="下移一层">${RibbonIcons.sendBackward}<span>下移一层${RibbonIcons.chevronDown}</span></button>
+      <div class="ho-word-outline-menu">
+        <button type="button" data-picture-layer="sendBackward">下移一层</button>
+        <button type="button" data-picture-layer="sendToBack">置于底层</button>
+        <button type="button" data-picture-layer="behindText">衬于文字下方</button>
+      </div>
+    </div>`;
+  }
+
+  private alignObjectsMarkup(): string {
+    return `<div class="ho-word-drop">
+      <button type="button" class="ho-word-big" data-drop-toggle title="对齐对象">${RibbonIcons.alignObjects}<span>对齐${RibbonIcons.chevronDown}</span></button>
+      <div class="ho-word-outline-menu">
+        <button type="button" data-picture-align="left">左对齐</button>
+        <button type="button" data-picture-align="center">水平居中</button>
+        <button type="button" data-picture-align="right">右对齐</button>
+        <div class="ho-word-border-split"></div>
+        <button type="button" data-picture-align="top">顶端对齐</button>
+        <button type="button" data-picture-align="middle">垂直居中</button>
+        <button type="button" data-picture-align="bottom">底端对齐</button>
+        <div class="ho-word-border-split"></div>
+        <button type="button" data-picture-distribute="distributeH">横向分布</button>
+        <button type="button" data-picture-distribute="distributeV">纵向分布</button>
+        <div class="ho-word-border-split"></div>
+        <button type="button" data-align-ref="page">对齐页面</button>
+        <button type="button" data-align-ref="margin">对齐页边距</button>
+      </div>
+    </div>`;
+  }
+
+  private rotateObjectMarkup(): string {
+    return `<div class="ho-word-drop">
+      <button type="button" class="ho-word-big" data-drop-toggle title="旋转与翻转">${RibbonIcons.rotateObject}<span>旋转${RibbonIcons.chevronDown}</span></button>
+      <div class="ho-word-outline-menu">
+        <button type="button" data-picture-rotate="rotate90">向右旋转 90°</button>
+        <button type="button" data-picture-rotate="rotate-90">向左旋转 90°</button>
+        <div class="ho-word-border-split"></div>
+        <button type="button" data-picture-rotate="flipV">垂直翻转</button>
+        <button type="button" data-picture-rotate="flipH">水平翻转</button>
+        <div class="ho-word-border-split"></div>
+        <button type="button" data-picture-rotate="reset">重置旋转与翻转</button>
+      </div>
+    </div>`;
+  }
+
+  private syncBullets(state: RibbonState): void {
+    const active = state.bulletGlyph;
+    this.toggle("bullet-toggle", active != null);
+    this.el.querySelector<HTMLElement>(".ho-word-outline-drop > [data-drop-toggle]")?.classList.toggle(
+      "is-on",
+      !active && !state.numberingFormat && state.listLevel != null,
+    );
+    const recentHost = this.el.querySelector<HTMLElement>("[data-bullet-recent]");
+    if (recentHost) {
+      recentHost.innerHTML = this.recentBullets
+        .map((glyph) => bulletTileMarkup(glyph, active === glyph))
+        .join("");
+    }
+    this.el.querySelectorAll<HTMLElement>("[data-bullet-library] [data-bullet-symbol]").forEach((button) => {
+      button.classList.toggle("is-on", button.dataset.bulletSymbol === active);
+    });
+    this.el.querySelector<HTMLElement>("[data-bullet-library] [data-outline='clear']")?.classList.toggle(
+      "is-on",
+      state.listLevel == null && active == null,
+    );
+    const docWrap = this.el.querySelector<HTMLElement>("[data-bullet-doc-wrap]");
+    const docHost = this.el.querySelector<HTMLElement>("[data-bullet-doc]");
+    const docGlyphs = state.documentBullets ?? [];
+    if (docWrap && docHost) {
+      docWrap.hidden = docGlyphs.length === 0;
+      docHost.innerHTML = docGlyphs.map((glyph) => bulletTileMarkup(glyph, active === glyph)).join("");
+    }
+  }
+
+  private rememberBullet(symbol: string): string {
+    const glyph = symbol.trim() || DEFAULT_BULLET;
+    this.recentBullets = [glyph, ...this.recentBullets.filter((item) => item !== glyph)].slice(0, 6);
+    return glyph;
+  }
+
+  private bulletMarkup(): string {
+    const library = PRESET_BULLETS.map((glyph) => bulletTileMarkup(glyph, false)).join("");
+    return `
+      <div class="ho-word-drop ho-word-split ho-word-bullet-drop">
+        <button type="button" data-act="bullet-toggle" title="项目符号">${RibbonIcons.bullet}</button>
+        <button type="button" class="ho-word-split-arrow" data-drop-toggle title="项目符号库">${RibbonIcons.chevronDown}</button>
+        <div class="ho-word-outline-menu ho-word-bullet-menu">
+          <div class="ho-word-bullet-section">
+            <div class="ho-word-bullet-title">最近使用过的项目符号</div>
+            <div class="ho-word-bullet-grid" data-bullet-recent>${bulletTileMarkup(DEFAULT_BULLET, false)}</div>
+          </div>
+          <div class="ho-word-border-split"></div>
+          <div class="ho-word-bullet-section">
+            <div class="ho-word-bullet-title">项目符号库</div>
+            <div class="ho-word-bullet-grid" data-bullet-library>
+              <button type="button" class="ho-word-bullet-tile ho-word-bullet-none" data-outline="clear" title="无">无</button>
+              ${library}
+            </div>
+          </div>
+          <div class="ho-word-bullet-doc" data-bullet-doc-wrap hidden>
+            <div class="ho-word-border-split"></div>
+            <div class="ho-word-bullet-section">
+              <div class="ho-word-bullet-title">文档项目符号</div>
+              <div class="ho-word-bullet-grid" data-bullet-doc></div>
+            </div>
+          </div>
+          <div class="ho-word-border-split"></div>
+          <button type="button" data-bullet-custom="1">定义新项目符号...</button>
+        </div>
+      </div>
+    `;
+  }
+
+  private syncNumberings(state: RibbonState): void {
+    const active = state.numberingFormat;
+    const activeKey = active ? numberingPresetKey(active) : undefined;
+    this.toggle("numbering-toggle", active != null);
+    const recentHost = this.el.querySelector<HTMLElement>("[data-num-recent]");
+    if (recentHost) {
+      recentHost.innerHTML = this.recentNumberings
+        .map((preset) => numberingCardMarkup(preset, numberingPresetKey(preset) === activeKey))
+        .join("");
+    }
+    this.el.querySelectorAll<HTMLElement>("[data-num-library] [data-num-fmt]").forEach((button) => {
+      const key = numberingPresetKey({
+        numFmt: button.dataset.numFmt,
+        lvlText: button.dataset.numText,
+        start: Number(button.dataset.numStart ?? "1") || 1,
+      });
+      button.classList.toggle("is-on", key === activeKey);
+    });
+    this.el.querySelector<HTMLElement>("[data-num-library] [data-outline='clear']")?.classList.toggle(
+      "is-on",
+      state.listLevel == null && active == null,
+    );
+    const docWrap = this.el.querySelector<HTMLElement>("[data-num-doc-wrap]");
+    const docHost = this.el.querySelector<HTMLElement>("[data-num-doc]");
+    const docPresets = state.documentNumberings ?? [];
+    if (docWrap && docHost) {
+      docWrap.hidden = docPresets.length === 0;
+      docHost.innerHTML = docPresets
+        .map((preset) => numberingCardMarkup(preset, numberingPresetKey(preset) === activeKey))
+        .join("");
+    }
+  }
+
+  private rememberNumbering(preset: NumberingPreset): NumberingPreset {
+    const normalized: NumberingPreset = {
+      numFmt: preset.numFmt || DEFAULT_NUMBERING.numFmt,
+      lvlText: preset.lvlText || DEFAULT_NUMBERING.lvlText,
+      start: Math.max(1, Math.trunc(preset.start || 1)),
+    };
+    const key = numberingPresetKey(normalized);
+    this.recentNumberings = [
+      normalized,
+      ...this.recentNumberings.filter((item) => numberingPresetKey(item) !== key),
+    ].slice(0, 6);
+    return normalized;
+  }
+
+  private numberingMarkup(): string {
+    const library = PRESET_NUMBERINGS.map((preset) => numberingCardMarkup(preset, false)).join("");
+    return `
+      <div class="ho-word-drop ho-word-split ho-word-numbering-drop">
+        <button type="button" data-act="numbering-toggle" title="编号">${RibbonIcons.numbering}</button>
+        <button type="button" class="ho-word-split-arrow" data-drop-toggle title="编号库">${RibbonIcons.chevronDown}</button>
+        <div class="ho-word-outline-menu ho-word-numbering-menu">
+          <div class="ho-word-bullet-section">
+            <div class="ho-word-bullet-title">最近使用过的编号格式</div>
+            <div class="ho-word-numbering-grid" data-num-recent>${numberingCardMarkup(DEFAULT_NUMBERING, false)}</div>
+          </div>
+          <div class="ho-word-border-split"></div>
+          <div class="ho-word-bullet-section">
+            <div class="ho-word-bullet-title">编号库</div>
+            <div class="ho-word-numbering-grid" data-num-library>
+              <button type="button" class="ho-word-numbering-card-btn ho-word-numbering-none" data-outline="clear" title="无">无</button>
+              ${library}
+            </div>
+          </div>
+          <div class="ho-word-num-doc" data-num-doc-wrap hidden>
+            <div class="ho-word-border-split"></div>
+            <div class="ho-word-bullet-section">
+              <div class="ho-word-bullet-title">文档编号格式</div>
+              <div class="ho-word-numbering-grid" data-num-doc></div>
+            </div>
+          </div>
+          <div class="ho-word-border-split"></div>
+          <button type="button" data-num-custom="1">定义新的编号格式...</button>
+        </div>
+      </div>
+    `;
+  }
+
+  private syncMultilevel(state: RibbonState): void {
+    const currentWrap = this.el.querySelector<HTMLElement>("[data-ml-current-wrap]");
+    const currentHost = this.el.querySelector<HTMLElement>("[data-ml-current]");
+    if (currentWrap && currentHost) {
+      const rows = state.currentList;
+      currentWrap.hidden = !rows?.length;
+      currentHost.innerHTML = rows?.length ? multilevelRowsCardMarkup(rows, true) : "";
+    }
+    this.el.querySelectorAll<HTMLElement>("[data-ml-library] [data-ml-preset]").forEach((button) => {
+      button.classList.toggle("is-on", button.dataset.mlPreset === state.multilevelId);
+    });
+    this.el.querySelector<HTMLElement>("[data-ml-library] [data-outline='clear']")?.classList.toggle(
+      "is-on",
+      state.listLevel == null,
+    );
+  }
+
   private outlineMarkup(): string {
-    const levels = Array.from({ length: 9 }, (_, ilvl) => {
-      const sample = Array.from({ length: ilvl + 1 }, () => "1").join(".");
-      return `<button type="button" data-outline="level" data-ilvl="${ilvl}">
-        <span class="ho-word-outline-sample" style="padding-left:${ilvl * 8}px">${sample}</span>
-        <span>${ilvl + 1} 级</span>
-      </button>`;
+    const library = PRESET_MULTILEVELS.map((preset) => multilevelPresetCardMarkup(preset, false)).join("");
+    const levelButtons = Array.from({ length: 9 }, (_, ilvl) => {
+      return `<button type="button" class="ho-word-ml-level-chip" data-outline="level" data-ilvl="${ilvl}" title="${ilvl + 1} 级">${ilvl + 1}</button>`;
     }).join("");
     return `
       <div class="ho-word-drop ho-word-outline-drop">
-        <button type="button" data-drop-toggle title="大纲编号。Tab 降低一级，Shift+Tab 提升一级">${RibbonIcons.list}</button>
-        <div class="ho-word-outline-menu">
-          <button type="button" data-outline="apply">套用大纲</button>
+        <button type="button" class="ho-word-ml-trigger" data-drop-toggle title="多级列表。Tab 降低一级，Shift+Tab 提升一级">${RibbonIcons.list}${RibbonIcons.chevronDown}</button>
+        <div class="ho-word-outline-menu ho-word-multilevel-menu">
+          <div class="ho-word-ml-current-wrap" data-ml-current-wrap hidden>
+            <div class="ho-word-bullet-section">
+              <div class="ho-word-bullet-title">当前列表</div>
+              <div class="ho-word-numbering-grid" data-ml-current></div>
+            </div>
+            <div class="ho-word-border-split"></div>
+          </div>
+          <div class="ho-word-bullet-section">
+            <div class="ho-word-bullet-title">列表库</div>
+            <div class="ho-word-numbering-grid" data-ml-library>
+              <button type="button" class="ho-word-numbering-card-btn ho-word-numbering-none" data-outline="clear" title="无">无</button>
+              ${library}
+            </div>
+          </div>
           <div class="ho-word-border-split"></div>
-          ${levels}
-          <div class="ho-word-border-split"></div>
+          <div class="ho-word-bullet-section">
+            <div class="ho-word-bullet-title">更改列表级别</div>
+            <div class="ho-word-ml-level-row">${levelButtons}</div>
+          </div>
           <button type="button" data-outline="promote">提升一级</button>
           <button type="button" data-outline="demote">降低一级</button>
-          <button type="button" data-outline="clear">取消编号</button>
+          <div class="ho-word-border-split"></div>
+          <button type="button" data-ml-custom="list">定义新的多级列表...</button>
+          <button type="button" data-ml-custom="style">定义新的列表样式...</button>
         </div>
       </div>
     `;
@@ -859,6 +1744,7 @@ export class Ribbon {
             <div class="ho-word-stack">
               <button type="button" data-act="cut" title="剪切 (Ctrl+X)">${RibbonIcons.cut}<span>剪切</span></button>
               <button type="button" data-act="copy" title="复制 (Ctrl+C)">${RibbonIcons.copy}<span>复制</span></button>
+              <button type="button" data-act="format-painter" title="格式刷：单击刷一次，双击连续刷 (Ctrl+Shift+C / Ctrl+Shift+V)">${RibbonIcons.formatPainter}<span>格式刷</span></button>
             </div>
           </div>
           <span>剪贴板</span>
@@ -868,17 +1754,18 @@ export class Ribbon {
             <div class="ho-word-row">
               <select data-select="font" title="字体">${fontSelectMarkup()}</select>
               <select data-select="size">${SIZES.map((size) => `<option value="${size}">${size}</option>`).join("")}</select>
-              <button type="button" data-act="size-up" title="增大字号">A+</button>
-              <button type="button" data-act="size-down" title="减小字号">A-</button>
-              <button type="button" data-act="clear" title="清除格式">Aa</button>
+              ${iconButton("size-up", "增大字号", RibbonIcons.growFont)}
+              ${iconButton("size-down", "减小字号", RibbonIcons.shrinkFont)}
+              ${this.caseMarkup()}
+              <button type="button" data-act="clear" title="清除所有格式">${RibbonIcons.clearFormat}</button>
             </div>
             <div class="ho-word-row">
-              <button type="button" data-act="bold" title="加粗 (Ctrl+B)"><b>B</b></button>
-              <button type="button" data-act="italic" title="倾斜 (Ctrl+I)"><i>I</i></button>
-              <button type="button" data-act="underline" title="下划线 (Ctrl+U)"><u>U</u></button>
-              <button type="button" data-act="strike" title="删除线"><s>abc</s></button>
-              <button type="button" data-act="subscript" title="下标">x₂</button>
-              <button type="button" data-act="superscript" title="上标">x²</button>
+              ${iconButton("bold", "加粗 (Ctrl+B)", RibbonIcons.bold)}
+              ${iconButton("italic", "倾斜 (Ctrl+I)", RibbonIcons.italic)}
+              ${iconButton("underline", "下划线 (Ctrl+U)", RibbonIcons.underline)}
+              ${iconButton("strike", "删除线", RibbonIcons.strike)}
+              ${iconButton("subscript", "下标", RibbonIcons.subscript)}
+              ${iconButton("superscript", "上标", RibbonIcons.superscript)}
               <div class="ho-word-drop">
                 <button type="button" class="ho-word-color-cmd" data-drop-toggle title="突出显示">${RibbonIcons.highlight}<span data-swatch="highlight"></span></button>
                 <div class="ho-word-palette ho-word-palette-fill">
@@ -888,9 +1775,11 @@ export class Ribbon {
                 </div>
               </div>
               <div class="ho-word-drop">
-                <button type="button" class="ho-word-color-cmd" data-drop-toggle title="字体颜色"><span class="ho-word-color-letter">A</span><span data-swatch="color"></span></button>
+                <button type="button" class="ho-word-color-cmd" data-drop-toggle title="字体颜色">${RibbonIcons.fontColor}<span data-swatch="color"></span></button>
                 ${textColorPaletteMarkup()}
               </div>
+              <button type="button" data-act="shading" title="字符底纹">${RibbonIcons.charShading}</button>
+              <button type="button" data-act="enclosed" title="带圈字符">${RibbonIcons.enclosedChar}</button>
             </div>
           </div>
           <span>字体</span>
@@ -898,6 +1787,8 @@ export class Ribbon {
         <section class="ho-word-group">
           <div class="ho-word-group-body ho-word-para">
             <div class="ho-word-row">
+              ${this.bulletMarkup()}
+              ${this.numberingMarkup()}
               ${this.outlineMarkup()}
               ${iconButton("indent-less", "减少缩进", RibbonIcons.indentLess)}
               ${iconButton("indent-more", "增加缩进", RibbonIcons.indentMore)}
@@ -909,6 +1800,9 @@ export class Ribbon {
                   <button type="button" data-indent="hang2">悬挂 2 字</button>
                 </div>
               </div>
+              ${this.asianLayoutMarkup()}
+              ${iconButton("sort", "排序", RibbonIcons.sort)}
+              ${iconButton("show-marks", "显示/隐藏编辑标记", RibbonIcons.showMarks)}
             </div>
             <div class="ho-word-row">
               ${iconButton("align-left", "左对齐", RibbonIcons.alignLeft)}
@@ -929,23 +1823,21 @@ export class Ribbon {
                   <button type="button" data-gap="both6">段前段后 6 磅</button>
                 </div>
               </div>
+              ${this.paraShadingMarkup()}
+              ${this.borders.markup()}
             </div>
           </div>
           <span>段落</span>
         </section>
         <section class="ho-word-group">
-          <div class="ho-word-group-body ho-word-styles">
-            ${styleCard("normal", "正文", "AaBbCcDdEe")}
-            ${styleCard("heading1", "标题 1", "AaBbCc")}
-            ${styleCard("heading2", "标题 2", "AaBbCc")}
-            ${styleCard("heading3", "标题 3", "AaBbCc")}
-          </div>
+          <div class="ho-word-group-body">${styleGalleryMarkup(`ho-word-style-gallery-${this.galleryId}`)}</div>
           <span>样式</span>
         </section>
         <section class="ho-word-group">
           <div class="ho-word-group-body ho-word-edit">
             <button type="button" data-act="find-open" title="查找 (Ctrl+F)">${RibbonIcons.find}<span>查找</span></button>
             <button type="button" data-act="find-replace" title="替换 (Ctrl+H)">${RibbonIcons.replace}<span>替换</span></button>
+            <button type="button" data-act="selection-pane" title="选择窗格">${RibbonIcons.selectionPane}<span>选择窗格</span></button>
           </div>
           <span>编辑</span>
         </section>
@@ -953,6 +1845,7 @@ export class Ribbon {
       <div class="ho-word-ribbon-page" data-page="insert" hidden>
         <section class="ho-word-group">
           <div class="ho-word-group-body ho-word-insert">
+            ${coverGalleryMarkup(`ho-word-cover-gallery-${this.galleryId}`)}
             <button type="button" class="ho-word-big" data-act="insert-blank-page" title="在光标处插入一页空白">${RibbonIcons.blankPage}<span>空白页</span></button>
             <button type="button" class="ho-word-big" data-act="insert-page-break" title="从这里另起一页">${RibbonIcons.pageBreak}<span>分页符</span></button>
           </div>
@@ -990,12 +1883,22 @@ export class Ribbon {
           </div>
           <span>页眉和页脚</span>
         </section>
+        <section class="ho-word-group">
+          <div class="ho-word-group-body ho-word-insert">${this.textBoxMarkup()}</div>
+          <span>文本</span>
+        </section>
       </div>
       <div class="ho-word-ribbon-page" data-page="picture" hidden>
+        ${textBoxToolsMarkup()}
         <section class="ho-word-group">
           <div class="ho-word-group-body ho-word-insert">
-            ${this.pictureWrapMarkup()}
             ${this.picturePlaceMarkup()}
+            ${this.pictureWrapMarkup()}
+            ${this.bringForwardMarkup()}
+            ${this.sendBackwardMarkup()}
+            <button type="button" class="ho-word-big" data-act="selection-pane" title="选择窗格">${RibbonIcons.selectionPane}<span>选择窗格</span></button>
+            ${this.alignObjectsMarkup()}
+            ${this.rotateObjectMarkup()}
           </div>
           <span>排列</span>
         </section>
@@ -1038,14 +1941,7 @@ export class Ribbon {
 }
 
 function moreColors(kind: "text" | "fill"): string {
-  return `<button type="button" data-custom-color="${kind}" class="ho-word-palette-more">更多颜色...</button>`;
-}
-
-function styleCard(id: "normal" | "heading1" | "heading2" | "heading3", name: string, sample: string): string {
-  return `<button type="button" class="ho-word-style-card" data-style="${id}" title="${name}">
-      <span class="ho-word-style-preview ho-word-style-${id}">${sample}</span>
-      <span>${name}</span>
-    </button>`;
+  return `<button type="button" data-custom-color="${kind}" class="ho-word-palette-more">${RibbonIcons.palette}更多颜色...</button>`;
 }
 
 function firstLineKind(indent: RibbonState["indent"]): "none" | "first2" | "hang2" {
@@ -1074,8 +1970,20 @@ function isGap(value: string): value is "0" | "before6" | "after6" | "both6" {
   return value === "0" || value === "before6" || value === "after6" || value === "both6";
 }
 
-function isStyle(value: string): value is "normal" | "heading1" | "heading2" | "heading3" {
-  return value === "normal" || value === "heading1" || value === "heading2" || value === "heading3";
+function isAsianKind(value: string): value is AsianLayoutKind {
+  return value === "tatechuyoko" || value === "combine" || value === "twoInOne" || value === "fitWidth";
+}
+
+function isCaseMode(value: string): value is CaseMode {
+  return (
+    value === "sentence" ||
+    value === "lower" ||
+    value === "upper" ||
+    value === "title" ||
+    value === "toggle" ||
+    value === "halfwidth" ||
+    value === "fullwidth"
+  );
 }
 
 function isPictureWrap(value: string): value is PictureWrap {
@@ -1084,6 +1992,32 @@ function isPictureWrap(value: string): value is PictureWrap {
 
 function isPicturePlace(value: string): value is PicturePlace {
   return value === "top-left" || value === "top-center" || value === "top-right" || value === "middle-left" || value === "middle-center" || value === "middle-right" || value === "bottom-left" || value === "bottom-center" || value === "bottom-right";
+}
+
+function isLayerOrderAction(value: string): value is LayerOrderAction {
+  return (
+    value === "bringForward" ||
+    value === "bringToFront" ||
+    value === "inFrontOfText" ||
+    value === "sendBackward" ||
+    value === "sendToBack" ||
+    value === "behindText"
+  );
+}
+
+function isAlignAction(value: string): value is AlignAction {
+  return (
+    value === "left" ||
+    value === "center" ||
+    value === "right" ||
+    value === "top" ||
+    value === "middle" ||
+    value === "bottom"
+  );
+}
+
+function isRotateAction(value: string): value is RotateAction {
+  return value === "rotate90" || value === "rotate-90" || value === "flipH" || value === "flipV" || value === "reset";
 }
 
 function placeLabel(place: PicturePlace): string {
@@ -1107,6 +2041,47 @@ function cmText(px: number | undefined): string {
 
 function cmToPxSafe(cm: number): number {
   return cmToPx(Number.isFinite(cm) ? cm : 0);
+}
+
+function bulletTileMarkup(glyph: string, active: boolean): string {
+  const escaped = escapeHtml(glyph);
+  return `<button type="button" class="ho-word-bullet-tile${active ? " is-on" : ""}" data-bullet-symbol="${escaped}" title="${escaped}">${escaped}</button>`;
+}
+
+function numberingCardMarkup(preset: NumberingPreset, active: boolean): string {
+  const samples = numberingSamples(preset);
+  const rows = samples
+    .map(
+      (label) =>
+        `<span class="ho-word-numbering-sample-row"><span class="ho-word-numbering-sample-label">${escapeHtml(label)}</span><span class="ho-word-numbering-sample-bar"></span></span>`,
+    )
+    .join("");
+  return `<button type="button" class="ho-word-numbering-card-btn${active ? " is-on" : ""}" data-num-fmt="${escapeHtml(preset.numFmt)}" data-num-text="${escapeHtml(preset.lvlText)}" data-num-start="${preset.start}" title="${escapeHtml(samples.join(" "))}">${rows}</button>`;
+}
+
+function multilevelPresetCardMarkup(preset: MultilevelPreset, active: boolean): string {
+  const rows = multilevelSamples(preset.levels, !!preset.linkHeading);
+  const body = multilevelRowsInnerMarkup(rows);
+  const title = rows.map((row) => `${row.label}${row.heading ? ` ${row.heading}` : ""}`).join(" / ");
+  return `<button type="button" class="ho-word-numbering-card-btn ho-word-multilevel-card-btn${active ? " is-on" : ""}" data-ml-preset="${escapeHtml(preset.id)}" title="${escapeHtml(title)}">${body}</button>`;
+}
+
+function multilevelRowsCardMarkup(rows: MultilevelPreviewRow[], active: boolean): string {
+  const body = multilevelRowsInnerMarkup(rows);
+  return `<div class="ho-word-numbering-card-btn ho-word-multilevel-card-btn ho-word-ml-current-card${active ? " is-on" : ""}">${body}</div>`;
+}
+
+function multilevelRowsInnerMarkup(rows: MultilevelPreviewRow[]): string {
+  return rows
+    .map((row) => {
+      const indent = row.ilvl * 7;
+      const heading = row.heading ? `<span class="ho-word-ml-sample-heading">${escapeHtml(row.heading)}</span>` : "";
+      const label = row.label
+        ? `<span class="ho-word-ml-sample-label">${escapeHtml(row.label)}</span>`
+        : "";
+      return `<span class="ho-word-numbering-sample-row" style="padding-left:${indent}px">${label}${heading}<span class="ho-word-numbering-sample-bar"></span></span>`;
+    })
+    .join("");
 }
 
 function escapeHtml(value: string): string {

@@ -1,4 +1,5 @@
 import type { Document } from "../model/document/Document";
+import { textBoxGeometry } from "../model/graphic/TextBoxGeometry";
 import type { Paragraph } from "../model/block/Paragraph";
 import type { Table, TableCell } from "../model/table/Table";
 import type { StoryEditor } from "../editor/StoryEditor";
@@ -169,9 +170,8 @@ export class Relayout {
     const measurer = this.measurer();
     if (story.slot === "textbox") {
       const drawing = story.block.drawing;
-      const insets = drawing?.shape?.insets ?? { left: 0, top: 0, right: 0, bottom: 0 };
       return {
-        contentWidth: Math.max(8, (drawing?.width ?? 80) - insets.left - insets.right),
+        contentWidth: drawing ? textBoxGeometry(drawing).width : 80,
         contentHeight: Number.POSITIVE_INFINITY,
         measurer,
         paginate: false as const,

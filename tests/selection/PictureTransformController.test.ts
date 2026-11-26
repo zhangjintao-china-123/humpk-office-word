@@ -94,4 +94,53 @@ describe("图片缩放光标", () => {
     expect(moves.commit).toBe(1);
     controller.detach();
   });
+
+  it("滑到旋转控点切换抓手光标，拖动可旋转并支持 Esc 取消", () => {
+    const picture = box({ slot: "body" }, "anchor");
+    const el = document.createElement("div");
+    let rotated: number | null = null;
+    let committed = 0;
+    let reverted = 0;
+    const controller = new PictureTransformController({
+      clientToWorld: (x, y) => ({ x, y }),
+      zoom: () => 1,
+      selectedPicture: () => picture,
+      pictureAt: () => null,
+      selectPicture: () => undefined,
+      previewResize: () => undefined,
+      previewRotate: (_box, _start, angle) => {
+        rotated = angle;
+      },
+      previewMove: () => undefined,
+      commit: () => {
+        committed += 1;
+      },
+      revert: () => {
+        reverted += 1;
+      },
+    });
+    controller.attach(el);
+
+    // 框体在 (20,20,100,60)，旋转控点在 (70, -4)
+    el.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 70, clientY: -4 }));
+    expect(el.style.cursor).toBe("grab");
+
+    // 按下并向右侧 (130, 50) 拖动 -> 90°
+    el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: 70, clientY: -4 }));
+    expect(el.style.cursor).toBe("grabbing");
+    el.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 130, clientY: 50 }));
+    expect(rotated).toBe(90);
+
+    // Esc 取消并还原
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(reverted).toBe(1);
+    expect(committed).toBe(0);
+
+    // 再次拖动并松手提交
+    el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: 70, clientY: -4 }));
+    el.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 130, clientY: 50 }));
+    el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 130, clientY: 50 }));
+    expect(committed).toBe(1);
+    controller.detach();
+  });
 });

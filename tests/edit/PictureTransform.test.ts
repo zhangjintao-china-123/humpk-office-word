@@ -17,8 +17,11 @@ import {
   PictureTransformCommand,
   pictureWrapOffset,
   pickPictureHandle,
+  pickRotateHandle,
   resizedPicture,
   restorePicture,
+  ROTATE_HANDLE_OFFSET,
+  rotatedAngleFromPointer,
   snapPicture,
   syncPictureStream,
 } from "../../src/edit/PictureTransform";
@@ -127,6 +130,24 @@ describe("图片缩放与位置", () => {
     expect(pickPictureHandle(70, 22, box, 8)).toBe("n");
     expect(pickPictureHandle(118, 50, box, 8)).toBe("e");
     expect(pickPictureHandle(70, 50, box, 8)).toBeNull();
+  });
+
+  it("旋转控点命中与指针角度计算（支持 Shift 15 度吸附和已旋转框）", () => {
+    const drawing = picture();
+    const box = { x: 20, y: 40, width: 100, height: 60, drawing };
+    expect(pickRotateHandle(70, 40 - ROTATE_HANDLE_OFFSET, box, 6)).toBe(true);
+    expect(pickRotateHandle(70, 40, box, 6)).toBe(false);
+
+    // 顺时针旋转 90° 后，旋转控点位于中心 (70, 70) 右侧距离 30 + ROTATE_HANDLE_OFFSET 处
+    drawing.rotation = 90;
+    expect(pickRotateHandle(70 + 30 + ROTATE_HANDLE_OFFSET, 70, box, 6)).toBe(true);
+
+    expect(rotatedAngleFromPointer(box, 70, 0)).toBe(0);
+    expect(rotatedAngleFromPointer(box, 140, 70)).toBe(90);
+    expect(rotatedAngleFromPointer(box, 70, 140)).toBe(180);
+    expect(rotatedAngleFromPointer(box, 0, 70)).toBe(270);
+    // 轻微偏右上方时 Shift 吸附到 15 的倍数
+    expect(rotatedAngleFromPointer(box, 80, 20, true) % 15).toBe(0);
   });
 
   it("单元格嵌入图不能拖成浮动，浮动图和正文可以拖", () => {

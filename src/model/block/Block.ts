@@ -1,6 +1,8 @@
 import type { FieldKind } from "../document/PageLabel";
 import type { TextLink } from "../field/TextLink";
 import type { Drawing } from "../inline/Drawing";
+import type { AsianLayoutSpec } from "../inline/AsianLayout";
+import type { EnclosedSpec } from "../inline/EnclosedChar";
 import type { MathExpr, MathView } from "../math/MathExpr";
 import type { RevisionMark } from "../review/Review";
 import { resolveFontFamily, type RunStyle } from "../style/RunStyle";
@@ -21,6 +23,10 @@ export class Block {
   commentRef?: string;
   /** 脚注引用上标，对应 footnotes.xml 的 id。 */
   footnoteId?: string;
+  /** 带圈字符属性（圈号形状与大小模式）。 */
+  enclosed?: EnclosedSpec;
+  /** 中文版式属性（纵横混排 / 合并字符 / 双行合一 / 调整宽度）。 */
+  asianLayout?: AsianLayoutSpec;
   /** OMML 公式。整条公式在行里占一个盒子。 */
   math?: MathExpr;
   /** 公式原文，写回时原样放回，避免丢掉没排的结构。 */

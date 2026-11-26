@@ -3,7 +3,7 @@ import { Block } from "../../src/model/block/Block";
 import { Paragraph } from "../../src/model/block/Paragraph";
 import { Document } from "../../src/model/document/Document";
 import { WordStreamBuilder } from "../../src/model/flatten/WordStreamBuilder";
-import { TableCell } from "../../src/model/table/Table";
+import { Table, TableCell, TableRow } from "../../src/model/table/Table";
 import { CaretPos } from "../../src/selection/CaretPos";
 import { SelRange } from "../../src/selection/SelRange";
 import { Selection } from "../../src/selection/Selection";
@@ -83,6 +83,8 @@ describe("ContextMenuBuilder", () => {
       "标题 2",
       "标题 3",
       "编号",
+      "项目符号",
+      "编号列表",
       "套用大纲",
       "提升一级",
       "降低一级",
@@ -143,6 +145,7 @@ describe("ContextMenuBuilder", () => {
       "删除",
       "删除行",
       "删除列",
+      "删除表格",
       "—",
       "合并单元格",
       "拆分单元格",
@@ -155,6 +158,7 @@ describe("ContextMenuBuilder", () => {
     expect(remove?.kind === "submenu" && remove.children.map((child) => child.kind === "item" && child.enabled)).toEqual([
       true,
       false,
+      true,
     ]);
   });
 
@@ -392,6 +396,76 @@ describe("ContextMenuController", () => {
     document.querySelector<HTMLButtonElement>(".ho-word-context-dialog .is-primary")?.click();
     await Promise.resolve();
     expect(calls).toEqual(["bold", "find", "link:https://word.test"]);
+    controller.detach();
+  });
+
+  it("右键点表格左上控点会选中整张表并弹出表格菜单；已选中整表时右键格内不收起选区", () => {
+    const a = new TableCell(doc("a"));
+    a.rowIndex = 0;
+    a.colIndex = 0;
+    const b = new TableCell(doc("b"));
+    b.rowIndex = 0;
+    b.colIndex = 1;
+    const table = new Table();
+    const row = new TableRow();
+    row.cells = [a, b];
+    table.rows = [row];
+
+    const document = new Document();
+    const tablePara = new Paragraph(1);
+    tablePara.isTable = true;
+    tablePara.table = table;
+    document.addParagraph(tablePara);
+    const tailPara = new Paragraph(2);
+    tailPara.addBlock(new Block());
+    document.addParagraph(tailPara);
+    new WordStreamBuilder().buildStoryOnly(document);
+
+    const tableNode = document.words.head!;
+    const selection = new Selection();
+    selection.collapse(new CaretPos(body, document.words.tail, false));
+
+    let hitPos = new CaretPos(body, tableNode, false);
+    let selectionChanges = 0;
+    const calls: string[] = [];
+    const host = globalThis.document.createElement("div");
+    const scroll = globalThis.document.createElement("div");
+    const controller = new ContextMenuController({
+      selection,
+      hitClient: () => hitPos,
+      flowOwner: () => ({ document, story: body }),
+      onSelectionChange: () => {
+        selectionChanges += 1;
+      },
+      copy: () => undefined,
+      cut: () => undefined,
+      paste: () => undefined,
+      deleteSelection: () => undefined,
+      tableMenuState: () => ({ canMerge: true, canSplit: false, canDeleteRow: false, canDeleteCol: true }),
+      deleteTable: () => calls.push("deleteTable"),
+    });
+    controller.attach(host, scroll);
+
+    scroll.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 6, clientY: 6 }));
+    expect(selectionChanges).toBe(1);
+    expect(selection.flow?.anchor.node).toBe(tableNode);
+    expect(selection.flow?.anchor.after).toBe(false);
+    expect(selection.flow?.focus.node).toBe(tableNode);
+    expect(selection.flow?.focus.after).toBe(true);
+    expect(controller.menu.isOpen()).toBe(true);
+    const cut = [...controller.menu.el.querySelectorAll("button")].find((button) => button.dataset.act === "cut");
+    const merge = [...controller.menu.el.querySelectorAll("button")].find((button) => button.dataset.act === "mergeCells");
+    expect(cut?.disabled).toBe(false);
+    expect(merge?.disabled).toBe(false);
+
+    hitPos = new CaretPos({ slot: "cell", cell: b }, b.document.words.head, false);
+    scroll.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 20 }));
+    expect(selectionChanges).toBe(1);
+    expect(selection.flow?.anchor.node).toBe(tableNode);
+
+    const delTable = [...controller.menu.el.querySelectorAll("button")].find((button) => button.dataset.act === "deleteTable");
+    delTable?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(calls).toEqual(["deleteTable"]);
     controller.detach();
   });
 });

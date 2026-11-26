@@ -125,4 +125,46 @@ describe("系统剪贴板 HTML", () => {
     const payload = parseClipboardHtml('<p><img src="data:image/png;base64,yy" width="50" height="20"></p>');
     expect(payload?.paragraphs[0].runs[0].drawing).toMatchObject({ url: "data:image/png;base64,yy", width: 50, height: 20 });
   });
+
+  it("表外文本与表格混排的 HTML 能完整往返保留顺序和样式", () => {
+    const table = {
+      columnWidths: [100, 60],
+      rows: [
+        {
+          cells: [
+            { colSpan: 1, rowSpan: 1, paragraphs: [{ attrs: {}, runs: [{ text: "A", style: { bold: true } }] }] },
+            { colSpan: 1, rowSpan: 1, paragraphs: [{ attrs: {}, runs: [{ text: "B", style: {} }] }] },
+          ],
+        },
+      ],
+    };
+    const payload = new ClipboardPayload(
+      "上文\nA\tB\n下文",
+      [
+        { attrs: {}, runs: [{ text: "上文", style: { color: "#C00000" } }] },
+        { attrs: {}, runs: [{ text: "下文", style: {} }] },
+      ],
+      undefined,
+      [
+        { type: "paragraph", paragraph: { attrs: {}, runs: [{ text: "上文", style: { color: "#C00000" } }] } },
+        { type: "table", table },
+        { type: "paragraph", paragraph: { attrs: {}, runs: [{ text: "下文", style: {} }] } },
+      ],
+    );
+    const html = clipboardHtml(payload);
+    expect(html).toContain("<p><span style=\"color:#C00000\">上文</span></p>");
+    expect(html).toContain("<table>");
+    expect(html).toContain("<p>下文</p>");
+
+    const read = parseClipboardHtml(html);
+    expect(read?.blocks).toHaveLength(3);
+    expect(read?.blocks?.map((b) => b.type)).toEqual(["paragraph", "table", "paragraph"]);
+    expect(read?.blocks?.[0].type === "paragraph" && read.blocks[0].paragraph.runs[0]).toMatchObject({
+      text: "上文",
+      style: { color: "#C00000" },
+    });
+    expect(read?.blocks?.[1].type === "table" && read.blocks[1].table.columnWidths).toEqual([100, 60]);
+    expect(read?.blocks?.[2].type === "paragraph" && read.blocks[2].paragraph.runs[0].text).toBe("下文");
+    expect(read?.text).toBe("上文\nA\tB\n下文");
+  });
 });

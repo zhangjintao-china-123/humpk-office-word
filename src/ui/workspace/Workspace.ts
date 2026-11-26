@@ -8,6 +8,7 @@ import { HeaderFooterResolver } from "../../layout/page/HeaderFooterResolver";
 import { Block } from "../../model/block/Block";
 import { Paragraph } from "../../model/block/Paragraph";
 import { Document } from "../../model/document/Document";
+import type { CoverTemplateId } from "../../model/document/CoverPage";
 import type { HeaderFooterType } from "../../model/document/DocumentKind";
 import { labelPages, type PageLabel } from "../../model/document/PageLabel";
 import { Section } from "../../model/document/Section";
@@ -26,17 +27,54 @@ import { HyperlinkCommand } from "../../edit/HyperlinkCommand";
 import { RevisionCommand } from "../../edit/RevisionCommand";
 import { collectStories, findInStories, indexAtOrAfter, indexBefore, type FindHit, type FindQuery, type FindStatus } from "../../edit/Find";
 import { DeleteCommand, type DeleteDirection } from "../../edit/DeleteCommand";
-import { FormatCommand, gapPreset, indentPreset, spacingPreset, stylePreset, type FormatAction } from "../../edit/FormatCommand";
+import { FormatCommand, gapPreset, indentPreset, spacingPreset, type FormatAction } from "../../edit/FormatCommand";
+import { activeCharacterStyle, activeParagraphStyle } from "../../model/style/StyleGallery";
+import { AsianLayoutCommand, inspectAsianLayout, type AsianLayoutAction, type AsianLayoutStateInfo } from "../../edit/AsianLayoutCommand";
+import { EnclosedCommand, inspectEnclosed, type EnclosedAction, type EnclosedStateInfo } from "../../edit/EnclosedCommand";
+import { ParagraphBorderCommand, inspectParagraphBorders } from "../../edit/ParagraphBorderCommand";
+import { ShadingCommand, paragraphShadingHex } from "../../edit/ShadingCommand";
+import { SortCommand, inspectSortTarget, type SortOptions, type SortTargetInfo } from "../../edit/SortCommand";
+import { ChangeCaseCommand, type CaseMode } from "../../edit/ChangeCaseCommand";
+import type { AsianLayoutKind } from "../../model/inline/AsianLayout";
+import {
+  captureFormatSample,
+  FormatPainterCommand,
+  type FormatPainterMode,
+  type FormatSample,
+} from "../../edit/FormatPainter";
 import { InsertObjectCommand } from "../../edit/InsertObjectCommand";
+import { CoverPageCommand } from "../../edit/CoverPageCommand";
+import { InsertTextBoxCommand } from "../../edit/InsertTextBoxCommand";
+import { TextBoxFormatCommand, textBoxFormat } from "../../edit/TextBoxFormatCommand";
+import type { TextBoxDirection, TextBoxFormat } from "../../model/graphic/Shape";
+import { Rect } from "../../shared/geometry/Rect";
+import { TextBoxDrawController } from "./TextBoxDrawController";
 import { drawingFromFile } from "../../edit/PictureFile";
+import {
+  applyDrawingAlign,
+  applyLayerOrder,
+  applyRotateAction,
+  collectAnchoredEntries,
+  distributeAnchoredDrawings,
+  DrawingBatchCommand,
+  type AlignAction,
+  type AlignReference,
+  type DistributeAction,
+  type DrawingBatchEntry,
+  type LayerOrderAction,
+  type RotateAction,
+} from "../../edit/ArrangeCommand";
 import {
   applyPicturePlace,
   applyPictureSize,
   applyPictureWrap,
   canDragPicture,
   findDrawingNode,
+  minimumTextBoxSize,
   PictureTransformCommand,
+  PICTURE_WRAP_GAP,
   pictureWrapOffset,
+  RemoveAnchoredDrawingCommand,
   resizedPicture,
   restorePicture,
   samePicture,
@@ -49,6 +87,14 @@ import {
   type PictureWrap,
 } from "../../edit/PictureTransform";
 import { OutlineCommand, type OutlineAction } from "../../edit/OutlineCommand";
+import {
+  activeMultilevelPresetId,
+  bulletGlyphOf,
+  currentListPreview,
+  documentBullets,
+  documentNumberings,
+  numberingPresetOf,
+} from "../../edit/OutlineNumbering";
 import { InsertCommand } from "../../edit/InsertCommand";
 import { ReplaceCommand } from "../../edit/ReplaceCommand";
 import { TableBorderCommand } from "../../edit/TableBorderCommand";
@@ -66,6 +112,7 @@ import { DocxWriter } from "../../io/docx/writer/DocxWriter";
 import type { RibbonState } from "../ribbon/Ribbon";
 import { Draw } from "../../render/canvas/Draw";
 import { Viewport } from "../../render/canvas/Viewport";
+import { SelectionPane, selectionPaneLabel, type SelectionPaneItem } from "./SelectionPane";
 import { PagePainter } from "../../render/page/PagePainter";
 import { PageSetup } from "../../render/page/PageSetup";
 import { imageCache } from "../../render/image/ImageCache";
@@ -80,7 +127,7 @@ import { SelectionPainter } from "../../selection/SelectionPainter";
 import { SelectionFragment } from "../../selection/SelectionFragment";
 import { SelectionText } from "../../selection/SelectionText";
 import { CaretPos } from "../../selection/CaretPos";
-import { caretRank } from "../../selection/MainWalk";
+import { caretRank, cellsInReadingOrder, coverFlow } from "../../selection/MainWalk";
 import { SelRange } from "../../selection/SelRange";
 import { storyKind, storySection, type StoryRef } from "../../selection/StoryRef";
 import { ContextMenuController } from "../contextmenu/ContextMenuController";
@@ -109,6 +156,8 @@ export class Workspace {
   /** 用户选过缩放后不再随窗口改回“适合宽度”。 */
   private zoomPinned = false;
 
+  private readonly hostEl: HTMLElement;
+  private readonly selectionPane: SelectionPane;
   private readonly root: HTMLElement;
   private readonly sizer: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
@@ -121,6 +170,7 @@ export class Workspace {
   private readonly selectionPainter: SelectionPainter;
   private readonly pointer: PointerController;
   private readonly pictureTransform: PictureTransformController;
+  private readonly textBoxDraw: TextBoxDrawController;
   private readonly tableResize: TableResizeController;
   private pictureFocus: PictureBox | null = null;
   private holdingPicture = false;
@@ -136,6 +186,9 @@ export class Workspace {
   private readonly writer = new DocxWriter();
   private readonly borderApplier = new TableBorderApplier();
   private borderPen: TableBorderPen = { type: "single", size: "12", color: "#000000" };
+  private showMarks = false;
+  private formatPainterMode: FormatPainterMode = "off";
+  private formatSample: FormatSample | null = null;
   private body?: BodyEditor;
   private headerBands: BandEditors[] = [];
   private footerBands: BandEditors[] = [];
@@ -147,8 +200,12 @@ export class Workspace {
     this.viewport = new Viewport();
     this.selectionPainter = new SelectionPainter(this.hit);
 
+    this.hostEl = host;
     host.classList.add("ho-word-workspace");
     host.replaceChildren();
+
+    const stage = document.createElement("div");
+    stage.className = "ho-word-stage";
 
     const scroll = document.createElement("div");
     scroll.className = "ho-word-scroll";
@@ -161,9 +218,27 @@ export class Workspace {
     this.canvas = document.createElement("canvas");
     this.canvas.className = "ho-word-canvas";
 
-    host.appendChild(scroll);
-    host.appendChild(this.canvas);
-    this.caret = new CaretView(host);
+    stage.appendChild(scroll);
+    stage.appendChild(this.canvas);
+    const textBoxHint = document.createElement("div");
+    textBoxHint.className = "ho-word-textbox-hint";
+    textBoxHint.setAttribute("role", "status");
+    textBoxHint.hidden = true;
+    textBoxHint.textContent = "拖动绘制文本框，单击或按 Enter 放置，Esc 取消";
+    stage.appendChild(textBoxHint);
+    this.caret = new CaretView(stage);
+
+    this.selectionPane = new SelectionPane({
+      items: () => this.selectionPaneItems(),
+      select: (box) => this.selectFromPane(box),
+      toggleVisibility: (box) => this.toggleDrawingVisibility(box),
+      setAllVisibility: (hidden) => this.setAllDrawingsVisibility(hidden),
+      moveOrder: (box, direction) => this.moveDrawingOrderFromPane(box, direction),
+      close: () => this.setSelectionPaneOpen(false),
+    });
+
+    host.appendChild(stage);
+    host.appendChild(this.selectionPane.el);
 
     this.draw = new Draw(this.canvas);
     this.stopImages = imageCache.onReady(() => this.paint());
@@ -173,7 +248,20 @@ export class Workspace {
     window.visualViewport?.addEventListener("scroll", this.onVisualViewport);
     this.relayout = new Relayout(this);
     this.input = new InputController(this);
-    this.input.attach(host);
+    this.input.attach(stage);
+    this.textBoxDraw = new TextBoxDrawController(this.root, {
+      toWorld: (x, y) => this.clientToWorld(x, y),
+      pageAt: (point) => this.textBoxPageAt(point.x, point.y),
+      caret: () => this.caretWorld(),
+      onChange: () => {
+        textBoxHint.hidden = !this.textBoxDraw.direction;
+        this.paint();
+        for (const handler of this.uiListeners) {
+          handler();
+        }
+      },
+      place: (direction, bounds) => this.placeTextBox(direction, bounds),
+    });
     this.pointer = new PointerController({
       selection: this.selection,
       hitClient: (x, y) => this.hitClient(x, y),
@@ -185,15 +273,22 @@ export class Workspace {
         this.input.clearPending();
         this.onSelectionChange();
       },
+      onPointerUp: () => {
+        if (this.formatPainterMode !== "off") {
+          this.applyFormatPainter();
+        }
+      },
     });
     this.pointer.attach(this.root);
+    document.addEventListener("keydown", this.onGlobalKeyDown);
     this.pictureTransform = new PictureTransformController({
       clientToWorld: (x, y) => this.clientToWorld(x, y),
       zoom: () => this.viewport.zoom || 1,
       selectedPicture: () => this.selectedPicture(),
-      pictureAt: (x, y) => this.hit.pictureAt(x, y, this.hitContext()),
+      pictureAt: (x, y) => this.pictureAtWorld(x, y),
       selectPicture: (box) => this.selectPicture(box),
       previewResize: (box, start, handle, dx, dy, lock) => this.previewPictureResize(box, start, handle, dx, dy, lock),
+      previewRotate: (box, start, angle) => this.previewPictureRotate(box, start, angle),
       previewMove: (box, start, dx, dy) => this.previewPictureMove(box, start, dx, dy),
       commit: (box, before) => this.commitPicture(box, before),
       revert: (box, before) => this.revertPicture(box, before),
@@ -202,7 +297,10 @@ export class Workspace {
     this.tableResize = new TableResizeController({
       clientToWorld: (x, y) => this.clientToWorld(x, y),
       zoom: () => this.viewport.zoom || 1,
-      guideAt: (x, y, slop) => this.hit.tableGuide(x, y, this.hitContext(), slop),
+      guideAt: (x, y, slop) => {
+        const ctx = this.hitContext();
+        return this.hit.tableHandleAt(x, y, ctx) ? null : this.hit.tableGuide(x, y, ctx, slop);
+      },
       previewColumns: (guide, widths, indent, adjustIndent) => {
         applyColumnWidths(guide.table, widths, adjustIndent ? indent : undefined);
         this.reflowTable(guide.story, guide.paragraph);
@@ -225,6 +323,7 @@ export class Workspace {
     this.contextMenu = new ContextMenuController({
       selection: this.selection,
       hitClient: (x, y) => this.hitClient(x, y),
+      flowOwner: (pos) => this.flowOwner(pos),
       pictureAtClient: (x, y) => this.pictureAtClient(x, y),
       selectPicture: (box) => this.selectPicture(box),
       onSelectionChange: () => {
@@ -242,6 +341,7 @@ export class Workspace {
       insertTableColumn: (where) => this.insertTableColumn(where),
       deleteTableRow: () => this.deleteTableRow(),
       deleteTableColumn: () => this.deleteTableColumn(),
+      deleteTable: () => this.deleteTable(),
       mergeTableCells: () => this.mergeTableCells(),
       splitTableCell: () => this.splitTableCell(),
       applyPictureWrap: (wrap) => this.applyPictureWrap(wrap),
@@ -263,10 +363,14 @@ export class Workspace {
   }
 
   load(document: Document): void {
+    this.textBoxDraw.cancel();
     this.body?.dispose();
     this.disposeBands();
     this.selection.clear();
     this.pictureFocus = null;
+    this.formatPainterMode = "off";
+    this.formatSample = null;
+    this.syncFormatPainterClass();
     this.history.clear();
     this.invalidateFind();
     this.applyPageSetup(document);
@@ -277,6 +381,7 @@ export class Workspace {
 
     this.body = new BodyEditor(shared);
     this.body.attach().load(document).flush();
+    this.syncShowMarks();
 
     this.refreshPageLabels(this.body.pageCount());
     this.setPageCount(this.body.pageCount());
@@ -319,7 +424,119 @@ export class Workspace {
     if (this.selection.isEmpty()) {
       this.placeCaret();
     }
-    this.history.do(new FormatCommand(this, action));
+    this.history.do(new FormatCommand(this, action, this.body.document.styles));
+  }
+
+  applyCase(mode: CaseMode): void {
+    if (!this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    this.history.do(new ChangeCaseCommand(this, mode));
+  }
+
+  inspectEnclosed(): EnclosedStateInfo {
+    if (this.body?.document && this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    return inspectEnclosed(this);
+  }
+
+  applyEnclosed(action: EnclosedAction): void {
+    if (!this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    this.history.do(new EnclosedCommand(this, action));
+  }
+
+  inspectAsianLayout(kind: AsianLayoutKind = "twoInOne"): AsianLayoutStateInfo {
+    if (this.body?.document && this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    return inspectAsianLayout(this, kind);
+  }
+
+  applyAsianLayout(action: AsianLayoutAction): void {
+    if (!this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    this.history.do(new AsianLayoutCommand(this, action));
+  }
+
+  inspectSort(): SortTargetInfo {
+    if (this.body?.document && this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    const tableTarget = this.selectedTable();
+    if (tableTarget) {
+      return inspectSortTarget(this, {
+        table: tableTarget.table,
+        colIndex: tableTarget.cells[0]?.colIndex ?? 0,
+      });
+    }
+    return inspectSortTarget(this);
+  }
+
+  applySort(options: SortOptions): void {
+    if (!this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    const tableTarget = this.selectedTable();
+    if (tableTarget && tableTarget.cells[0]) {
+      const host = this.relayout.findCellHost(tableTarget.cells[0]);
+      if (host) {
+        this.history.do(
+          new SortCommand(this, options, {
+            table: tableTarget.table,
+            story: tableTarget.story,
+            paragraph: host.paragraph,
+            colIndex: tableTarget.cells[0].colIndex,
+          }),
+        );
+        return;
+      }
+    }
+    this.history.do(new SortCommand(this, options));
+  }
+
+  toggleShowMarks(): void {
+    this.showMarks = !this.showMarks;
+    this.syncShowMarks();
+    this.paint();
+    this.onSelectionChange();
+  }
+
+  applyShading(color: string): void {
+    if (!this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    const tableTarget = this.selectedTable();
+    if (tableTarget) {
+      this.history.do(
+        new ShadingCommand(this, { kind: "cells", cells: tableTarget.cells, story: tableTarget.story }, color),
+      );
+      return;
+    }
+    const paraTarget = this.selectedParagraphTarget();
+    if (paraTarget) {
+      this.history.do(
+        new ShadingCommand(this, { kind: "paragraphs", paragraphs: paraTarget.paragraphs, story: paraTarget.story }, color),
+      );
+    }
   }
 
   applyOutline(action: OutlineAction): void {
@@ -332,10 +549,102 @@ export class Workspace {
     this.history.do(new OutlineCommand(this, action));
   }
 
+  formatPainterState(): FormatPainterMode {
+    return this.formatPainterMode;
+  }
+
+  startFormatPainter(locked = false): void {
+    if (!this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    if (this.formatPainterMode === "off" || !this.formatSample) {
+      const sample = captureFormatSample(this);
+      if (!sample) {
+        return;
+      }
+      this.formatSample = sample;
+    }
+    this.formatPainterMode = locked ? "locked" : "once";
+    this.syncFormatPainterClass();
+    this.notifyUi();
+  }
+
+  cancelFormatPainter(): boolean {
+    if (this.formatPainterMode === "off") {
+      return false;
+    }
+    this.formatPainterMode = "off";
+    this.syncFormatPainterClass();
+    this.notifyUi();
+    return true;
+  }
+
+  copyFormat(): void {
+    if (!this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    const sample = captureFormatSample(this);
+    if (sample) {
+      this.formatSample = sample;
+    }
+  }
+
+  pasteFormat(): void {
+    if (!this.body?.document || !this.formatSample) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    this.history.do(new FormatPainterCommand(this, this.formatSample));
+  }
+
+  applyFormatPainter(): void {
+    if (!this.body?.document || !this.formatSample) {
+      if (this.formatPainterMode === "once") {
+        this.cancelFormatPainter();
+      }
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    this.history.do(new FormatPainterCommand(this, this.formatSample));
+    if (this.formatPainterMode === "once") {
+      this.cancelFormatPainter();
+    }
+  }
+
+  private syncFormatPainterClass(): void {
+    this.hostEl.classList.toggle("is-format-painter", this.formatPainterMode !== "off");
+  }
+
+  private notifyUi(): void {
+    this.selectionPane.sync();
+    for (const handler of this.uiListeners) {
+      handler();
+    }
+  }
+
+  private onGlobalKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === "Escape" && this.formatPainterMode !== "off") {
+      event.preventDefault();
+      this.cancelFormatPainter();
+    }
+  };
+
   async copy(): Promise<void> {
     const picture = this.selectedPicture();
     if (picture) {
-      await this.clipboard.write(ClipboardPayload.picture(picture.drawing));
+      if (!picture.drawing.shape?.text) {
+        await this.clipboard.write(ClipboardPayload.picture(picture.drawing));
+      }
       return;
     }
     if (!this.selectionText.hasCopyableContent(this.selection)) {
@@ -348,9 +657,12 @@ export class Workspace {
   }
 
   async cut(): Promise<void> {
-    if (this.selectedPicture()) {
-      await this.copy();
-      this.deleteContent("backward");
+    const picture = this.selectedPicture();
+    if (picture) {
+      if (!picture.drawing.shape?.text) {
+        await this.copy();
+        this.deleteContent("backward");
+      }
       return;
     }
     if (!this.selectionText.hasCopyableContent(this.selection)) {
@@ -391,10 +703,22 @@ export class Workspace {
 
   applyTableBorder(mode: TableBorderMode): void {
     const target = this.selectedTable();
-    if (!target) {
+    if (target) {
+      this.history.do(new TableBorderCommand(this, target, mode, { ...this.borderPen }));
       return;
     }
-    this.history.do(new TableBorderCommand(this, target, mode, { ...this.borderPen }));
+    if (!this.body?.document) {
+      return;
+    }
+    if (this.selection.isEmpty()) {
+      this.placeCaret();
+    }
+    const paraTarget = this.selectedParagraphTarget();
+    if (paraTarget) {
+      this.history.do(
+        new ParagraphBorderCommand(this, paraTarget.story, paraTarget.paragraphs, mode, { ...this.borderPen }),
+      );
+    }
   }
 
   setBorderPen(pen: Partial<TableBorderPen>): void {
@@ -433,6 +757,32 @@ export class Workspace {
       type: "deleteColumn",
       index: Math.min(...target.cells.map((cell) => cell.colIndex)),
     }));
+  }
+
+  deleteTable(): void {
+    const target = this.selectedTable();
+    if (!target) {
+      return;
+    }
+    const document = this.documentOf(target.story);
+    if (!document) {
+      return;
+    }
+    let node = document.words.head;
+    while (node) {
+      if (node.data.kind === "table" && node.data.table === target.table) {
+        this.selection.setRange(
+          new SelRange(
+            target.story,
+            new CaretPos(target.story, node, false),
+            new CaretPos(target.story, node, true),
+          ),
+        );
+        this.history.do(new DeleteCommand(this, "backward"));
+        return;
+      }
+      node = node.next;
+    }
   }
 
   mergeTableCells(): void {
@@ -551,6 +901,48 @@ export class Workspace {
     this.history.do(new InsertObjectCommand(this, { type: "pageBreak" }));
   }
 
+  insertCoverPage(template: CoverTemplateId): void {
+    const document = this.body?.document;
+    if (document && document.paragraphs.head?.data.coverTemplate !== template) {
+      this.history.do(new CoverPageCommand(this, template, this.pageSetup.contentHeight));
+    }
+  }
+
+  removeCoverPage(): void {
+    if (this.body?.document?.paragraphs.head?.data.coverTemplate) {
+      this.history.do(new CoverPageCommand(this, undefined, this.pageSetup.contentHeight));
+    }
+  }
+
+  drawTextBox(direction: TextBoxDirection): void {
+    if (this.body?.document) {
+      this.cancelFormatPainter();
+      this.textBoxDraw.start(direction);
+      this.input.focus();
+    }
+  }
+
+  private textBoxPageAt(x: number, y: number): Rect | undefined {
+    const setup = this.pageSetup;
+    for (const origin of this.pageOrigins()) {
+      const bounds = new Rect(origin.x + setup.contentLeft(), origin.y + setup.contentTop(), setup.contentWidth, setup.contentHeight);
+      if (bounds.contains(x, y)) {
+        return bounds;
+      }
+    }
+    return undefined;
+  }
+
+  private placeTextBox(direction: TextBoxDirection, bounds: Rect): void {
+    const ctx = this.hitContext();
+    const point = this.hit.worldToStory(bounds.x, bounds.y, ctx);
+    if (!point) {
+      return;
+    }
+    const anchor = this.hit.bodyAnchorAt(bounds.x, bounds.y, ctx);
+    this.history.do(new InsertTextBoxCommand(this, direction, new Rect(point.x, point.y, bounds.width, bounds.height), anchor));
+  }
+
   insertBlankPage(): void {
     if (!this.body?.document) {
       return;
@@ -597,6 +989,210 @@ export class Workspace {
     this.commitPictureChange(hit, () => applyPictureSize(hit.drawing, widthPx, heightPx, lockAspect));
   }
 
+  applyTextBoxFormat(change: TextBoxFormat): void {
+    const selected = this.selectedPicture();
+    const shape = selected?.drawing.shape;
+    if (!selected || !shape) {
+      return;
+    }
+    const command = new TextBoxFormatCommand(this, shape, selected.story, selected.paragraph, change);
+    if (command.changed()) {
+      this.history.do(command);
+    }
+  }
+
+  applyLayerOrder(action: LayerOrderAction): void {
+    const hit = this.selectedPicture();
+    if (!hit) {
+      return;
+    }
+    const document = this.documentOf(hit.story);
+    if (!document) {
+      return;
+    }
+    const entries = collectAnchoredEntries(document);
+    if (!entries.some((entry) => entry.drawing === hit.drawing)) {
+      entries.push({ drawing: hit.drawing, paragraph: hit.paragraph });
+    }
+    const before = entries.map((entry) => snapPicture(entry.drawing));
+    applyLayerOrder(document, hit.drawing, action, this.pictureOffset(hit));
+    const batch: DrawingBatchEntry[] = entries.map((entry, index) => ({
+      drawing: entry.drawing,
+      paragraph: entry.paragraph,
+      before: before[index],
+      after: snapPicture(entry.drawing),
+    }));
+    before.forEach((snap, index) => restorePicture(entries[index].drawing, snap));
+    const command = new DrawingBatchCommand(this, hit.story, batch);
+    if (command.changed()) {
+      this.history.do(command);
+    }
+    this.refreshPictureFocus(hit);
+  }
+
+  applyAlign(action: AlignAction, reference: AlignReference): void {
+    const hit = this.selectedPicture();
+    if (!hit) {
+      return;
+    }
+    this.commitPictureChange(hit, () => applyDrawingAlign(hit.drawing, action, reference, this.pictureOffset(hit)));
+  }
+
+  applyDistribute(axis: DistributeAction): void {
+    const hit = this.selectedPicture();
+    if (!hit) {
+      return;
+    }
+    const document = this.documentOf(hit.story);
+    if (!document) {
+      return;
+    }
+    const candidates = this.distributeCandidates(document, hit);
+    const changes = distributeAnchoredDrawings(candidates, axis);
+    if (!changes.length) {
+      return;
+    }
+    const ctx = this.hitContext();
+    const pictures = this.hit.pictures(ctx);
+    const batch: DrawingBatchEntry[] = [];
+    for (const change of changes) {
+      const box = pictures.find((item) => item.drawing === change.drawing);
+      if (!box) {
+        continue;
+      }
+      const before = snapPicture(change.drawing);
+      this.applyPictureOffset(box, before, change.dx, change.dy);
+      const after = snapPicture(change.drawing);
+      restorePicture(change.drawing, before);
+      batch.push({ drawing: change.drawing, paragraph: change.paragraph, before, after });
+    }
+    const command = new DrawingBatchCommand(this, hit.story, batch);
+    if (command.changed()) {
+      this.history.do(command);
+    }
+    this.refreshPictureFocus(hit);
+  }
+
+  applyRotate(action: RotateAction): void {
+    const hit = this.selectedPicture();
+    if (!hit) {
+      return;
+    }
+    this.commitPictureChange(hit, () => applyRotateAction(hit.drawing, action));
+  }
+
+  toggleSelectionPane(): void {
+    this.setSelectionPaneOpen(!this.selectionPane.isOpen());
+  }
+
+  setSelectionPaneOpen(open: boolean): void {
+    if (this.selectionPane.isOpen() === open) {
+      return;
+    }
+    this.selectionPane.setOpen(open);
+    this.layout();
+    this.paint();
+    this.notifyUi();
+  }
+
+  private distributeCandidates(document: Document, hit: PictureBox) {
+    const anchors = document.anchors.filter((anchor) => anchor.paragraph && !anchor.drawing.hidden);
+    if (hit.story.slot !== "body") {
+      return anchors;
+    }
+    const pageH = Math.max(1, this.pageSetup.contentHeight);
+    const current = anchors.find((anchor) => anchor.drawing === hit.drawing);
+    if (!current) {
+      return anchors;
+    }
+    const targetPage = Math.floor(current.y / pageH);
+    const onPage = anchors.filter((anchor) => Math.floor(anchor.y / pageH) === targetPage);
+    return onPage.length >= 3 ? onPage : anchors;
+  }
+
+  private canDistributeSelection(picture: PictureBox | null): boolean {
+    if (!picture) {
+      return false;
+    }
+    const document = this.documentOf(picture.story);
+    if (!document) {
+      return false;
+    }
+    return this.distributeCandidates(document, picture).length >= 3;
+  }
+
+  private selectionPaneItems(): SelectionPaneItem[] {
+    const pictures = this.hit.pictures(this.hitContext(), true);
+    const selected = this.selectedPicture();
+    const total = pictures.length;
+    const items: SelectionPaneItem[] = [];
+    for (let i = total - 1; i >= 0; i -= 1) {
+      const box = pictures[i];
+      items.push({
+        box,
+        label: selectionPaneLabel(box.drawing, i + 1),
+        selected: selected?.drawing === box.drawing,
+        hidden: !!box.drawing.hidden,
+        canReorder: box.drawing.position === "anchor",
+      });
+    }
+    return items;
+  }
+
+  private selectFromPane(box: PictureBox): void {
+    if (box.drawing.hidden) {
+      this.toggleDrawingVisibility(box);
+      if (box.drawing.hidden) {
+        return;
+      }
+    }
+    this.selectPicture(box);
+  }
+
+  private toggleDrawingVisibility(box: PictureBox): void {
+    this.commitPictureChange(box, () => {
+      box.drawing.hidden = !box.drawing.hidden || undefined;
+    });
+    if (box.drawing.hidden && this.pictureFocus?.drawing === box.drawing) {
+      this.pictureFocus = null;
+      this.onSelectionChange();
+    }
+  }
+
+  private setAllDrawingsVisibility(hidden: boolean): void {
+    const pictures = this.hit.pictures(this.hitContext(), true);
+    const byStory = new Map<Document, { story: StoryRef; entries: DrawingBatchEntry[] }>();
+    for (const box of pictures) {
+      if (!!box.drawing.hidden === hidden) {
+        continue;
+      }
+      const doc = this.documentOf(box.story);
+      if (!doc) {
+        continue;
+      }
+      const before = snapPicture(box.drawing);
+      const after: PictureSnap = { ...before, hidden: hidden || undefined };
+      const group = byStory.get(doc) ?? { story: box.story, entries: [] };
+      group.entries.push({ drawing: box.drawing, paragraph: box.paragraph, before, after });
+      byStory.set(doc, group);
+    }
+    for (const group of byStory.values()) {
+      const cmd = new DrawingBatchCommand(this, group.story, group.entries);
+      if (cmd.changed()) {
+        this.history.do(cmd);
+      }
+    }
+    if (hidden && this.pictureFocus?.drawing.hidden) {
+      this.pictureFocus = null;
+    }
+    this.onSelectionChange();
+  }
+
+  private moveDrawingOrderFromPane(box: PictureBox, direction: "up" | "down"): void {
+    this.selectPicture(box);
+    this.applyLayerOrder(direction === "up" ? "bringForward" : "sendBackward");
+  }
+
   insertPicture(drawing: Drawing): void {
     if (!this.body?.document) {
       return;
@@ -624,12 +1220,25 @@ export class Workspace {
   formatState(caption: string): RibbonState {
     const pos = this.selection.caret();
     const pending = this.input.pendingStyle();
-    const node = pos?.after ? pos.node : (pos?.node?.pre ?? pos?.node);
+    const anchor = this.selection.flow?.anchor ?? this.selection.primaryRange()?.start;
+    const backward = !!pos && !!anchor && pos.compare(anchor) < 0;
+    const before = pos?.node?.pre;
+    const node = backward
+      ? (pos.after ? pos.node?.next ?? pos.node : pos.node)
+      : (!pos?.after && (before?.data.paragraph === pos?.node?.data.paragraph || !this.selection.isCollapsed())
+          ? before ?? pos?.node
+          : pos?.node);
     const run = mergeRunStyle(node?.data.getStyle(), pending);
     const family = run ? resolveFontFamily(run, node?.data.intChar ?? 0) : "宋体";
     const selected = this.selectedTable();
+    const paraTarget = selected ? null : this.selectedParagraphTarget();
     const picture = this.selectedPicture();
-    const attrs = pos?.node?.data.paragraph?.attrs;
+    const shape = picture?.drawing.shape;
+    const activeParagraph = node?.data.paragraph;
+    const attrs = activeParagraph?.attrs;
+    const ownerDoc = pos ? this.documentOf(pos.story) : this.body?.document;
+    const bodyDoc = this.body?.document;
+    const numbering = ownerDoc?.numbering ?? bodyDoc?.numbering;
     return {
       fontFamily: family,
       fontSizePt: Math.round(pxToPt(run.fontSizePx ?? DEFAULT_FONT_SIZE) * 2) / 2,
@@ -639,14 +1248,28 @@ export class Workspace {
       strike: !!run.strike,
       color: run.color ?? "auto",
       highlight: run.backgroundColor ?? run.highlight ?? "none",
+      shading: !!run.backgroundColor && !run.highlight,
+      enclosed: !!node?.data.block?.enclosed,
+      asianLayout: !!node?.data.block?.asianLayout,
+      showMarks: this.showMarks,
+      paraShading: selected
+        ? (selected.cells[0]?.fill ?? "none")
+        : paragraphShadingHex(activeParagraph?.attrs.shading),
       align: attrs?.textAlign ?? "left",
       indent: indentPreset(attrs),
       canIndentLess: (attrs?.leftChars ?? 0) > 0 || (attrs?.leftTwip ?? 0) > 0,
       lineSpacing: spacingPreset(attrs),
       paraGap: gapPreset(attrs),
       vertAlign: run.vertAlign,
-      paragraphStyle: stylePreset(attrs),
-      listLevel: listLevelOf(pos?.node?.data.paragraph),
+      paragraphStyle: bodyDoc ? activeParagraphStyle(bodyDoc.styles, attrs) : undefined,
+      characterStyle: bodyDoc ? activeCharacterStyle(bodyDoc.styles, run.characterStyleId) : undefined,
+      listLevel: listLevelOf(activeParagraph),
+      bulletGlyph: numbering ? bulletGlyphOf(numbering, activeParagraph) : undefined,
+      documentBullets: bodyDoc ? documentBullets(bodyDoc.numbering, bodyDoc) : [],
+      numberingFormat: numbering ? numberingPresetOf(numbering, activeParagraph) : undefined,
+      documentNumberings: bodyDoc ? documentNumberings(bodyDoc.numbering, bodyDoc) : [],
+      currentList: numbering ? currentListPreview(numbering, activeParagraph) : undefined,
+      multilevelId: numbering ? activeMultilevelPresetId(numbering, activeParagraph) : undefined,
       link: linkLabel(pos?.node?.data.block?.link),
       comments: (this.body?.document?.comments ?? []).map((comment) => ({
         id: comment.id,
@@ -658,18 +1281,32 @@ export class Workspace {
       canUndo: this.history.canUndo(),
       canRedo: this.history.canRedo(),
       hasDoc: !!this.body?.document,
+      coverTemplate: bodyDoc?.paragraphs.head?.data.coverTemplate,
+      drawingTextBox: this.textBoxDraw.direction,
       caption,
       inTable: !!selected,
       inPicture: !!picture,
+      pictureIsTextBox: !!shape?.text,
+      textBoxFormat: shape ? textBoxFormat(shape) : undefined,
       pictureWrap: picture ? pictureWrapOf(picture.drawing) : undefined,
       picturePlace: picture ? picturePlaceOf(picture.drawing) : undefined,
       pictureWidth: picture?.drawing.width,
       pictureHeight: picture?.drawing.height,
       pictureLock: picture ? picture.drawing.lockAspect !== false : undefined,
+      selectionPaneOpen: this.selectionPane.isOpen(),
+      pictureCanDistribute: this.canDistributeSelection(picture),
+      pictureRotation: picture?.drawing.rotation ?? 0,
+      pictureFlipH: !!picture?.drawing.flipH,
+      pictureFlipV: !!picture?.drawing.flipV,
       borderPen: { ...this.borderPen },
-      borderFlags: selected ? this.borderApplier.inspect(selected.cells, selected.table) : undefined,
+      borderFlags: selected
+        ? this.borderApplier.inspect(selected.cells, selected.table)
+        : paraTarget
+          ? inspectParagraphBorders(paraTarget.paragraphs)
+          : undefined,
       titlePg: this.currentSection()?.titlePg ?? false,
       evenAndOdd: this.body?.document?.evenAndOddHeaders ?? false,
+      formatPainter: this.formatPainterMode,
       zoom: this.viewport.zoom || 1,
     };
   }
@@ -685,6 +1322,9 @@ export class Workspace {
   }
 
   private onDoubleClick = (event: MouseEvent): void => {
+    if (this.formatPainterMode !== "off") {
+      return;
+    }
     const rect = this.root.getBoundingClientRect();
     const world = this.viewport.cssToWorld(event.clientX - rect.left, event.clientY - rect.top);
     const band = this.hit.locateBand(world.x, world.y, this.hitContext());
@@ -762,7 +1402,7 @@ export class Workspace {
   }
 
   selectedPicture(): PictureBox | null {
-    if (this.pictureFocus && this.pictureStillThere(this.pictureFocus)) {
+    if (this.pictureFocus && !this.pictureFocus.drawing.hidden && this.pictureStillThere(this.pictureFocus)) {
       return this.livePicture(this.pictureFocus) ?? this.pictureFocus;
     }
     return this.pictureFromRange();
@@ -803,6 +1443,18 @@ export class Workspace {
     if (!document) {
       return false;
     }
+    if (hit.drawing.position === "anchor" && hit.drawing.shape?.text) {
+      const index = hit.paragraph.blocks.findIndex((block) => block.drawing === hit.drawing);
+      if (index < 0) {
+        return false;
+      }
+      this.pictureFocus = null;
+      const node = hit.paragraph.lines[0]?.startNode ?? document.words.head;
+      this.selection.collapse(new CaretPos(hit.story, node));
+      this.history.do(new RemoveAnchoredDrawingCommand(this, hit.story, hit.paragraph, hit.paragraph.blocks[index], index));
+      this.onSelectionChange();
+      return true;
+    }
     if (hit.drawing.position === "anchor") {
       hit.drawing.position = "inline";
       hit.drawing.anchorSet = undefined;
@@ -829,20 +1481,29 @@ export class Workspace {
       this.selection.setRange(
         new SelRange(box.story, new CaretPos(box.story, box.node, false), new CaretPos(box.story, box.node, true)),
       );
+    } else if (box.drawing.shape?.text) {
+      this.selection.clear();
+      this.setPendingRunStyle(undefined);
     }
     this.onSelectionChange();
     this.holdingPicture = false;
   }
 
   private previewPictureResize(box: PictureBox, start: PictureSnap, handle: Parameters<typeof resizedPicture>[1], dx: number, dy: number, lockAspect: boolean): void {
-    const next = resizedPicture({ width: start.width, height: start.height }, handle, dx, dy, lockAspect);
+    const next = resizedPicture(start, handle, dx, dy, lockAspect, minimumTextBoxSize(box.drawing), start.rotation ?? 0);
     restorePicture(box.drawing, start);
     box.drawing.width = next.width;
     box.drawing.height = next.height;
-    if (start.position === "anchor" || box.drawing.position === "anchor") {
+    if (start.position === "anchor") {
       this.applyPictureOffset(box, start, next.deltaX, next.deltaY);
     }
     this.reflowPicture(box);
+  }
+
+  private previewPictureRotate(box: PictureBox, start: PictureSnap, angle: number): void {
+    restorePicture(box.drawing, start);
+    box.drawing.rotation = angle || undefined;
+    this.paint();
   }
 
   private previewPictureMove(box: PictureBox, start: PictureSnap, dx: number, dy: number): void {
@@ -851,7 +1512,16 @@ export class Workspace {
     }
     restorePicture(box.drawing, start);
     if (box.drawing.position !== "anchor") {
-      applyPictureWrap(box.drawing, "square", this.pictureOffset(box));
+      applyPictureWrap(box.drawing, box.drawing.shape?.text ? "front" : "square", this.pictureOffset(box));
+    }
+    if (box.story.slot === "body" && box.drawing.shape?.text) {
+      const ctx = this.hitContext();
+      const from = this.hit.worldToStory(box.x, box.y, ctx);
+      const to = this.hit.worldToStory(box.x + dx, box.y + dy, ctx);
+      if (from && to) {
+        dx = to.x - from.x;
+        dy = to.y - from.y;
+      }
     }
     this.applyPictureOffset(box, snapPicture(box.drawing), dx, dy);
     this.reflowPicture(box);
@@ -864,16 +1534,13 @@ export class Workspace {
     }
     restorePicture(box.drawing, before);
     this.history.do(new PictureTransformCommand(this, box.drawing, box.story, box.paragraph, before, after));
-    this.refreshPictureFocus(box.drawing, box.story, box.paragraph);
+    this.refreshPictureFocus(box);
   }
 
   private revertPicture(box: PictureBox, before: PictureSnap): void {
     restorePicture(box.drawing, before);
-    const document = this.documentOf(box.story);
-    if (document) {
-      syncPictureStream(document, box.paragraph, box.drawing);
-    }
     this.reflowPicture(box);
+    this.refreshPictureFocus(box);
   }
 
   private commitPictureChange(hit: PictureBox, mutate: () => void): void {
@@ -886,26 +1553,29 @@ export class Workspace {
     }
     restorePicture(hit.drawing, before);
     this.history.do(new PictureTransformCommand(this, hit.drawing, hit.story, hit.paragraph, before, after));
-    this.refreshPictureFocus(hit.drawing, hit.story, hit.paragraph);
+    this.refreshPictureFocus(hit);
   }
 
   private applyPictureOffset(box: PictureBox, start: PictureSnap, dx: number, dy: number): void {
-    const origin = this.pictureOffset(box);
-    const left = (start.anchorSet?.left ?? origin.left) + dx;
-    const top = (start.anchorSet?.top ?? origin.top) + dy;
+    const anchor = start.anchorSet;
+    const offset = this.pictureOffset(box);
+    const left = anchor?.leftFrom === "column" && !anchor.leftAlign ? anchor.left ?? offset.left : offset.left;
+    const top = anchor?.topFrom === "paragraph" && !anchor.topAlign ? anchor.top ?? offset.top : offset.top;
+    const wrapType = anchor?.wrapType ?? (box.drawing.shape?.text ? "none" : "square");
+    const gap = wrapType === "none" ? 0 : PICTURE_WRAP_GAP;
     box.drawing.position = "anchor";
     box.drawing.anchorSet = {
-      ...(start.anchorSet ?? box.drawing.anchorSet),
-      wrapType: start.anchorSet?.wrapType ?? box.drawing.anchorSet?.wrapType ?? "square",
-      wrapSide: start.anchorSet?.wrapSide ?? "both",
-      distLeft: start.anchorSet?.distLeft ?? 8,
-      distRight: start.anchorSet?.distRight ?? 8,
-      distTop: start.anchorSet?.distTop ?? 8,
-      distBottom: start.anchorSet?.distBottom ?? 8,
+      ...anchor,
+      wrapType,
+      wrapSide: anchor?.wrapSide ?? "both",
+      distLeft: anchor?.distLeft ?? gap,
+      distRight: anchor?.distRight ?? gap,
+      distTop: anchor?.distTop ?? gap,
+      distBottom: anchor?.distBottom ?? gap,
       leftFrom: "column",
       topFrom: "paragraph",
-      left,
-      top,
+      left: left + dx,
+      top: top + dy,
       leftAlign: undefined,
       topAlign: undefined,
     };
@@ -913,8 +1583,18 @@ export class Workspace {
 
   private pictureOffset(hit: PictureBox): { left: number; top: number } {
     const first = hit.paragraph.lines[0];
-    const paragraphOrigin = first ? this.hit.lineOrigin(first, hit.story, this.hitContext()) : null;
-    return pictureWrapOffset(hit, paragraphOrigin, this.hit.worldToStory(hit.x, hit.y, this.hitContext()), first?.top ?? 0);
+    const ctx = this.hitContext();
+    if (hit.story.slot === "header" || hit.story.slot === "footer") {
+      const origin = ctx.origins.find((page) => hit.y >= page.y && hit.y < page.y + ctx.pageSetup.height);
+      if (origin) {
+        return {
+          left: hit.x - origin.x - ctx.pageSetup.contentLeft(),
+          top: hit.y - origin.y - ctx.pageSetup.bandTop(hit.story.slot) - (first?.top ?? 0),
+        };
+      }
+    }
+    const paragraphOrigin = first ? this.hit.lineOrigin(first, hit.story, ctx) : null;
+    return pictureWrapOffset(hit, paragraphOrigin, this.hit.worldToStory(hit.x, hit.y, ctx), first?.top ?? 0);
   }
 
   private reflowPicture(box: PictureBox): void {
@@ -926,21 +1606,8 @@ export class Workspace {
     this.paint();
   }
 
-  private refreshPictureFocus(drawing: Drawing, story: StoryRef, paragraph: Paragraph): void {
-    const live = this.hit.pictures(this.hitContext()).find((item) => item.drawing === drawing);
-    this.pictureFocus = live ?? { drawing, paragraph, story, x: 0, y: 0, width: drawing.width, height: drawing.height, behind: drawing.anchorSet?.behind === true };
-    this.holdingPicture = true;
-    if (this.pictureFocus.node) {
-      this.selection.setRange(
-        new SelRange(
-          this.pictureFocus.story,
-          new CaretPos(this.pictureFocus.story, this.pictureFocus.node, false),
-          new CaretPos(this.pictureFocus.story, this.pictureFocus.node, true),
-        ),
-      );
-    }
-    this.onSelectionChange();
-    this.holdingPicture = false;
+  private refreshPictureFocus(box: PictureBox): void {
+    this.selectPicture(this.livePicture(box) ?? { ...box, node: undefined });
   }
 
   private pictureStillThere(box: PictureBox): boolean {
@@ -952,7 +1619,13 @@ export class Workspace {
   }
 
   private livePicture(box: PictureBox): PictureBox | null {
-    return this.hit.pictures(this.hitContext()).find((item) => item.drawing === box.drawing) ?? null;
+    let nearest: PictureBox | null = null;
+    for (const candidate of this.hit.pictures(this.hitContext())) {
+      if (candidate.drawing === box.drawing && (!nearest || Math.abs(candidate.y - box.y) < Math.abs(nearest.y - box.y))) {
+        nearest = candidate;
+      }
+    }
+    return nearest;
   }
 
   private tableColumnCount(table: Table): number {
@@ -963,7 +1636,93 @@ export class Workspace {
     return Math.max(table.columns.length, table.columnWidths.length, spanned, 1);
   }
 
+  private syncShowMarks(): void {
+    if (this.body) {
+      this.body.showMarks = this.showMarks;
+    }
+    for (const story of this.stories()) {
+      const editor = this.editorOf(story.story);
+      if (editor) {
+        editor.showMarks = this.showMarks;
+      }
+    }
+  }
+
+  private selectedParagraphTarget(): { story: StoryRef; paragraphs: Paragraph[] } | null {
+    const range = this.selection.primaryRange()?.normalized();
+    if (!range) {
+      return null;
+    }
+    const document = this.documentOf(range.story);
+    if (!document) {
+      return null;
+    }
+    const startPara = range.start.node?.data.paragraph;
+    const endPara = range.end.node?.data.paragraph;
+    if (!startPara) {
+      return null;
+    }
+    if (range.collapsed() || !endPara || startPara === endPara) {
+      return startPara.isTable ? null : { story: range.story, paragraphs: [startPara] };
+    }
+    const all = document.paragraphs.toArray();
+    const i0 = all.indexOf(startPara);
+    const i1 = all.indexOf(endPara);
+    if (i0 < 0 || i1 < i0) {
+      return startPara.isTable ? null : { story: range.story, paragraphs: [startPara] };
+    }
+    const list = all.slice(i0, i1 + 1).filter((paragraph) => !paragraph.isTable);
+    return list.length ? { story: range.story, paragraphs: list } : null;
+  }
+
   private selectedTable(): { table: Table; cells: TableCell[]; story: StoryRef } | null {
+    const flow = this.selection.flow;
+    if (flow && !flow.anchor.equals(flow.focus)) {
+      const anchorNode = flow.anchor.node;
+      if (anchorNode && anchorNode === flow.focus.node && anchorNode.data.kind === "table" && anchorNode.data.table) {
+        const cells = cellsInReadingOrder(anchorNode.data.table);
+        if (!cells.length) {
+          return null;
+        }
+        const host = this.relayout.findCellHost(cells[0]);
+        return { table: anchorNode.data.table, cells, story: host?.parent ?? flow.anchor.story };
+      }
+      const owner = this.flowOwner(flow.anchor) ?? this.flowOwner(flow.focus);
+      if (owner) {
+        const cover = coverFlow(owner.document, owner.story, flow.anchor, flow.focus);
+        if (
+          cover.tables.length > 0 &&
+          cover.ranges.length === 0 &&
+          cover.fullCells.length === 0 &&
+          cover.tables.every((entry, idx) => idx === 0 || tableContainsTable(cover.tables[0].table, entry.table))
+        ) {
+          const item = cover.tables[0];
+          const cells = cellsInReadingOrder(item.table);
+          if (!cells.length) {
+            return null;
+          }
+          const host = this.relayout.findCellHost(cells[0]);
+          return { table: item.table, cells, story: host?.parent ?? item.story };
+        }
+        if (cover.tables.length === 0 && cover.ranges.every((range) => range.story.slot === "cell")) {
+          const cells: TableCell[] = [...cover.fullCells];
+          for (const range of cover.ranges) {
+            if (range.story.slot === "cell") {
+              cells.push(range.story.cell);
+            }
+          }
+          const unique = [...new Set(cells)];
+          if (unique.length) {
+            const table = this.hit.findTable(unique[0], this.hitContext());
+            if (table && unique.every((cell) => tableHasDirectCell(table, cell))) {
+              const host = this.relayout.findCellHost(unique[0]);
+              return { table, cells: unique, story: host?.parent ?? { slot: "body" } };
+            }
+          }
+        }
+      }
+      return null;
+    }
     const cells: TableCell[] = [];
     for (const range of this.selection.ranges) {
       if (range.story.slot === "cell") {
@@ -1099,7 +1858,11 @@ export class Workspace {
 
   pictureAtClient(clientX: number, clientY: number): PictureBox | null {
     const world = this.clientToWorld(clientX, clientY);
-    return this.hit.pictureAt(world.x, world.y, this.hitContext());
+    return this.pictureAtWorld(world.x, world.y);
+  }
+
+  private pictureAtWorld(x: number, y: number): PictureBox | null {
+    return this.hit.pictureAt(x, y, this.hitContext(), 3 / (this.viewport.zoom || 1));
   }
 
   private clientToWorld(clientX: number, clientY: number): { x: number; y: number } {
@@ -1145,8 +1908,16 @@ export class Workspace {
       this.selectionPainter.paintPictureHandles(draw, picture);
       this.caret.el.hidden = true;
     }
+    const preview = this.textBoxDraw.preview;
+    if (preview) {
+      draw.setFill("rgba(76, 136, 200, 0.13)");
+      draw.fillRect(preview.x, preview.y, preview.width, preview.height);
+      draw.setStroke("#285f9b", 1 / zoom);
+      draw.setLineDash([4 / zoom, 3 / zoom]);
+      draw.strokeRect(preview.x, preview.y, preview.width, preview.height);
+    }
     draw.restore();
-    if (!picture) {
+    if (!picture && !this.textBoxDraw.direction) {
       this.caret.sync(this.selection, ctx, this.viewport);
     } else {
       this.caret.el.hidden = true;
@@ -1165,6 +1936,9 @@ export class Workspace {
     }
     if (story.slot === "textbox") {
       return story.block.drawing?.shape?.text ?? null;
+    }
+    if (this.body?.document && story.cell.document.numbering.entries().length === 0) {
+      story.cell.document.numbering = this.body.document.numbering;
     }
     return story.cell.document;
   }
@@ -1301,6 +2075,9 @@ export class Workspace {
   }
 
   dispose(): void {
+    document.removeEventListener("keydown", this.onGlobalKeyDown);
+    this.textBoxDraw.detach();
+    this.pictureTransform.detach();
     this.input.detach();
     this.tableResize.detach();
     this.pointer.detach();
@@ -1309,9 +2086,9 @@ export class Workspace {
     this.stopImages();
     this.body?.dispose();
     this.disposeBands();
-    const host = this.canvas.parentElement;
-    host?.replaceChildren();
-    host?.classList.remove("ho-word-workspace");
+    const host = this.hostEl;
+    host.replaceChildren();
+    host.classList.remove("ho-word-workspace", "is-format-painter");
   }
 
   private onWheel = (event: WheelEvent): void => {
@@ -1420,6 +2197,9 @@ export class Workspace {
   }
 
   private followLink(pos: CaretPos): boolean {
+    if (this.formatPainterMode !== "off") {
+      return false;
+    }
     const link = pos.node?.data.block?.link;
     if (link?.url) {
       if (!/^javascript:/i.test(link.url)) {
@@ -1549,16 +2329,23 @@ export class Workspace {
 
   private onSelectionChange(): void {
     if (!this.holdingPicture) {
-      this.pictureFocus = this.pictureFromRange();
+      const focus = this.pictureFocus;
+      const keepTextBox =
+        focus?.drawing.shape?.text && !focus.drawing.hidden && this.selection.isEmpty() && this.pictureStillThere(focus);
+      this.pictureFocus = this.pictureFromRange() ?? (keepTextBox ? focus : null);
     }
     this.body?.emit(EditorEvents.selectionChange, this.selection);
     this.ensureCaretVisible();
     this.paint();
     this.input.sync();
     const active = document.activeElement;
-    if (!(active instanceof HTMLElement) || !active.closest(".ho-word-findbar")) {
+    if (
+      !(active instanceof HTMLElement) ||
+      (!active.closest(".ho-word-findbar") && !active.closest(".ho-word-selection-pane"))
+    ) {
       this.input.focus();
     }
+    this.selectionPane.sync();
     for (const handler of this.uiListeners) {
       handler();
     }
@@ -1802,4 +2589,24 @@ function listLevelOf(paragraph: { isTable?: boolean; attrs: { numId?: string; il
   }
   const level = Number(paragraph.attrs.ilvl ?? "0");
   return Number.isFinite(level) ? level : 0;
+}
+
+function tableHasDirectCell(table: Table, target: TableCell): boolean {
+  return table.rows.some((row) => row.cells.includes(target));
+}
+
+function tableContainsTable(outer: Table, target: Table): boolean {
+  for (const row of outer.rows) {
+    for (const cell of row.cells) {
+      let node = cell.document.words.head;
+      while (node) {
+        const nested = node.data.kind === "table" ? node.data.table : undefined;
+        if (nested === target || (nested && tableContainsTable(nested, target))) {
+          return true;
+        }
+        node = node.next;
+      }
+    }
+  }
+  return false;
 }

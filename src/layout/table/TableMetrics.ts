@@ -3,11 +3,11 @@ import type { Line } from "../../model/line/Line";
 import type { Table, TableCell, TableInsets, TableLength } from "../../model/table/Table";
 import { twipToPx } from "../../shared/units";
 
-/** Word 未写 tblCellMar 时，左右 0.08 英寸，上下为 0。 */
+/** 默认单元格内边距：左右 0.08 英寸（108 dxa），上下留 3pt（60 dxa）避免文字贴住边框。 */
 export const DEFAULT_CELL_INSETS: TableInsets = {
-  top: 0,
+  top: twipToPx(60),
   right: twipToPx(108),
-  bottom: 0,
+  bottom: twipToPx(60),
   left: twipToPx(108),
 };
 

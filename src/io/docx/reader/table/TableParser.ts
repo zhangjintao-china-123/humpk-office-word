@@ -17,11 +17,19 @@ export class TableParser {
     table.columns = this.grid.parse(first(tblNode, "w:tblGrid"), ctx);
 
     const tblPr = first(tblNode, "w:tblPr");
-    table.borders = this.borders.parse(tblPr, "w:tblBorders");
+    const styleId = attr(first(tblPr, "w:tblStyle"), "w:val") || undefined;
+    const resolvedStyleId = styleId ?? ctx.styles.defaultTableStyleId;
+    const styleDef = resolvedStyleId ? ctx.styles.getResolved(resolvedStyleId) : undefined;
+    table.styleId = styleId;
+    const ownBorders = this.borders.parse(tblPr, "w:tblBorders");
+    table.borders =
+      styleDef?.tableBorders || ownBorders
+        ? { ...styleDef?.tableBorders, ...ownBorders }
+        : undefined;
     table.width = readLength(first(tblPr, "w:tblW"));
     table.align = attr(first(tblPr, "w:jc"), "w:val") || undefined;
     table.indent = readLength(first(tblPr, "w:tblInd"));
-    table.cellMargin = readInsets(first(tblPr, "w:tblCellMar"));
+    table.cellMargin = readInsets(first(tblPr, "w:tblCellMar")) ?? styleDef?.tableCellMargin;
     const tblpPr = first(tblPr, "w:tblpPr");
     if (tblpPr) {
       table.anchorType = "relative";

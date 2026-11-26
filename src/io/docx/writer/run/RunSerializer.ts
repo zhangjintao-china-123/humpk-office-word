@@ -1,5 +1,6 @@
-import { pxToPt } from "../../../../shared/units";
+import { pxToPt, pxToTwip } from "../../../../shared/units";
 import type { Block } from "../../../../model/block/Block";
+import type { AsianLayoutSpec } from "../../../../model/inline/AsianLayout";
 import type { RunStyle } from "../../../../model/style/RunStyle";
 import { escapeXml, hexColor } from "../../ooxml/XmlEscape";
 import { DrawingSerializer } from "../drawing/DrawingSerializer";
@@ -21,7 +22,7 @@ export class RunSerializer {
     if (block.commentRef) {
       return `<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:commentReference w:id="${escapeXml(block.commentRef)}"/></w:r>`;
     }
-    const rPr = this.properties(block.style);
+    const rPr = this.properties(block.style, block.asianLayout);
     const text = block.revision?.kind === "del" ? this.deleted(block.text) : this.text(block.text);
     const br = block.charType === "page" ? `<w:br w:type="page"/>` : "";
     if (!text && !rPr && !br) {
@@ -52,8 +53,11 @@ export class RunSerializer {
     return `<w:t${space}>${escapeXml(value)}</w:t>`;
   }
 
-  private properties(style: RunStyle): string {
+  private properties(style: RunStyle, asianLayout?: AsianLayoutSpec): string {
     const parts: string[] = [];
+    if (style.characterStyleId) {
+      parts.push(`<w:rStyle w:val="${escapeXml(style.characterStyleId)}"/>`);
+    }
     const family = style.fontFamily || style.wEastAsia || style.wAscii || style.wHAnsi;
     if (family) {
       const ascii = escapeXml(style.wAscii || family);
@@ -63,14 +67,14 @@ export class RunSerializer {
       const hint = style.wHint ? ` w:hint="${escapeXml(style.wHint)}"` : "";
       parts.push(`<w:rFonts w:ascii="${ascii}" w:hAnsi="${hAnsi}" w:eastAsia="${east}" w:cs="${cs}"${hint}/>`);
     }
-    if (style.bold) {
-      parts.push("<w:b/>");
+    if (style.bold != null) {
+      parts.push(style.bold ? "<w:b/>" : '<w:b w:val="0"/>');
     }
-    if (style.italic) {
-      parts.push("<w:i/>");
+    if (style.italic != null) {
+      parts.push(style.italic ? "<w:i/>" : '<w:i w:val="0"/>');
     }
-    if (style.underline && style.underline !== "none") {
-      parts.push(`<w:u w:val="${escapeXml(style.underline)}"/>`);
+    if (style.smallCaps != null) {
+      parts.push(style.smallCaps ? "<w:smallCaps/>" : '<w:smallCaps w:val="0"/>');
     }
     if (style.strike === "double") {
       parts.push("<w:dstrike/>");
@@ -96,6 +100,15 @@ export class RunSerializer {
     if (style.highlight && !style.highlight.startsWith("#") && style.highlight !== "none") {
       parts.push(`<w:highlight w:val="${escapeXml(style.highlight)}"/>`);
     }
+    if (style.underline) {
+      parts.push(`<w:u w:val="${escapeXml(style.underline)}"/>`);
+    }
+    if (asianLayout) {
+      const xml = asianLayoutXml(asianLayout);
+      if (xml) {
+        parts.push(xml);
+      }
+    }
     return parts.length ? `<w:rPr>${parts.join("")}</w:rPr>` : "";
   }
 
@@ -108,4 +121,23 @@ export class RunSerializer {
     }
     return undefined;
   }
+}
+
+function asianLayoutXml(spec: AsianLayoutSpec): string {
+  if (spec.kind === "fitWidth") {
+    const val = Math.max(120, pxToTwip(spec.fitWidthPx ?? 48));
+    return `<w:fitText w:val="${val}"/>`;
+  }
+  if (spec.kind === "combine") {
+    return `<w:eastAsianLayout w:combine="1"/>`;
+  }
+  if (spec.kind === "twoInOne") {
+    const brackets = spec.brackets ?? "none";
+    return `<w:eastAsianLayout w:combine="1" w:combineBrackets="${escapeXml(brackets)}"/>`;
+  }
+  if (spec.kind === "tatechuyoko") {
+    const compress = spec.compress !== false ? "1" : "0";
+    return `<w:eastAsianLayout w:vert="1" w:vertCompress="${compress}"/>`;
+  }
+  return "";
 }

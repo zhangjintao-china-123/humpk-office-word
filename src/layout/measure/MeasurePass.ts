@@ -2,6 +2,8 @@ import type { Document } from "../../model/document/Document";
 import type { Word } from "../../model/inline/Word";
 import { isEastAsiaWord } from "../classify/CharClass";
 import { fontSizeOf, glyphSizeOf } from "./FontSpec";
+import { measureAsianLayout } from "./AsianLayoutMetrics";
+import { measureEnclosed } from "./EnclosedMetrics";
 import { layoutMath } from "../../model/math/MathLayout";
 import type { ITextMeasurer } from "./ITextMeasurer";
 
@@ -47,6 +49,22 @@ export class MeasurePass {
       word.height = full;
       word.spacingAfter = 0;
       word.kernedWidth = 0;
+      return;
+    }
+    if (word.block?.enclosed) {
+      const metrics = measureEnclosed(word.char, word.block.enclosed, style, measurer);
+      word.width = metrics.boxSize;
+      word.height = metrics.boxSize;
+      word.spacingAfter = 0;
+      word.kernedWidth = metrics.boxSize;
+      return;
+    }
+    if (word.block?.asianLayout) {
+      const metrics = measureAsianLayout(word.char, word.block.asianLayout, style, measurer);
+      word.width = metrics.width;
+      word.height = full;
+      word.spacingAfter = 0;
+      word.kernedWidth = metrics.width;
       return;
     }
     word.width = measurer.measure(word.char, style, word.intChar);

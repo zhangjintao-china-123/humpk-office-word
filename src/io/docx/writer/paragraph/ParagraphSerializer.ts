@@ -1,8 +1,10 @@
 import type { Block } from "../../../../model/block/Block";
 import type { Paragraph } from "../../../../model/block/Paragraph";
 import { sameLink, type TextLink } from "../../../../model/field/TextLink";
+import { enclosedShapeSymbol } from "../../../../model/inline/EnclosedChar";
 import { sameIds, sameRevision, type RevisionMark } from "../../../../model/review/Review";
 import type { TocMark } from "../../../../model/toc/Toc";
+import { pxToPt } from "../../../../shared/units";
 import { escapeXml } from "../../ooxml/XmlEscape";
 import type { PartAssets } from "../package/PartAssets";
 import { RunSerializer } from "../run/RunSerializer";
@@ -120,12 +122,41 @@ export class ParagraphSerializer {
         index = next;
         continue;
       }
+      if (block.enclosed && block.text) {
+        xml += this.enclosedXml(block);
+        index += 1;
+        continue;
+      }
       xml += this.runs.serialize(block, this.assets);
       index += 1;
     }
     syncComments([]);
     closeRevision();
     return xml;
+  }
+
+  private enclosedXml(block: Block): string {
+    const spec = block.enclosed!;
+    const symbol = spec.symbol || enclosedShapeSymbol(spec.shape);
+    const baseHalf =
+      block.style.fontSizeHalfPoint != null
+        ? Math.round(block.style.fontSizeHalfPoint)
+        : block.style.fontSizePx != null
+          ? Math.round(pxToPt(block.style.fontSizePx) * 2)
+          : 22;
+    const symbolHalf = spec.mode === "enlarge" ? Math.round(baseHalf * 1.45) : baseHalf;
+    const textHalf = spec.mode === "enlarge" ? baseHalf : Math.max(10, Math.round(baseHalf * 0.6));
+    const symbolRPr = this.runs.propertiesOf({ ...block.style, fontSizeHalfPoint: symbolHalf, fontSizePx: undefined });
+    const textRPr = this.runs.propertiesOf({ ...block.style, fontSizeHalfPoint: textHalf, fontSizePx: undefined });
+    const symExpr = spec.mode === "enlarge" ? `\\s\\do 1(${symbol})` : symbol;
+    return [
+      fieldChar("begin"),
+      `<w:r>${symbolRPr}<w:instrText xml:space="preserve">${escapeXml(` eq \\o\\ac(${symExpr},`)}</w:instrText></w:r>`,
+      `<w:r>${textRPr}<w:instrText xml:space="preserve">${escapeXml(block.text)}</w:instrText></w:r>`,
+      `<w:r>${symbolRPr}<w:instrText xml:space="preserve">)</w:instrText></w:r>`,
+      fieldChar("separate"),
+      fieldChar("end"),
+    ].join("");
   }
 
   private tocRuns(paragraph: Paragraph, toc: TocMark): string {

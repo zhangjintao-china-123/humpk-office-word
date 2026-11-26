@@ -9,6 +9,7 @@ import { fieldArgs } from "./TextLink";
 export interface FieldView {
   values: FieldValues;
   text: Map<Block, string>;
+  showMarks?: boolean;
 }
 
 export function buildFieldView(document: Document, lines: Line[], labels: PageLabel[], pageHeight: number, now = new Date()): FieldView {

@@ -1,10 +1,12 @@
 import type { OutlineAction } from "../../edit/OutlineCommand";
 import type { PictureWrap } from "../../edit/PictureTransform";
 import type { FormatAction } from "../../edit/FormatCommand";
-import type { CaretPos } from "../../selection/CaretPos";
+import type { Document } from "../../model/document/Document";
+import { CaretPos } from "../../selection/CaretPos";
 import type { PictureBox } from "../../selection/HitTester";
 import type { Selection } from "../../selection/Selection";
 import { SelectionText } from "../../selection/SelectionText";
+import type { StoryRef } from "../../selection/StoryRef";
 import { ContextMenu } from "./ContextMenu";
 import { ContextMenuBuilder } from "./ContextMenuBuilder";
 import type { ContextMenuAction, ContextMenuKind, ContextMenuState, TableMenuState, TextMenuState } from "./ContextMenuItem";
@@ -33,6 +35,8 @@ const FORMAT: Partial<Record<ContextMenuAction, FormatAction>> = {
 };
 
 const OUTLINE: Partial<Record<ContextMenuAction, OutlineAction>> = {
+  bulletToggle: { type: "toggleBullet" },
+  numberingToggle: { type: "toggleNumbering" },
   outlineApply: { type: "apply" },
   outlinePromote: { type: "promote" },
   outlineDemote: { type: "demote" },
@@ -42,6 +46,7 @@ const OUTLINE: Partial<Record<ContextMenuAction, OutlineAction>> = {
 export interface ContextMenuHost {
   selection: Selection;
   hitClient(clientX: number, clientY: number): CaretPos | null;
+  flowOwner?(pos: CaretPos): { document: Document; story: StoryRef } | null;
   pictureAtClient?(clientX: number, clientY: number): PictureBox | null;
   selectPicture?(box: PictureBox): void;
   onSelectionChange(): void;
@@ -56,6 +61,7 @@ export interface ContextMenuHost {
   insertTableColumn?(where: "left" | "right"): void;
   deleteTableRow?(): void;
   deleteTableColumn?(): void;
+  deleteTable?(): void;
   mergeTableCells?(): void;
   splitTableCell?(): void;
   applyPictureWrap?(wrap: PictureWrap): void;
@@ -101,18 +107,32 @@ export class ContextMenuController {
     const picture = this.host.pictureAtClient?.(event.clientX, event.clientY);
     if (picture) {
       this.host.selectPicture?.(picture);
-      this.menu.show(event.clientX, event.clientY, this.builder.build("picture", this.state("picture", true)));
+      const state = this.state("picture", !picture.drawing.shape?.text);
+      this.menu.show(event.clientX, event.clientY, this.builder.build("picture", state));
       return;
     }
     const pos = this.host.hitClient(event.clientX, event.clientY);
-    if (pos && !this.selectionText.covers(this.host.selection, pos)) {
-      this.host.selection.collapse(pos);
+    if (pos && !this.covers(pos)) {
+      if (pos.node?.data.kind === "table") {
+        this.host.selection.setFlow(
+          new CaretPos(pos.story, pos.node, false),
+          new CaretPos(pos.story, pos.node, true),
+        );
+      } else {
+        this.host.selection.collapse(pos);
+      }
       this.host.onSelectionChange();
     }
     const kind = this.kind(pos);
     const canEdit = this.selectionText.hasCopyableContent(this.host.selection);
     this.menu.show(event.clientX, event.clientY, this.builder.build(kind, this.state(kind, canEdit)));
   };
+
+  private covers(pos: CaretPos): boolean {
+    const flow = this.host.selection.flow;
+    const owner = flow ? (this.host.flowOwner?.(flow.anchor) ?? this.host.flowOwner?.(flow.focus) ?? null) : null;
+    return this.selectionText.covers(this.host.selection, pos, owner);
+  }
 
   private onDocumentDown = (event: MouseEvent): void => {
     if (!this.menu.isOpen()) {
@@ -140,7 +160,11 @@ export class ContextMenuController {
   }
 
   private kind(pos: CaretPos | null): ContextMenuKind {
-    if (pos?.story.slot === "cell") {
+    if (pos?.story.slot === "cell" || pos?.node?.data.kind === "table") {
+      return "table";
+    }
+    const flow = this.host.selection.flow;
+    if (flow && flow.anchor.node && flow.anchor.node === flow.focus.node && flow.anchor.node.data.kind === "table") {
       return "table";
     }
     const primary = this.host.selection.primaryRange();
@@ -227,6 +251,10 @@ export class ContextMenuController {
     }
     if (action === "deleteCol") {
       this.host.deleteTableColumn?.();
+      return;
+    }
+    if (action === "deleteTable") {
+      this.host.deleteTable?.();
       return;
     }
     if (action === "mergeCells") {

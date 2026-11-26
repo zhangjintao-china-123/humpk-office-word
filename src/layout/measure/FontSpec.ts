@@ -70,7 +70,8 @@ export function fontCss(style: RunStyle | undefined, charCode: number, size = gl
   const family = style ? resolveFontFamily(style, charCode) : "Times New Roman";
   const weight = style?.bold ? "bold" : "normal";
   const italic = style?.italic ? "italic" : "normal";
-  return `${italic} ${weight} ${size}px ${cssFontStack(family)}`;
+  const smallCaps = style?.smallCaps ? "small-caps " : "";
+  return `${italic} ${smallCaps}${weight} ${size}px ${cssFontStack(family)}`;
 }
 
 export function fillColorOf(style: RunStyle | undefined): string {

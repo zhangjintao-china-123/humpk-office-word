@@ -108,4 +108,76 @@ describe("表格版式读写", () => {
     expect(read?.rows[0].cells[0].vAlign).toBe("bottom");
     expect(read?.rows[0].cells[0].margin?.top).toBe(4);
   });
+
+  it("继承 styles.xml 中的表格样式边框与边距并在保存后保留", async () => {
+    const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="table" w:default="1" w:styleId="a1">
+    <w:name w:val="Normal Table"/>
+    <w:tblPr>
+      <w:tblCellMar>
+        <w:top w:w="0" w:type="dxa"/>
+        <w:left w:w="108" w:type="dxa"/>
+        <w:bottom w:w="0" w:type="dxa"/>
+        <w:right w:w="108" w:type="dxa"/>
+      </w:tblCellMar>
+    </w:tblPr>
+  </w:style>
+  <w:style w:type="table" w:styleId="ae">
+    <w:name w:val="Table Grid"/>
+    <w:basedOn w:val="a1"/>
+    <w:tblPr>
+      <w:tblBorders>
+        <w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+        <w:left w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+        <w:bottom w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+        <w:right w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+        <w:insideH w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+        <w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+      </w:tblBorders>
+    </w:tblPr>
+  </w:style>
+</w:styles>`;
+    const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tblPr>
+        <w:tblStyle w:val="ae"/>
+        <w:tblW w:w="0" w:type="auto"/>
+      </w:tblPr>
+      <w:tblGrid><w:gridCol w:w="1440"/><w:gridCol w:w="1440"/></w:tblGrid>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>甲</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>乙</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>`;
+    const pack = DocxPackage.fromParts({
+      texts: { "word/document.xml": docXml, "word/styles.xml": stylesXml },
+    });
+    const doc = new DocxReader().readPackage(pack);
+    const table = doc.paragraphs.toArray()[0].table;
+    expect(table?.styleId).toBe("ae");
+    expect(table?.borders?.top).toEqual({ type: "single", size: "4", color: "#000000" });
+    expect(table?.borders?.insideH).toEqual({ type: "single", size: "4", color: "#000000" });
+    expect(table?.borders?.insideV).toEqual({ type: "single", size: "4", color: "#000000" });
+    expect(table?.cellMargin?.left).toBe(twipToPx(108));
+
+    const written = await new DocxWriter().write(doc);
+    const savedPack = await DocxPackage.open(written);
+    expect(savedPack.xml("word/document.xml")).toContain('<w:tblStyle w:val="ae"/>');
+    expect(savedPack.xml("word/document.xml")).toContain("<w:tblBorders>");
+    expect(savedPack.xml("word/styles.xml")).toContain('<w:style w:type="table" w:default="1" w:styleId="a1">');
+    expect(savedPack.xml("word/styles.xml")).toContain("<w:tblBorders>");
+
+    const back = await new DocxReader().read(written);
+    const roundtripTable = back.paragraphs.toArray()[0].table;
+    expect(roundtripTable?.styleId).toBe("ae");
+    expect(roundtripTable?.borders?.top).toEqual({ type: "single", size: "4", color: "#000000" });
+    expect(roundtripTable?.borders?.insideH).toEqual({ type: "single", size: "4", color: "#000000" });
+    expect(roundtripTable?.borders?.insideV).toEqual({ type: "single", size: "4", color: "#000000" });
+    expect(roundtripTable?.cellMargin?.left).toBe(twipToPx(108));
+  });
 });

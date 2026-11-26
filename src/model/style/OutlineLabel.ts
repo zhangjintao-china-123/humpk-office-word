@@ -143,7 +143,13 @@ export function formatOutlineLabel(
   const body = text.replace(/%([1-9])/g, (_, digit: string) => {
     const index = Number(digit) - 1;
     const value = index === ilvl ? serial : (parents[index] ?? 0);
-    const fmt = level.legal ? "decimal" : index === ilvl ? level.numFmt : (parentFmts[index] ?? "decimal");
+    const fmt = level.legal
+      ? index === ilvl && level.numFmt === "decimalZero"
+        ? "decimalZero"
+        : "decimal"
+      : index === ilvl
+        ? level.numFmt
+        : (parentFmts[index] ?? "decimal");
     return formatLevelNumber(value, fmt);
   });
   return body + suffix(level.suff);
@@ -166,6 +172,10 @@ function suffix(suff: string | undefined): string {
     return " ";
   }
   return " ";
+}
+
+export function normalizeBulletGlyph(text: string, font?: string): string {
+  return bulletSymbol(text, font);
 }
 
 function bulletSymbol(text: string, font: string | undefined): string {

@@ -61,7 +61,12 @@ export class ContextMenuBuilder {
   build(kind: ContextMenuKind, state: ContextMenuState | boolean): ContextMenuEntry[] {
     const options: ContextMenuState = typeof state === "boolean" ? { canEdit: state } : state;
     if (kind === "picture") {
-      return [...clipboard(true, true), { kind: "separator" }, this.wrapMenu(options.pictureWrap ?? null)];
+      return [
+        ...clipboard(options.canEdit, false),
+        item("delete", "删除", true, { icon: MenuIcons.trash, shortcut: "Del" }),
+        { kind: "separator" },
+        this.wrapMenu(options.pictureWrap ?? null),
+      ];
     }
     if (kind === "table") {
       return [...clipboard(options.canEdit, false), { kind: "separator" }, ...this.tableMenus(options.table)];
@@ -151,6 +156,8 @@ export class ContextMenuBuilder {
       enabled: true,
       icon: RibbonIcons.list,
       children: [
+        item("bulletToggle", "项目符号", true, { icon: RibbonIcons.bullet }),
+        item("numberingToggle", "编号列表", true, { icon: RibbonIcons.numbering }),
         item("outlineApply", "套用大纲", true),
         item("outlinePromote", "提升一级", state.hasList),
         item("outlineDemote", "降低一级", state.hasList),
@@ -177,11 +184,12 @@ export class ContextMenuBuilder {
       {
         kind: "submenu",
         label: "删除",
-        enabled: state.canDeleteRow || state.canDeleteCol,
+        enabled: true,
         icon: MenuIcons.trash,
         children: [
           item("deleteRow", "删除行", state.canDeleteRow, { icon: MenuIcons.row }),
           item("deleteCol", "删除列", state.canDeleteCol, { icon: MenuIcons.col }),
+          item("deleteTable", "删除表格", true, { icon: MenuIcons.trash }),
         ],
       },
       { kind: "separator" },

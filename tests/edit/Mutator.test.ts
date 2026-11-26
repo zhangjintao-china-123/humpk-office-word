@@ -6,6 +6,7 @@ import { WordStreamBuilder } from "../../src/model/flatten/WordStreamBuilder";
 import { CaretPos } from "../../src/selection/CaretPos";
 import { SelRange } from "../../src/selection/SelRange";
 import type { StoryRef } from "../../src/selection/StoryRef";
+import { Table, TableCell, TableRow } from "../../src/model/table/Table";
 import { Mutator } from "../../src/edit/Mutator";
 
 const body: StoryRef = { slot: "body" };
@@ -138,5 +139,38 @@ describe("Mutator", () => {
     mutator.invert(document, patch);
     expect(join(document)).toBe("abcd\n");
     expect(document.paragraphs.head!.data.getFullText()).toBe("abcd");
+  });
+
+  it("删除唯一的表格段时兜底留出空段，且支持撤销与重做", () => {
+    const table = new Table();
+    const row = new TableRow();
+    row.cells = [new TableCell(doc("cell"))];
+    table.rows = [row];
+
+    const document = new Document();
+    const para = new Paragraph(1);
+    para.isTable = true;
+    para.table = table;
+    document.addParagraph(para);
+    new WordStreamBuilder().buildStoryOnly(document);
+
+    const node = document.words.head!;
+    const patch = mutator.deleteRange(
+      document,
+      body,
+      new SelRange(body, new CaretPos(body, node, false), new CaretPos(body, node, true)),
+    );
+    expect(document.paragraphs.length).toBe(1);
+    expect(document.paragraphs.head!.data.isTable).toBe(false);
+    expect(join(document)).toBe("\n");
+
+    mutator.invert(document, patch);
+    expect(document.paragraphs.length).toBe(1);
+    expect(document.paragraphs.head!.data.isTable).toBe(true);
+
+    mutator.replay(document, patch);
+    expect(document.paragraphs.length).toBe(1);
+    expect(document.paragraphs.head!.data.isTable).toBe(false);
+    expect(join(document)).toBe("\n");
   });
 });

@@ -28,6 +28,7 @@ export class StoryEditor extends EditorBase {
   readonly pageSetup: PageSetup;
   readonly slot: StorySlot;
   lines: Line[] = [];
+  showMarks = false;
   private readonly layoutEngine = new StoryLayout();
   private readonly painter = new StoryPainter();
 
@@ -74,7 +75,9 @@ export class StoryEditor extends EditorBase {
       contentWidth: this.pageSetup.contentWidth,
       contentHeight: this.pageSetup.contentHeight,
       leftMargin: this.pageSetup.leftMargin,
+      topMargin: this.pageSetup.contentTop(),
       pageWidth: this.pageSetup.width,
+      pageHeight: this.pageSetup.height,
       linePitchPx: this.pageSetup.linePitchPx,
       adjustLineHeightInTable: this.pageSetup.adjustLineHeightInTable,
       measurer: this.draw instanceof Draw ? new CanvasMeasurer(this.draw) : new FallbackMeasurer(),
@@ -96,7 +99,7 @@ export class StoryEditor extends EditorBase {
     const pageH = this.pageSetup.contentHeight;
     const contentX = (origin: PageOrigin) => origin.x + this.pageSetup.contentLeft();
     const contentY = (origin: PageOrigin, storyY: number) => {
-      const pageIndex = Math.min(origins.length - 1, Math.floor(storyY / pageH));
+      const pageIndex = Math.min(origins.length - 1, Math.max(0, Math.floor(storyY / pageH)));
       return origin.y + this.pageSetup.contentTop() + (storyY - pageIndex * pageH);
     };
     this.paintAnchors(draw, origins, true, (anchor, origin) => ({
@@ -115,6 +118,7 @@ export class StoryEditor extends EditorBase {
       this.painter.paintLine(draw, line, contentX(origin), contentY(origin, line.top), label.pageNumber, {
         values: fieldValues(label),
         text,
+        showMarks: this.showMarks,
       });
       draw.restore();
     }
@@ -140,7 +144,7 @@ export class StoryEditor extends EditorBase {
     const left = origin.x + this.pageSetup.contentLeft();
     const top = origin.y + this.pageSetup.bandTop(this.slot === "footer" ? "footer" : "header");
     this.paintAnchors(draw, [origin], true, (anchor) => ({ x: left + anchor.x, y: top + anchor.y }));
-    const view: FieldView = { values: fieldValues(label), text: this.fieldText([label], 1) };
+    const view: FieldView = { values: fieldValues(label), text: this.fieldText([label], 1), showMarks: this.showMarks };
     for (const line of this.lines) {
       this.painter.paintLine(draw, line, left, top + line.top, label.pageNumber, view);
     }

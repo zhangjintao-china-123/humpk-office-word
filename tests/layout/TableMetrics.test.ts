@@ -11,7 +11,7 @@ import { FallbackMeasurer } from "../../src/layout/measure/FallbackMeasurer";
 import { Paginator } from "../../src/layout/page/Paginator";
 import { StoryLayout } from "../../src/layout/StoryLayout";
 import { TableLayouter } from "../../src/layout/table/TableLayouter";
-import { cellDocumentHeight, resolveColumnWidths, tableOffset } from "../../src/layout/table/TableMetrics";
+import { cellContentOrigin, cellDocumentHeight, cellInsets, DEFAULT_CELL_INSETS, resolveColumnWidths, tableOffset } from "../../src/layout/table/TableMetrics";
 import { PlacedAnchor } from "../../src/model/inline/PlacedAnchor";
 import { Drawing } from "../../src/model/inline/Drawing";
 
@@ -56,6 +56,18 @@ describe("表格宽度和对齐", () => {
       paginate: false,
     });
     expect(lines[0].leftBlankWidth).toBe(60);
+  });
+
+  it("未指定单元格边距时上下保留默认内距，显式设为 0 时按 0 计算", () => {
+    const table = grid([100]);
+    const cell = table.rows[0].cells[0];
+    expect(cellInsets(table, cell).top).toBe(DEFAULT_CELL_INSETS.top);
+    expect(DEFAULT_CELL_INSETS.top).toBeGreaterThan(0);
+    expect(DEFAULT_CELL_INSETS.bottom).toBeGreaterThan(0);
+    expect(cellContentOrigin(table, { x: 10, y: 20, height: 30, cell }, 16).y).toBe(20 + DEFAULT_CELL_INSETS.top);
+
+    cell.margin = { top: 0, right: 0, bottom: 0, left: 0 };
+    expect(cellContentOrigin(table, { x: 10, y: 20, height: 30, cell }, 16).y).toBe(20);
   });
 });
 

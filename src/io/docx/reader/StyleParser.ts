@@ -3,10 +3,13 @@ import { attr, children, first, parseXml } from "../ooxml/XmlQuery";
 import { ParagraphPropertiesParser } from "./paragraph/ParagraphPropertiesParser";
 import { ParseContext } from "./ParseContext";
 import { RunPropertiesParser } from "./run/RunPropertiesParser";
+import { TableBordersParser } from "./table/TableBordersParser";
+import { readInsets } from "./table/TableMetricParser";
 
 export class StyleParser {
   private paragraphProperties = new ParagraphPropertiesParser();
   private runProperties = new RunPropertiesParser();
+  private tableBorders = new TableBordersParser();
 
   parse(xml: string | undefined): StyleSheet {
     const sheet = new StyleSheet();
@@ -43,10 +46,19 @@ export class StyleParser {
       if (rPr) {
         definition.runStyle = this.runProperties.parse(rPr);
       }
+      const tblPr = first(style, "w:tblPr");
+      if (tblPr) {
+        definition.tableBorders = this.tableBorders.parse(tblPr, "w:tblBorders");
+        definition.tableCellMargin = readInsets(first(tblPr, "w:tblCellMar"));
+      }
       const type = definition.type;
       const isDefault = attr(style, "w:default");
-      if ((type == null || type === "paragraph") && isDefault != null && isDefault !== "0" && isDefault !== "false") {
-        sheet.defaultParagraphStyleId = styleId;
+      if (isDefault != null && isDefault !== "0" && isDefault !== "false") {
+        if (type == null || type === "paragraph") {
+          sheet.defaultParagraphStyleId = styleId;
+        } else if (type === "table") {
+          sheet.defaultTableStyleId = styleId;
+        }
       }
       sheet.add(definition);
     }

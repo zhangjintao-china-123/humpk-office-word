@@ -9,6 +9,10 @@ export type StoryRef =
   | { slot: "cell"; cell: TableCell }
   | { slot: "textbox"; block: Block };
 
+export function isVerticalTextBox(story: StoryRef): boolean {
+  return story.slot === "textbox" && story.block.drawing?.shape?.textDirection === "vertical";
+}
+
 export function storyKind(story: StoryRef): HeaderFooterType {
   if (story.slot === "header" || story.slot === "footer") {
     return story.kind ?? "default";

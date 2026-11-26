@@ -1,4 +1,5 @@
 import type { PictureWrap } from "../../edit/PictureTransform";
+import type { GalleryStyleKey } from "../../model/style/StyleGallery";
 
 export type ContextMenuAction =
   | "cut"
@@ -26,6 +27,8 @@ export type ContextMenuAction =
   | "styleHeading2"
   | "styleHeading3"
   | "outlineApply"
+  | "bulletToggle"
+  | "numberingToggle"
   | "outlinePromote"
   | "outlineDemote"
   | "outlineClear"
@@ -40,6 +43,7 @@ export type ContextMenuAction =
   | "insertColRight"
   | "deleteRow"
   | "deleteCol"
+  | "deleteTable"
   | "mergeCells"
   | "splitCell"
   | `wrap:${PictureWrap}`;
@@ -88,7 +92,7 @@ export interface TextMenuState {
   subscript: boolean;
   align: string;
   lineSpacing: "1" | "1.5" | "2" | "exact28";
-  style: "normal" | "heading1" | "heading2" | "heading3";
+  style?: GalleryStyleKey;
   canIndentLess: boolean;
   hasLink: boolean;
   link?: string;

@@ -1,5 +1,7 @@
 import { Block } from "../../../../model/block/Block";
+import type { AsianBrackets, AsianLayoutSpec } from "../../../../model/inline/AsianLayout";
 import { mergeRunStyle, type RunStyle } from "../../../../model/style/RunStyle";
+import { parseNumber, twipToPx } from "../../../../shared/units";
 import { attr, descendants, first, textOf } from "../../ooxml/XmlQuery";
 import { DrawingParser } from "../drawing/DrawingParser";
 import type { ParseContext } from "../ParseContext";
@@ -11,7 +13,17 @@ export class RunParser {
 
   parse(rNode: Element, ctx: ParseContext, inherited?: RunStyle): Block {
     const block = new Block();
-    block.style = mergeRunStyle(inherited, this.properties.parse(first(rNode, "w:rPr")));
+    const rPr = first(rNode, "w:rPr");
+    const styleId = attr(first(rPr, "w:rStyle"), "w:val");
+    const base = styleId ? mergeRunStyle(inherited, ctx.styles.getResolved(styleId).runStyle) : inherited;
+    block.style = mergeRunStyle(base, this.properties.parse(rPr));
+    if (styleId) {
+      block.style.characterStyleId = styleId;
+    }
+    const asian = parseAsianLayout(rPr);
+    if (asian) {
+      block.asianLayout = asian;
+    }
 
     const text = first(rNode, "w:t") ?? first(rNode, "w:delText");
     if (text) {
@@ -55,4 +67,35 @@ export class RunParser {
 
     return block;
   }
+}
+
+function parseAsianLayout(rPr: Element | null): AsianLayoutSpec | undefined {
+  if (!rPr) {
+    return undefined;
+  }
+  const fit = first(rPr, "w:fitText");
+  if (fit) {
+    const val = parseNumber(attr(fit, "w:val"));
+    if (val != null && val > 0) {
+      return { kind: "fitWidth", fitWidthPx: twipToPx(val) };
+    }
+  }
+  const east = first(rPr, "w:eastAsianLayout");
+  if (!east) {
+    return undefined;
+  }
+  const combine = attr(east, "w:combine");
+  if (combine === "1" || combine === "true" || combine === "on") {
+    const brackets = attr(east, "w:combineBrackets") as AsianBrackets | undefined;
+    if (brackets != null) {
+      return { kind: "twoInOne", brackets };
+    }
+    return { kind: "combine" };
+  }
+  const vert = attr(east, "w:vert");
+  if (vert === "1" || vert === "true" || vert === "on") {
+    const compress = attr(east, "w:vertCompress");
+    return { kind: "tatechuyoko", compress: compress !== "0" && compress !== "false" };
+  }
+  return undefined;
 }

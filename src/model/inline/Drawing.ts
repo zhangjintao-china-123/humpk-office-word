@@ -18,6 +18,7 @@ export interface DrawingAnchor {
   wrapType?: WrapType;
   wrapSide?: WrapSide;
   behind?: boolean;
+  zIndex?: number;
   distLeft?: number;
   distRight?: number;
   distTop?: number;
@@ -36,6 +37,16 @@ export class Drawing {
   /** 缩放时锁住宽高比，和 Word 图片默认一致。 */
   lockAspect = true;
   anchorSet?: DrawingAnchor;
+  /** 顺时针旋转角度（度）。 */
+  rotation?: number;
+  /** 水平翻转。 */
+  flipH?: boolean;
+  /** 垂直翻转。 */
+  flipV?: boolean;
+  /** 对象名称（选择窗格与 OOXML wp:docPr 显示）。 */
+  name?: string;
+  /** 是否在选择窗格中隐藏。 */
+  hidden?: boolean;
   /** 预设形状或文本框。没有 url 时按形状画，不再画灰块。 */
   shape?: GraphicShape;
 }

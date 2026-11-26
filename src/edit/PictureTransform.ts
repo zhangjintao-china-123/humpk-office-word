@@ -1,5 +1,7 @@
+import type { Block } from "../model/block/Block";
 import type { Paragraph } from "../model/block/Paragraph";
 import type { Document } from "../model/document/Document";
+import { normalizeRotation, rotateVector, unrotatePoint } from "../model/graphic/DrawingTransform";
 import type { Drawing, DrawingAnchor } from "../model/inline/Drawing";
 import { Word } from "../model/inline/Word";
 import type { LinkedNode } from "../model/list/LinkedList";
@@ -9,9 +11,13 @@ import type { EditContext } from "./EditContext";
 import { EditImpact } from "./EditImpact";
 
 export const MIN_PICTURE = 16;
+const PICTURE_MINIMUM = { width: MIN_PICTURE, height: MIN_PICTURE };
 export const PICTURE_WRAP_GAP = 8;
+export const ROTATE_HANDLE_OFFSET = 24;
+export const ROTATE_HANDLE_RADIUS = 7;
 export const PICTURE_HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const;
 export type PictureHandle = (typeof PICTURE_HANDLES)[number];
+export type PictureControl = PictureHandle | "rotate";
 
 export type PictureWrap = "inline" | "square" | "tight" | "through" | "topBottom" | "behind" | "front";
 
@@ -34,6 +40,11 @@ export interface PictureSnap {
   position: "inline" | "anchor";
   lockAspect: boolean;
   anchorSet?: DrawingAnchor;
+  rotation?: number;
+  flipH?: boolean;
+  flipV?: boolean;
+  name?: string;
+  hidden?: boolean;
 }
 
 export function snapPicture(drawing: Drawing): PictureSnap {
@@ -43,6 +54,11 @@ export function snapPicture(drawing: Drawing): PictureSnap {
     position: drawing.position,
     lockAspect: drawing.lockAspect !== false,
     anchorSet: copyAnchor(drawing.anchorSet),
+    rotation: drawing.rotation,
+    flipH: drawing.flipH,
+    flipV: drawing.flipV,
+    name: drawing.name,
+    hidden: drawing.hidden,
   };
 }
 
@@ -52,6 +68,11 @@ export function restorePicture(drawing: Drawing, snap: PictureSnap): void {
   drawing.position = snap.position;
   drawing.lockAspect = snap.lockAspect;
   drawing.anchorSet = copyAnchor(snap.anchorSet);
+  drawing.rotation = snap.rotation;
+  drawing.flipH = snap.flipH;
+  drawing.flipV = snap.flipV;
+  drawing.name = snap.name;
+  drawing.hidden = snap.hidden;
 }
 
 export function pictureWrapOf(drawing: Drawing): PictureWrap {
@@ -119,9 +140,10 @@ export function applyPictureWrap(drawing: Drawing, wrap: PictureWrap, offset?: {
 export function applyPicturePlace(drawing: Drawing, place: PicturePlace): void {
   const [vertical, horizontal] = place.split("-");
   const keep = drawing.position === "anchor" ? drawing.anchorSet : undefined;
+  const wrapType = keep?.wrapType ?? "none";
   drawing.position = "anchor";
   drawing.anchorSet = {
-    wrapType: keep?.wrapType && keep.wrapType !== "none" ? keep.wrapType : "square",
+    wrapType: wrapType === "none" && !drawing.shape?.text ? "square" : wrapType,
     wrapSide: keep?.wrapSide ?? "both",
     distLeft: keep?.distLeft ?? PICTURE_WRAP_GAP,
     distRight: keep?.distRight ?? PICTURE_WRAP_GAP,
@@ -136,19 +158,34 @@ export function applyPicturePlace(drawing: Drawing, place: PicturePlace): void {
 }
 
 export function applyPictureSize(drawing: Drawing, width: number, height: number, lockAspect: boolean): void {
-  const ratio = drawing.width / Math.max(drawing.height, 0.01);
-  let nextW = Math.max(MIN_PICTURE, width);
-  let nextH = Math.max(MIN_PICTURE, height);
+  const textBoxMinimum = minimumTextBoxSize(drawing);
+  const minimum = textBoxMinimum ?? PICTURE_MINIMUM;
+  const ratio = Math.max(drawing.width, 0.01) / Math.max(drawing.height, 0.01);
+  let nextW = Math.max(minimum.width, width);
+  let nextH = Math.max(minimum.height, height);
   if (lockAspect) {
     if (Math.abs(nextW - drawing.width) >= Math.abs(nextH - drawing.height)) {
       nextH = nextW / ratio;
     } else {
       nextW = nextH * ratio;
     }
+    if (textBoxMinimum) {
+      nextW = Math.max(minimum.width, minimum.height * ratio, nextW);
+      nextH = nextW / ratio;
+    }
   }
-  drawing.width = Math.max(MIN_PICTURE, nextW);
-  drawing.height = Math.max(MIN_PICTURE, nextH);
+  drawing.width = Math.max(minimum.width, nextW);
+  drawing.height = Math.max(minimum.height, nextH);
   drawing.lockAspect = lockAspect;
+}
+
+export function minimumTextBoxSize(drawing: Drawing): { width: number; height: number } | undefined {
+  const shape = drawing.shape;
+  if (!shape?.text) {
+    return undefined;
+  }
+  const { left, right, top, bottom } = shape.insets;
+  return { width: Math.max(MIN_PICTURE, left + right + 8), height: Math.max(MIN_PICTURE, top + bottom + 8) };
 }
 
 /** 拖控点。锁定纵横比时四角和四边都按原比例缩放；对边保持不动。 */
@@ -158,26 +195,30 @@ export function resizedPicture(
   dx: number,
   dy: number,
   lockAspect: boolean,
+  textBoxMinimum?: { width: number; height: number },
+  rotation = 0,
 ): { width: number; height: number; deltaX: number; deltaY: number } {
-  const ratio = start.width / Math.max(start.height, 0.01);
+  const minimum = textBoxMinimum ?? PICTURE_MINIMUM;
+  const ratio = Math.max(start.width, 0.01) / Math.max(start.height, 0.01);
+  const local = normalizeRotation(rotation) ? rotateVector(dx, dy, -rotation) : { x: dx, y: dy };
   let width = start.width;
   let height = start.height;
   if (handle.includes("e")) {
-    width = start.width + dx;
+    width = start.width + local.x;
   } else if (handle.includes("w")) {
-    width = start.width - dx;
+    width = start.width - local.x;
   }
   if (handle.includes("s")) {
-    height = start.height + dy;
+    height = start.height + local.y;
   } else if (handle.includes("n")) {
-    height = start.height - dy;
+    height = start.height - local.y;
   }
   if (lockAspect) {
     if (handle === "n" || handle === "s") {
-      height = Math.max(MIN_PICTURE, height);
+      height = Math.max(minimum.height, height);
       width = height * ratio;
     } else if (handle === "e" || handle === "w") {
-      width = Math.max(MIN_PICTURE, width);
+      width = Math.max(minimum.width, width);
       height = width / ratio;
     } else {
       const sx = width / Math.max(start.width, 0.01);
@@ -186,9 +227,24 @@ export function resizedPicture(
       width = start.width * scale;
       height = start.height * scale;
     }
+    if (textBoxMinimum) {
+      width = Math.max(minimum.width, minimum.height * ratio, width);
+      height = width / ratio;
+    }
   }
-  width = Math.max(MIN_PICTURE, width);
-  height = Math.max(MIN_PICTURE, height);
+  width = Math.max(minimum.width, width);
+  height = Math.max(minimum.height, height);
+  if (normalizeRotation(rotation)) {
+    const shiftX = (handle.includes("e") ? 0.5 : handle.includes("w") ? -0.5 : 0) * (width - start.width);
+    const shiftY = (handle.includes("s") ? 0.5 : handle.includes("n") ? -0.5 : 0) * (height - start.height);
+    const worldShift = rotateVector(shiftX, shiftY, rotation);
+    return {
+      width,
+      height,
+      deltaX: worldShift.x - (width - start.width) / 2,
+      deltaY: worldShift.y - (height - start.height) / 2,
+    };
+  }
   return {
     width,
     height,
@@ -213,15 +269,19 @@ export function pictureHandleCenters(x: number, y: number, width: number, height
 export function pickPictureHandle(
   x: number,
   y: number,
-  box: { x: number; y: number; width: number; height: number },
+  box: { x: number; y: number; width: number; height: number; drawing?: Drawing },
   slop: number,
+  includeEdges = true,
 ): PictureHandle | null {
+  const pt = unrotatePoint(x, y, box, box.drawing?.rotation);
+  const px = pt.x;
+  const py = pt.y;
   const size = Math.max(6, slop);
   let best: { handle: PictureHandle; dist: number } | null = null;
   const centers = pictureHandleCenters(box.x, box.y, box.width, box.height);
   for (const handle of PICTURE_HANDLES) {
     const at = centers[handle];
-    const dist = Math.hypot(x - at.x, y - at.y);
+    const dist = Math.hypot(px - at.x, py - at.y);
     if (dist <= size && (!best || dist < best.dist)) {
       best = { handle, dist };
     }
@@ -229,16 +289,19 @@ export function pickPictureHandle(
   if (best) {
     return best.handle;
   }
+  if (!includeEdges) {
+    return null;
+  }
   const left = box.x;
   const right = box.x + box.width;
   const top = box.y;
   const bottom = box.y + box.height;
-  const onL = Math.abs(x - left) <= size;
-  const onR = Math.abs(x - right) <= size;
-  const onT = Math.abs(y - top) <= size;
-  const onB = Math.abs(y - bottom) <= size;
-  const inX = x >= left - size && x <= right + size;
-  const inY = y >= top - size && y <= bottom + size;
+  const onL = Math.abs(px - left) <= size;
+  const onR = Math.abs(px - right) <= size;
+  const onT = Math.abs(py - top) <= size;
+  const onB = Math.abs(py - bottom) <= size;
+  const inX = px >= left - size && px <= right + size;
+  const inY = py >= top - size && py <= bottom + size;
   if (onT && onL) {
     return "nw";
   }
@@ -266,15 +329,59 @@ export function pickPictureHandle(
   return null;
 }
 
-export function pictureHandleCursor(handle: PictureHandle): string {
-  if (handle === "n" || handle === "s") {
+export function rotateHandleCenter(box: { x: number; y: number; width: number; height: number }): { x: number; y: number } {
+  return { x: box.x + box.width / 2, y: box.y - ROTATE_HANDLE_OFFSET };
+}
+
+export function pickRotateHandle(
+  x: number,
+  y: number,
+  box: { x: number; y: number; width: number; height: number; drawing?: Drawing },
+  slop: number,
+): boolean {
+  const pt = unrotatePoint(x, y, box, box.drawing?.rotation);
+  const center = rotateHandleCenter(box);
+  const radius = Math.max(ROTATE_HANDLE_RADIUS + 2, slop);
+  return Math.hypot(pt.x - center.x, pt.y - center.y) <= radius;
+}
+
+export function rotatedAngleFromPointer(
+  box: { x: number; y: number; width: number; height: number },
+  worldX: number,
+  worldY: number,
+  snap15 = false,
+): number {
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  const raw = (Math.atan2(worldX - cx, -(worldY - cy)) * 180) / Math.PI;
+  const snapped = snap15 ? Math.round(raw / 15) * 15 : Math.round(raw);
+  return normalizeRotation(snapped);
+}
+
+export function pictureHandleCursor(handle: PictureControl, rotation = 0): string {
+  if (handle === "rotate") {
+    return "grab";
+  }
+  const baseAngles: Record<PictureHandle, number> = {
+    n: 0,
+    ne: 45,
+    e: 90,
+    se: 135,
+    s: 180,
+    sw: 225,
+    w: 270,
+    nw: 315,
+  };
+  const angle = normalizeRotation(baseAngles[handle] + rotation);
+  const sector = Math.round(angle / 45) % 4;
+  if (sector === 0) {
     return "ns-resize";
   }
-  if (handle === "e" || handle === "w") {
-    return "ew-resize";
-  }
-  if (handle === "ne" || handle === "sw") {
+  if (sector === 1) {
     return "nesw-resize";
+  }
+  if (sector === 2) {
+    return "ew-resize";
   }
   return "nwse-resize";
 }
@@ -300,6 +407,9 @@ export function pictureWrapOffset(
   if (!storyPoint) {
     return { left: hit.drawing.anchorSet?.left ?? 0, top: hit.drawing.anchorSet?.top ?? 0 };
   }
+  if ((hit.story.slot === "header" || hit.story.slot === "footer") && paragraphOrigin) {
+    return { left: storyPoint.x, top: hit.y - paragraphOrigin.y };
+  }
   return { left: storyPoint.x, top: storyPoint.y - paraTop };
 }
 
@@ -309,6 +419,11 @@ export function samePicture(a: PictureSnap, b: PictureSnap): boolean {
     Math.abs(a.height - b.height) < 0.5 &&
     a.position === b.position &&
     a.lockAspect === b.lockAspect &&
+    normalizeRotation(a.rotation) === normalizeRotation(b.rotation) &&
+    !!a.flipH === !!b.flipH &&
+    !!a.flipV === !!b.flipV &&
+    (a.name ?? "") === (b.name ?? "") &&
+    !!a.hidden === !!b.hidden &&
     sameAnchor(a.anchorSet, b.anchorSet)
   );
 }
@@ -386,6 +501,32 @@ export class PictureTransformCommand implements EditCommand {
   }
 }
 
+export class RemoveAnchoredDrawingCommand implements EditCommand {
+  constructor(
+    private readonly ctx: EditContext,
+    private readonly story: StoryRef,
+    private readonly paragraph: Paragraph,
+    private readonly block: Block,
+    private readonly index: number,
+  ) {}
+
+  do(): void {
+    this.paragraph.blocks.splice(this.index, 1);
+    this.relayout();
+  }
+
+  undo(): void {
+    this.paragraph.blocks.splice(this.index, 0, this.block);
+    this.relayout();
+  }
+
+  private relayout(): void {
+    const impact = new EditImpact(this.story, [this.paragraph]);
+    this.ctx.relayout.apply(impact);
+    this.ctx.afterEdit(impact);
+  }
+}
+
 function wrapTypeOf(wrap: PictureWrap): NonNullable<DrawingAnchor["wrapType"]> {
   if (wrap === "tight") {
     return "tight";
@@ -422,6 +563,7 @@ function sameAnchor(a?: DrawingAnchor, b?: DrawingAnchor): boolean {
   return (
     a.wrapType === b.wrapType &&
     a.behind === b.behind &&
+    a.zIndex === b.zIndex &&
     a.leftAlign === b.leftAlign &&
     a.topAlign === b.topAlign &&
     a.leftFrom === b.leftFrom &&

@@ -1,6 +1,7 @@
 import type { Line } from "../model/line/Line";
 import { CaretPos } from "../selection/CaretPos";
 import type { HitContext, HitTester } from "../selection/HitTester";
+import { isVerticalTextBox } from "../selection/StoryRef";
 
 /** 一次方向键跳到下一个不同的插入位。(字后) 与下一字的 (字前) 是同一位置。 */
 export function moveLeft(pos: CaretPos): CaretPos {
@@ -139,5 +140,6 @@ function caretOnLine(
   if (!origin) {
     return pos;
   }
-  return hit.hitLine(line, preferX - origin.x, pos.story);
+  const originAdvance = isVerticalTextBox(pos.story) ? origin.y : origin.x;
+  return hit.hitLine(line, preferX - originAdvance, pos.story);
 }

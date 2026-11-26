@@ -132,6 +132,9 @@ export class Paginator {
 
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
+      if (!line.paragraph?.coverTemplate && result.at(-1)?.paragraph?.coverTemplate) {
+        skipToNextPage();
+      }
       if (line.type === "page") {
         line.top = y;
         line.height = pageBreakAdvance(y, height, result.at(-1)?.type === "page");

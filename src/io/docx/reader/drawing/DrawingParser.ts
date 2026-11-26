@@ -48,6 +48,9 @@ export class DrawingParser {
         return undefined;
       }
       drawing.shape = graphic;
+      if (graphic.text) {
+        drawing.lockAspect = false;
+      }
     }
     return drawing;
   }
@@ -57,36 +60,84 @@ export class DrawingParser {
     const drawing = new Drawing();
     drawing.width = ctx.units.emuToPx(attr(extent, "cx")) ?? 0;
     drawing.height = ctx.units.emuToPx(attr(extent, "cy")) ?? 0;
+    const docPr = first(node, "wp:docPr");
+    const docName = attr(docPr, "name");
+    if (docName) {
+      drawing.name = docName;
+    }
+    const hidden = attr(docPr, "hidden");
+    if (hidden === "1" || hidden === "true") {
+      drawing.hidden = true;
+    }
 
     const blip = descendants(node, "a:blip")[0];
     this.attachRel(drawing, attr(blip, "r:embed") ?? attr(blip, "r:link"), ctx, "primary");
     const svg = blip ? descendants(blip, "asvg:svgBlip")[0] : undefined;
     this.attachRel(drawing, attr(svg ?? null, "r:embed"), ctx, "display");
+    const wsp = !drawing.url && !drawing.sourceUrl ? descendants(node, "wps:wsp")[0] : undefined;
     if (!drawing.url && !drawing.sourceUrl) {
-      const wsp = descendants(node, "wps:wsp")[0];
       if (!wsp) {
         return drawing.width > 0 || drawing.height > 0 ? drawing : undefined;
       }
       drawing.shape = this.wordShape(wsp, ctx);
+      if (drawing.shape.text) {
+        const locks = first(first(wsp, "wps:cNvSpPr"), "a:spLocks");
+        const aspect = attr(locks, "noChangeAspect");
+        drawing.lockAspect = aspect === "1" || aspect === "true";
+      }
       this.useShapeExtent(drawing, wsp, ctx);
+    }
+    const xfrm = wsp ? first(first(wsp, "wps:spPr"), "a:xfrm") : descendants(node, "a:xfrm")[0];
+    if (xfrm) {
+      const rot = Number(attr(xfrm, "rot"));
+      if (Number.isFinite(rot) && rot !== 0) {
+        const deg = Math.round((((rot / 60000) % 360) + 360) % 360 * 100) / 100;
+        if (deg !== 0 && deg !== 360) {
+          drawing.rotation = deg;
+        }
+      }
+      const flipH = attr(xfrm, "flipH");
+      if (flipH === "1" || flipH === "true") {
+        drawing.flipH = true;
+      }
+      const flipV = attr(xfrm, "flipV");
+      if (flipV === "1" || flipV === "true") {
+        drawing.flipV = true;
+      }
     }
     return drawing;
   }
 
   private wordShape(wsp: Element, ctx: ParseContext): GraphicShape {
     const props = first(wsp, "wps:spPr");
+    const style = first(wsp, "wps:style");
     const line = first(props, "a:ln");
     const body = first(wsp, "wps:bodyPr");
     const content = first(first(wsp, "wps:txbx"), "w:txbxContent");
+    const fillRef = first(style, "a:fillRef");
+    const lnRef = first(style, "a:lnRef");
+    const fill = first(props, "a:noFill")
+      ? undefined
+      : colorOf(first(props, "a:solidFill")) ?? (attr(fillRef, "idx") !== "0" ? colorOf(fillRef) : undefined);
+    const lineColor = first(line, "a:noFill")
+      ? undefined
+      : colorOf(first(line, "a:solidFill")) ?? (attr(lnRef, "idx") !== "0" ? colorOf(lnRef) : undefined);
     const shape: GraphicShape = {
       preset: shapePreset(attr(first(props, "a:prstGeom"), "prst")),
-      fill: first(props, "a:noFill") ? undefined : colorOf(first(props, "a:solidFill")),
-      line: colorOf(first(line, "a:solidFill")),
+      fill,
+      line: lineColor,
       lineWidth: ctx.units.emuToPx(attr(line, "w")),
       insets: insetsOf(body, ctx),
     };
     if (content && ctx.storyParser) {
       shape.text = ctx.storyParser.parseRoot(content, ctx, "textbox");
+      if (attr(body, "vert") === "eaVert") {
+        shape.textDirection = "vertical";
+      }
+      const anchor = attr(body, "anchor");
+      if (anchor === "ctr" || anchor === "b") {
+        shape.textAlign = anchor === "ctr" ? "center" : "end";
+      }
     }
     return shape;
   }
@@ -140,8 +191,10 @@ export class DrawingParser {
   }
 
   private parseAnchor(anchor: Element, ctx: ParseContext) {
+    const relHeight = Number(attr(anchor, "relativeHeight"));
     const set: NonNullable<Drawing["anchorSet"]> = {
       behind: attr(anchor, "behindDoc") === "1",
+      zIndex: Number.isFinite(relHeight) && attr(anchor, "relativeHeight") ? relHeight : undefined,
       distLeft: ctx.units.emuToPx(attr(anchor, "distL")) ?? 0,
       distRight: ctx.units.emuToPx(attr(anchor, "distR")) ?? 0,
       distTop: ctx.units.emuToPx(attr(anchor, "distT")) ?? 0,
@@ -249,8 +302,12 @@ function mediaOf(relId: string | undefined, ctx: ParseContext): { ext: string; d
 const SCHEME: Record<string, string> = {
   dk1: "#000000",
   lt1: "#FFFFFF",
+  dk2: "#44546A",
+  lt2: "#E7E6E6",
   tx1: "#000000",
   bg1: "#FFFFFF",
+  tx2: "#44546A",
+  bg2: "#E7E6E6",
   accent1: "#5B9BD5",
   accent2: "#ED7D31",
   accent3: "#A9D08E",
@@ -259,13 +316,81 @@ const SCHEME: Record<string, string> = {
   accent6: "#70AD47",
 };
 
+const PRESET_COLORS: Record<string, string> = {
+  black: "#000000",
+  white: "#FFFFFF",
+  red: "#FF0000",
+  green: "#008000",
+  blue: "#0000FF",
+  yellow: "#FFFF00",
+  cyan: "#00FFFF",
+  magenta: "#FF00FF",
+  gray: "#808080",
+  grey: "#808080",
+  dkGray: "#A9A9A9",
+  darkGray: "#A9A9A9",
+  ltGray: "#D3D3D3",
+  lightGray: "#D3D3D3",
+  dkRed: "#8B0000",
+  darkRed: "#8B0000",
+  dkGreen: "#006400",
+  darkGreen: "#006400",
+  dkBlue: "#00008B",
+  darkBlue: "#00008B",
+  dkCyan: "#008B8B",
+  darkCyan: "#008B8B",
+  dkMagenta: "#8B008B",
+  darkMagenta: "#8B008B",
+  dkYellow: "#808000",
+  orange: "#FFA500",
+  purple: "#800080",
+  silver: "#C0C0C0",
+  navy: "#000080",
+  teal: "#008080",
+};
+
 function colorOf(fill: Element | null): string | undefined {
+  if (!fill) {
+    return undefined;
+  }
   const srgb = attr(first(fill, "a:srgbClr"), "val");
   if (srgb) {
     return `#${srgb}`;
   }
   const scheme = attr(first(fill, "a:schemeClr"), "val");
-  return scheme ? SCHEME[scheme] : undefined;
+  if (scheme && SCHEME[scheme]) {
+    return SCHEME[scheme];
+  }
+  const prst = attr(first(fill, "a:prstClr"), "val");
+  if (prst && PRESET_COLORS[prst]) {
+    return PRESET_COLORS[prst];
+  }
+  const sys = first(fill, "a:sysClr");
+  if (sys) {
+    const last = attr(sys, "lastClr");
+    if (last) {
+      return `#${last}`;
+    }
+    const val = attr(sys, "val");
+    if (val === "windowText") {
+      return "#000000";
+    }
+    if (val === "window") {
+      return "#FFFFFF";
+    }
+  }
+  const scrgb = first(fill, "a:scrgbClr");
+  if (scrgb) {
+    const ch = (name: string) => {
+      const pct = Number(attr(scrgb, name) ?? "0") / 100000;
+      return Math.max(0, Math.min(255, Math.round(pct * 255)))
+        .toString(16)
+        .padStart(2, "0")
+        .toUpperCase();
+    };
+    return `#${ch("r")}${ch("g")}${ch("b")}`;
+  }
+  return undefined;
 }
 
 function insetsOf(body: Element | null, ctx: ParseContext): ShapeInsets {

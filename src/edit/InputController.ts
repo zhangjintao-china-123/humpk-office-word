@@ -1,5 +1,5 @@
 import { moveLeft, moveLineEnd, moveLineStart, movePage, moveRight, moveVertical } from "./CaretMotion";
-import { moveInFlow } from "../selection/MainWalk";
+import { cellsInReadingOrder, moveInFlow } from "../selection/MainWalk";
 import type { DeleteDirection } from "./DeleteCommand";
 import { EditImpact } from "./EditImpact";
 import type { EditContext } from "./EditContext";
@@ -7,11 +7,19 @@ import { FormatCommand, type FormatAction } from "./FormatCommand";
 import { caretParagraph, OutlineCommand } from "./OutlineCommand";
 import { History } from "./History";
 import { InsertCommand } from "./InsertCommand";
-import type { CaretPos } from "../selection/CaretPos";
+import { TableStructureCommand } from "./TableStructureCommand";
+import { WordStreamBuilder } from "../model/flatten/WordStreamBuilder";
+import type { Table, TableCell } from "../model/table/Table";
+import { CaretPos } from "../selection/CaretPos";
 import type { CaretBox, HitContext, HitTester } from "../selection/HitTester";
+import { SelectionText } from "../selection/SelectionText";
+import { isVerticalTextBox, type StoryRef } from "../selection/StoryRef";
 import type { RunStyle } from "../model/style/RunStyle";
 
 const VERTICAL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown"]);
+const TEXT_BOX_ARROWS: Record<string, string> = {
+  ArrowUp: "ArrowLeft", ArrowDown: "ArrowRight", ArrowLeft: "ArrowDown", ArrowRight: "ArrowUp",
+};
 
 export interface InputHost extends EditContext {
   history: History;
@@ -24,10 +32,14 @@ export interface InputHost extends EditContext {
   cut(): Promise<void> | void;
   paste(data?: DataTransfer | null): Promise<void> | void;
   deleteContent(direction: DeleteDirection): void;
+  copyFormat?(): void;
+  pasteFormat?(): void;
+  cancelFormatPainter?(): boolean;
 }
 
 export class InputController {
   readonly el: HTMLTextAreaElement;
+  private readonly selectionText = new SelectionText();
   private composing = false;
   private skipInput = false;
   private preferredX: number | null = null;
@@ -164,6 +176,27 @@ export class InputController {
       this.host.history.do(new FormatCommand(this.host, format));
       return;
     }
+    if (event.key === "Escape") {
+      if (this.host.cancelFormatPainter?.()) {
+        event.preventDefault();
+        return;
+      }
+    }
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey) {
+      const key = event.key.toLowerCase();
+      if (key === "c") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.host.copyFormat?.();
+        return;
+      }
+      if (key === "v") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.host.pasteFormat?.();
+        return;
+      }
+    }
     if ((event.metaKey || event.ctrlKey) && !event.shiftKey) {
       const key = event.key.toLowerCase();
       if (key === "c") {
@@ -181,6 +214,10 @@ export class InputController {
       }
     }
     if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      if (this.moveTableCell(event.shiftKey)) {
+        event.preventDefault();
+        return;
+      }
       const numbered = caretParagraph(this.host.selection.caret());
       if (numbered?.attrs.numId && numbered.attrs.numId !== "0") {
         event.preventDefault();
@@ -202,6 +239,19 @@ export class InputController {
     if (event.key === "Backspace") {
       event.preventDefault();
       this.resetColumn();
+      const pos = this.host.selection.caret();
+      const numbered = this.host.selection.isCollapsed() ? caretParagraph(pos) : null;
+      if (
+        numbered?.attrs.numId &&
+        numbered.attrs.numId !== "0" &&
+        pos &&
+        !pos.after &&
+        pos.node?.data.paragraph === numbered &&
+        (!pos.node.pre || pos.node.pre.data.paragraph !== numbered)
+      ) {
+        this.host.history.do(new OutlineCommand(this.host, { type: "clear" }));
+        return;
+      }
       this.host.deleteContent("backward");
       return;
     }
@@ -241,13 +291,14 @@ export class InputController {
     return null;
   }
 
-  private moveCaret(key: string, shift: boolean): boolean {
+  private moveCaret(pressed: string, shift: boolean): boolean {
     const selection = this.host.selection;
     const primary = selection.primaryRange();
     const pos = selection.caret();
     if (!pos?.node) {
       return false;
     }
+    const key = isVerticalTextBox(pos.story) ? TEXT_BOX_ARROWS[pressed] ?? pressed : pressed;
     if (!shift && primary && !primary.collapsed() && primary.mode === "text") {
       const norm = primary.normalized();
       if (key === "ArrowLeft") {
@@ -309,12 +360,87 @@ export class InputController {
     if (!box) {
       return pos;
     }
-    this.preferredX ??= box.x;
+    this.preferredX ??= isVerticalTextBox(pos.story) ? box.y : box.x;
     const dir: -1 | 1 = key === "ArrowUp" || key === "PageUp" ? -1 : 1;
     const hit = this.host.hitTester;
     const ctx = this.host.hitContext();
     return key === "PageUp" || key === "PageDown"
       ? movePage(pos, dir, this.preferredX, hit, ctx)
       : moveVertical(pos, dir, this.preferredX, hit, ctx);
+  }
+
+  private moveTableCell(reverse: boolean): boolean {
+    const selection = this.host.selection;
+    const flow = selection.flow;
+    if (flow && flow.anchor.node && flow.anchor.node === flow.focus.node && flow.anchor.node.data.kind === "table") {
+      const table = flow.anchor.node.data.table;
+      const cells = table ? cellsInReadingOrder(table) : [];
+      if (!cells.length) {
+        return false;
+      }
+      this.focusTableCell(reverse ? cells[cells.length - 1] : cells[0]);
+      return true;
+    }
+    const pos = selection.caret();
+    const primary = selection.primaryRange();
+    const currentCell =
+      pos?.story.slot === "cell"
+        ? pos.story.cell
+        : primary?.story.slot === "cell"
+          ? primary.story.cell
+          : null;
+    if (!currentCell) {
+      return false;
+    }
+    const hostInfo = this.host.relayout?.findCellHost?.(currentCell);
+    const table: Table | undefined = hostInfo?.table ?? this.host.hitTester.findTable(currentCell, this.host.hitContext());
+    if (!table) {
+      return false;
+    }
+    const cells = cellsInReadingOrder(table);
+    const index = cells.indexOf(currentCell);
+    if (index < 0) {
+      return false;
+    }
+    const nextIndex = reverse ? index - 1 : index + 1;
+    if (nextIndex >= 0 && nextIndex < cells.length) {
+      this.focusTableCell(cells[nextIndex]);
+      return true;
+    }
+    if (reverse) {
+      return true;
+    }
+    const parentStory: StoryRef = hostInfo?.parent ?? { slot: "body" };
+    this.resetColumn();
+    this.clearPending();
+    this.host.history.do(
+      new TableStructureCommand(this.host, table, parentStory, currentCell, {
+        type: "insertRow",
+        index: table.rows.length,
+        focusNewRow: true,
+      }),
+    );
+    return true;
+  }
+
+  private focusTableCell(cell: TableCell): void {
+    if (cell.document.words.length === 0) {
+      new WordStreamBuilder().buildStoryOnly(cell.document);
+    }
+    const story: StoryRef = { slot: "cell", cell };
+    const head = cell.document.words.head;
+    if (head?.data.kind === "table") {
+      this.host.selection.collapse(new CaretPos(story, head, false));
+    } else {
+      const range = this.selectionText.cellContentRange(cell);
+      if (range.collapsed()) {
+        this.host.selection.collapse(range.start);
+      } else {
+        this.host.selection.setRange(range);
+      }
+    }
+    this.resetColumn();
+    this.clearPending();
+    this.host.afterEdit(new EditImpact(story, []));
   }
 }

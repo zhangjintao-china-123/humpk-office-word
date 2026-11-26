@@ -1,5 +1,8 @@
 import type { Draw } from "../render/canvas/Draw";
+import { ROTATE_HANDLE_OFFSET, ROTATE_HANDLE_RADIUS } from "../edit/PictureTransform";
+import { drawingRotationRadians } from "../model/graphic/DrawingTransform";
 import { cellVisibleRect, type TableCellBox } from "../render/table/TableGeometry";
+import type { Drawing } from "../model/inline/Drawing";
 import type { LinkedNode } from "../model/list/LinkedList";
 import type { Word } from "../model/inline/Word";
 import type { Document } from "../model/document/Document";
@@ -108,10 +111,33 @@ export class SelectionPainter {
     draw.fillRect(box.x, box.y, box.width, box.height);
   }
 
-  paintPictureHandles(draw: Draw, box: { x: number; y: number; width: number; height: number }): void {
+  paintPictureHandles(draw: Draw, box: { x: number; y: number; width: number; height: number; drawing?: Drawing }): void {
+    const rot = drawingRotationRadians(box.drawing);
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    if (rot) {
+      draw.save();
+      draw.translate(cx, cy);
+      draw.rotate(rot);
+      draw.translate(-cx, -cy);
+    }
     draw.setStroke("#2b579a", 1.5);
     draw.setLineDash([]);
     draw.strokeRect(box.x, box.y, box.width, box.height);
+    const rx = box.x + box.width / 2;
+    const ry = box.y - ROTATE_HANDLE_OFFSET;
+    draw.setStroke("#2b579a", 1);
+    draw.beginPath();
+    draw.moveTo(rx, box.y);
+    draw.lineTo(rx, ry + ROTATE_HANDLE_RADIUS);
+    draw.stroke();
+    draw.setFill("#ffffff");
+    draw.beginPath();
+    draw.ellipse(rx, ry, ROTATE_HANDLE_RADIUS, ROTATE_HANDLE_RADIUS);
+    draw.fill();
+    draw.setStroke("#2b579a", 1);
+    draw.stroke();
+    this.paintRotateGlyph(draw, rx, ry);
     const size = 8;
     const centers = [
       [box.x, box.y],
@@ -123,14 +149,42 @@ export class SelectionPainter {
       [box.x, box.y + box.height],
       [box.x, box.y + box.height / 2],
     ];
-    for (const [cx, cy] of centers) {
+    for (const [hx, hy] of centers) {
       draw.setFill("#ffffff");
       draw.beginPath();
-      draw.ellipse(cx, cy, size / 2, size / 2);
+      draw.ellipse(hx, hy, size / 2, size / 2);
       draw.fill();
       draw.setStroke("#2b579a", 1);
       draw.stroke();
     }
+    if (rot) {
+      draw.restore();
+    }
+  }
+
+  private paintRotateGlyph(draw: Draw, cx: number, cy: number): void {
+    const r = 3.5;
+    const steps = 10;
+    const start = -Math.PI * 0.2;
+    const end = Math.PI * 1.4;
+    draw.setStroke("#2b579a", 1.2);
+    draw.beginPath();
+    for (let i = 0; i <= steps; i += 1) {
+      const a = start + ((end - start) * i) / steps;
+      const px = cx + Math.cos(a) * r;
+      const py = cy + Math.sin(a) * r;
+      if (i === 0) {
+        draw.moveTo(px, py);
+      } else {
+        draw.lineTo(px, py);
+      }
+    }
+    const tipX = cx + Math.cos(end) * r;
+    const tipY = cy + Math.sin(end) * r;
+    draw.moveTo(tipX - 2.3, tipY - 0.6);
+    draw.lineTo(tipX, tipY);
+    draw.lineTo(tipX + 0.7, tipY - 2.3);
+    draw.stroke();
   }
 
   paintTableHandles(draw: Draw, ctx: HitContext): void {

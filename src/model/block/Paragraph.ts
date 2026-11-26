@@ -4,6 +4,7 @@ import type { Table } from "../table/Table";
 import type { ParagraphAttrs } from "../style/ParagraphAttrs";
 import type { RunStyle } from "../style/RunStyle";
 import type { SectionBreak } from "../document/PageLabel";
+import type { CoverTemplateId } from "../document/CoverPage";
 import type { TocHint, TocMark } from "../toc/Toc";
 import { Block } from "./Block";
 
@@ -18,6 +19,7 @@ export class Paragraph {
   inheritedRunStyle?: RunStyle;
   changed = true;
   bookmarks: string[] = [];
+  coverTemplate?: CoverTemplateId;
   sectionIndex = 0;
   /** 本段结束后换节；nextPage 会把后面的内容推到下一页。 */
   sectionBreak?: SectionBreak;

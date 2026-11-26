@@ -1,5 +1,6 @@
 import { mergeParagraphAttrs, type ParagraphAttrs } from "./ParagraphAttrs";
 import { mergeRunStyle, type RunStyle } from "./RunStyle";
+import type { TableBorders, TableInsets } from "../table/Table";
 
 export interface StyleDefinition {
   styleId: string;
@@ -8,11 +9,15 @@ export interface StyleDefinition {
   basedOn?: string;
   paragraphAttrs?: ParagraphAttrs;
   runStyle?: RunStyle;
+  tableBorders?: TableBorders;
+  tableCellMargin?: TableInsets;
 }
 
 export interface ResolvedStyle {
   paragraphAttrs: ParagraphAttrs;
   runStyle: RunStyle;
+  tableBorders?: TableBorders;
+  tableCellMargin?: TableInsets;
 }
 
 export class StyleSheet {
@@ -20,6 +25,7 @@ export class StyleSheet {
   docDefaults: ParagraphAttrs = {};
   docDefaultRun: RunStyle = {};
   defaultParagraphStyleId?: string;
+  defaultTableStyleId?: string;
 
   add(style: StyleDefinition): void {
     this.styles.set(style.styleId, style);
@@ -45,11 +51,19 @@ export class StyleSheet {
 
     let paragraphAttrs: ParagraphAttrs = {};
     let runStyle: RunStyle = {};
+    let tableBorders: TableBorders | undefined;
+    let tableCellMargin: TableInsets | undefined;
     for (let i = chain.length - 1; i >= 0; i -= 1) {
       const item = chain[i];
       paragraphAttrs = mergeParagraphAttrs(paragraphAttrs, item.paragraphAttrs);
       runStyle = mergeRunStyle(runStyle, item.runStyle);
+      if (item.tableBorders) {
+        tableBorders = { ...tableBorders, ...item.tableBorders };
+      }
+      if (item.tableCellMargin) {
+        tableCellMargin = { ...item.tableCellMargin };
+      }
     }
-    return { paragraphAttrs, runStyle };
+    return { paragraphAttrs, runStyle, tableBorders, tableCellMargin };
   }
 }

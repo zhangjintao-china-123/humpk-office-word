@@ -38,6 +38,40 @@ describe("形状、文本框和公式", () => {
     expect(saved?.paragraphs.toArray().map((paragraph) => paragraph.blocks.map((block) => block.text).join(""))).toEqual(["框内说明", "第二行"]);
   });
 
+  it("读写锚定形状的旋转、翻转、名称、隐藏状态、层级和新形状预设", async () => {
+    const inner = "<w:p><w:r><w:t>标注内容</w:t></w:r></w:p>";
+    const xml = `<w:p><w:r><w:drawing><wp:anchor behindDoc="1" relativeHeight="512" distT="0" distB="0" distL="0" distR="0"><wp:positionH relativeFrom="page"><wp:align>center</wp:align></wp:positionH><wp:positionV relativeFrom="margin"><wp:posOffset>114300</wp:posOffset></wp:positionV><wp:extent cx="914400" cy="457200"/><wp:wrapNone/><wp:docPr id="7" name="星形标注" hidden="1"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm rot="5400000" flipH="1" flipV="1"><a:off x="0" y="0"/><a:ext cx="914400" cy="457200"/></a:xfrm><a:prstGeom prst="wedgeRectCallout"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="D9E1F2"/></a:solidFill><a:ln w="19050"><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill></a:ln></wps:spPr><wps:txbx><w:txbxContent>${inner}</w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>`;
+    const doc = read(xml);
+    const drawing = doc.paragraphs.toArray()[0].blocks[0].drawing!;
+    expect(drawing.name).toBe("星形标注");
+    expect(drawing.hidden).toBe(true);
+    expect(drawing.rotation).toBe(90);
+    expect(drawing.flipH).toBe(true);
+    expect(drawing.flipV).toBe(true);
+    expect(drawing.anchorSet?.zIndex).toBe(512);
+    expect(drawing.shape?.preset).toBe("wedgeRectCallout");
+
+    const again = await roundtrip(doc);
+    const saved = again.paragraphs.toArray()[0].blocks[0].drawing!;
+    expect(saved.name).toBe("星形标注");
+    expect(saved.hidden).toBe(true);
+    expect(saved.rotation).toBe(90);
+    expect(saved.flipH).toBe(true);
+    expect(saved.flipV).toBe(true);
+    expect(saved.anchorSet?.zIndex).toBe(512);
+    expect(saved.shape?.preset).toBe("wedgeRectCallout");
+  });
+
+  it("支持 prstClr、sysClr 和 wps:style 颜色解析", () => {
+    const inner = "<w:p><w:r><w:t>1112</w:t></w:r></w:p>";
+    const xml = `<w:p><w:r><w:drawing><wp:anchor behindDoc="0" distT="0" distB="0" distL="0" distR="0"><wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx="2522855" cy="812800"/><wp:wrapNone/><wp:docPr id="1" name="文本框 4"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="2522855" cy="812800"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:schemeClr val="lt1"/></a:solidFill><a:ln w="6350"><a:solidFill><a:prstClr val="black"/></a:solidFill></a:ln></wps:spPr><wps:txbx><w:txbxContent>${inner}</w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>`;
+    const doc = read(xml);
+    const drawing = doc.paragraphs.toArray()[0].blocks[0].drawing!;
+    expect(drawing.shape?.fill).toBe("#FFFFFF");
+    expect(drawing.shape?.line).toBe("#000000");
+    expect(drawing.shape?.lineWidth).toBeCloseTo(0.6667, 2);
+  });
+
   it("读出分数、上下标、根号和括号，并按原文写回", async () => {
     const document = read(`<w:p>
       <m:oMath><m:f><m:num><m:r><m:t>a</m:t></m:r></m:num><m:den><m:r><m:t>b</m:t></m:r></m:den></m:f></m:oMath>

@@ -29,7 +29,9 @@ export class CaretView {
     this.el.hidden = false;
     this.el.style.left = `${css.x}px`;
     this.el.style.top = `${css.y}px`;
-    this.el.style.height = `${box.height * (viewport.zoom || 1)}px`;
+    const zoom = viewport.zoom || 1;
+    this.el.style.height = `${Math.max(1, box.height * zoom)}px`;
+    this.el.style.width = box.width == null ? "" : `${box.width * zoom}px`;
   }
 
   remove(): void {

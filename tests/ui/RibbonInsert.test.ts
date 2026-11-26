@@ -2,6 +2,53 @@ import { describe, expect, it } from "vitest";
 import { Ribbon, type RibbonHost, type RibbonState } from "../../src/ui/ribbon/Ribbon";
 
 describe("插入功能区", () => {
+  it("文本框菜单分别启动横排和竖排绘制", () => {
+    const calls: string[] = [];
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const ribbon = new Ribbon(host, stub((name, ...args) => calls.push([name, ...args].join(":"))));
+    const trigger = host.querySelector<HTMLButtonElement>(".ho-word-textbox-trigger")!;
+    host.querySelector<HTMLButtonElement>("[data-tab=insert]")!.click();
+    for (const direction of ["horizontal", "vertical"]) {
+      trigger.click();
+      expect(trigger.getAttribute("aria-expanded")).toBe("true");
+      host.querySelector<HTMLButtonElement>(`[data-draw-textbox=${direction}]`)!.click();
+      expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    }
+    expect(calls).toEqual(["drawTextBox:horizontal", "drawTextBox:vertical"]);
+    ribbon.destroy();
+    host.remove();
+  });
+
+  it("封面库可选内置模板，且仅在文档有封面时允许删除", () => {
+    const calls: string[] = [];
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const actions = stub((name, ...args) => calls.push([name, ...args].join(":")));
+    const ribbon = new Ribbon(host, actions);
+    const trigger = host.querySelector<HTMLButtonElement>(".ho-word-cover-trigger")!;
+    const card = host.querySelector<HTMLButtonElement>("[data-cover-template=grove]")!;
+    const remove = host.querySelector<HTMLButtonElement>("[data-act=remove-cover]")!;
+    host.querySelector<HTMLButtonElement>("[data-tab=insert]")!.click();
+    trigger.click();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(host.querySelectorAll("[data-cover-template]")).toHaveLength(6);
+    expect(remove.disabled).toBe(true);
+    card.click();
+    expect(calls).toEqual(["insertCoverPage:grove"]);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    actions.formatState().coverTemplate = "grove";
+    ribbon.sync();
+    trigger.click();
+    expect(card.getAttribute("aria-pressed")).toBe("true");
+    expect(remove.disabled).toBe(false);
+    remove.click();
+    expect(calls.at(-1)).toBe("removeCoverPage");
+    ribbon.destroy();
+    host.remove();
+  });
+
   it("空白页和图片按钮会调用对应动作", () => {
     const calls: string[] = [];
     const host = document.createElement("div");
@@ -29,6 +76,36 @@ describe("插入功能区", () => {
     expect(calls).toContain("applyPictureWrap:square");
     expect(calls).toContain("applyPicturePlace:top-right");
     expect(host.querySelector("[data-tab=picture]")?.hasAttribute("hidden")).toBe(false);
+  });
+
+  it("文本框工具回显方向、对齐和颜色，与图片工具分别显示", () => {
+    const calls: string[] = [];
+    const host = document.createElement("div");
+    const actions = stub((name) => calls.push(name));
+    const state = actions.formatState();
+    state.inPicture = true;
+    const ribbon = new Ribbon(host, actions);
+    const tools = [...host.querySelectorAll<HTMLElement>("[data-textbox-tools]")];
+    expect(tools.every((group) => group.hidden)).toBe(true);
+
+    state.pictureIsTextBox = true;
+    state.textBoxFormat = { fill: "#FF0000", textDirection: "vertical", textAlign: "end" };
+    ribbon.sync();
+    expect(tools.every((group) => !group.hidden)).toBe(true);
+    expect(host.querySelector("[data-tab=picture]")?.textContent).toBe("文本框工具");
+    expect(host.querySelector("[data-textbox-direction=vertical]")?.getAttribute("aria-pressed")).toBe("true");
+    const align = host.querySelector<HTMLButtonElement>("[data-textbox-align=end]")!;
+    expect(align.textContent).toBe("靠左");
+    expect(align.getAttribute("aria-pressed")).toBe("true");
+    expect(host.querySelector('[data-textbox-paint=fill] [data-textbox-color="#FF0000"]')?.getAttribute("aria-pressed")).toBe("true");
+
+    const fill = host.querySelector<HTMLButtonElement>("[data-textbox-paint=fill] [data-drop-toggle]")!;
+    fill.click();
+    expect(fill.getAttribute("aria-expanded")).toBe("true");
+    host.querySelector<HTMLButtonElement>("[data-textbox-paint=fill] [data-textbox-color=none]")!.click();
+    expect(fill.getAttribute("aria-expanded")).toBe("false");
+    expect(calls).toEqual(["applyTextBoxFormat"]);
+    ribbon.destroy();
   });
 });
 

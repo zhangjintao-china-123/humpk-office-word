@@ -2,7 +2,7 @@ import type { Document } from "../../../model/document/Document";
 import type { HeaderFooterType } from "../../../model/document/DocumentKind";
 import type { Section } from "../../../model/document/Section";
 import type { NumberingLevel } from "../../../model/style/Numbering";
-import type { StyleDefinition } from "../../../model/style/StyleSheet";
+import type { StyleSheet } from "../../../model/style/StyleSheet";
 import { pxToTwip } from "../../../shared/units";
 import { DocxPackage } from "../ooxml/DocxPackage";
 import { escapeXml } from "../ooxml/XmlEscape";
@@ -12,6 +12,7 @@ import { rootRelsXml, stylesXml, wrapDocumentXml, wrapStoryXml } from "./package
 import { RunSerializer } from "./run/RunSerializer";
 import { commentsXml, footnotesXml } from "./review/ReviewSerializer";
 import { StorySerializer } from "./story/StorySerializer";
+import { tableBordersXml, tableInsetsXml } from "./table/TableSerializer";
 
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
@@ -87,7 +88,7 @@ export class DocxWriter {
       extra.push({ id: footnotesId, type: FOOTNOTES_TYPE, target: "footnotes.xml" });
     }
     pack.setXml("word/_rels/document.xml.rels", this.documentRels(stylesId, numberingId, settingsId, bands, extra));
-    pack.setXml("word/styles.xml", this.styles(document.styles.list()));
+    pack.setXml("word/styles.xml", this.styles(document.styles));
     if (numberingId) {
       pack.setXml("word/numbering.xml", this.numberingXml(numbering));
     }
@@ -281,9 +282,18 @@ export class DocxWriter {
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">${defaultXml}${overrides.join("")}</Types>`;
   }
 
-  private styles(definitions: StyleDefinition[]): string {
-    if (!definitions.length) {
+  private styles(sheet: StyleSheet): string {
+    const definitions = sheet.list();
+    const runDefaults = this.runs.propertiesOf(sheet.docDefaultRun);
+    const paragraphDefaults = paragraphPropertiesXml(sheet.docDefaults, true);
+    if (!definitions.length && !runDefaults && !paragraphDefaults) {
       return stylesXml();
+    }
+    let defaultId = sheet.defaultParagraphStyleId;
+    const normal = sheet.get("Normal");
+    if (!defaultId && !normal) {
+      defaultId = "Normal";
+      definitions.unshift({ type: "paragraph", styleId: defaultId, name: "Normal" });
     }
     const body = definitions
       .map((style) => {
@@ -291,15 +301,24 @@ export class DocxWriter {
         const based = style.basedOn ? `<w:basedOn w:val="${escapeXml(style.basedOn)}"/>` : "";
         const pPr = paragraphPropertiesXml(style.paragraphAttrs ?? {}, true);
         const rPr = this.runs.propertiesOf(style.runStyle);
+        const tblMar = tableInsetsXml("w:tblCellMar", style.tableCellMargin);
+        const tblBorders = tableBordersXml(style.tableBorders, "w:tblBorders");
+        const tblPr = tblMar || tblBorders ? `<w:tblPr>${tblMar}${tblBorders}</w:tblPr>` : "";
         const name = escapeXml(style.name || style.styleId);
-        return `<w:style w:type="${type}" w:styleId="${escapeXml(style.styleId)}"><w:name w:val="${name}"/>${based}${pPr}${rPr}</w:style>`;
+        const isDefault =
+          (style.type === "table" ? style.styleId === sheet.defaultTableStyleId : style.styleId === defaultId)
+            ? ' w:default="1"'
+            : "";
+        return `<w:style w:type="${type}"${isDefault} w:styleId="${escapeXml(style.styleId)}"><w:name w:val="${name}"/>${based}${pPr}${rPr}${tblPr}</w:style>`;
       })
       .join("");
+    const defaultRun = runDefaults
+      || '<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="宋体"/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr>';
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="${W_NS}">
   <w:docDefaults>
-    <w:rPrDefault><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="宋体"/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr></w:rPrDefault>
-    <w:pPrDefault/>
+    <w:rPrDefault>${defaultRun}</w:rPrDefault>
+    <w:pPrDefault>${paragraphDefaults}</w:pPrDefault>
   </w:docDefaults>
   ${body}
 </w:styles>`;

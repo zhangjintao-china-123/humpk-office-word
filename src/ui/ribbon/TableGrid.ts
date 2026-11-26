@@ -10,7 +10,7 @@ export function tableGridMarkup(): string {
     }
   }
   return `<div class="ho-word-drop">
-      <button type="button" class="ho-word-big" data-drop-toggle title="插入表格">${RibbonIcons.table}<span>表格</span></button>
+      <button type="button" class="ho-word-big" data-drop-toggle title="插入表格">${RibbonIcons.table}<span>表格${RibbonIcons.chevronDown}</span></button>
       <div class="ho-word-outline-menu ho-word-table-menu" data-keep-drop>
         <div class="ho-word-table-size" data-table-size>插入表格</div>
         <div class="ho-word-table-grid">${cells.join("")}</div>

@@ -1,4 +1,6 @@
 import { Drawing } from "../model/inline/Drawing";
+import type { AsianLayoutSpec } from "../model/inline/AsianLayout";
+import type { EnclosedSpec } from "../model/inline/EnclosedChar";
 import type { ParagraphAttrs } from "../model/style/ParagraphAttrs";
 import type { RunStyle } from "../model/style/RunStyle";
 import type { TableBorders } from "../model/table/Table";
@@ -15,6 +17,8 @@ export interface ClipboardRun {
   text: string;
   style: RunStyle;
   drawing?: ClipboardDrawing;
+  enclosed?: EnclosedSpec;
+  asianLayout?: AsianLayoutSpec;
 }
 
 export interface ClipboardParagraph {
@@ -40,11 +44,16 @@ export interface ClipboardTable {
   rows: ClipboardTableRow[];
 }
 
+export type ClipboardBlock =
+  | { type: "paragraph"; paragraph: ClipboardParagraph }
+  | { type: "table"; table: ClipboardTable };
+
 export class ClipboardPayload {
   constructor(
     readonly text: string,
     readonly paragraphs: ClipboardParagraph[],
     readonly table?: ClipboardTable,
+    readonly blocks?: ClipboardBlock[],
   ) {}
 
   static plain(text: string): ClipboardPayload {
@@ -60,7 +69,12 @@ export class ClipboardPayload {
   }
 
   get empty(): boolean {
-    return !this.text && !this.table && !this.paragraphs.some((paragraph) => paragraph.runs.some((run) => run.drawing));
+    return (
+      !this.text &&
+      !this.table &&
+      !this.blocks?.length &&
+      !this.paragraphs.some((paragraph) => paragraph.runs.some((run) => run.drawing))
+    );
   }
 }
 

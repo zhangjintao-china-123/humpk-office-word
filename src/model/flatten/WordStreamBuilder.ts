@@ -68,6 +68,13 @@ export class WordStreamBuilder {
         word.block = block;
         word.paragraph = paragraph;
         document.words.append(word);
+      } else if ((block.enclosed || block.asianLayout) && block.text) {
+        const word = new Word();
+        word.char = block.text;
+        word.intChar = block.text.codePointAt(0) ?? block.text.charCodeAt(0);
+        word.block = block;
+        word.paragraph = paragraph;
+        document.words.append(word);
       } else {
         for (const char of block.text) {
           document.words.append(this.createTextWord(char, block, paragraph));

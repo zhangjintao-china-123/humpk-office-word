@@ -217,6 +217,87 @@ describe("DocxWriter", () => {
     expect(readSection?.linePitchPx).toBe(20);
     expect(back.paragraphs.toArray()[3].table?.rows[0].cells[0].fill).toBe("#FFEB9C");
   });
+
+  it("带圈字符（○□△◇ 与缩小/增大模式）以及字符底纹能写回再读回", async () => {
+    const document = new Document();
+    const p = new Paragraph(1);
+
+    const b1 = new Block();
+    b1.text = "字";
+    b1.style = { fontSizeHalfPoint: 24, bold: true };
+    b1.enclosed = { shape: "circle", mode: "shrink" };
+
+    const b2 = new Block();
+    b2.text = "12";
+    b2.style = { fontSizeHalfPoint: 24, color: "#C00000" };
+    b2.enclosed = { shape: "square", mode: "enlarge" };
+
+    const b3 = new Block();
+    b3.text = "底纹";
+    b3.style = { backgroundColor: "#D9D9D9" };
+
+    p.addBlock(b1);
+    p.addBlock(b2);
+    p.addBlock(b3);
+    document.addParagraph(p);
+
+    const data = await new DocxWriter().write(document);
+    const back = await new DocxReader().read(data);
+    const blocks = back.paragraphs.toArray()[0].blocks;
+    expect(blocks[0].text).toBe("字");
+    expect(blocks[0].enclosed).toEqual({ shape: "circle", mode: "shrink", symbol: "○" });
+    expect(blocks[0].style.bold).toBe(true);
+
+    expect(blocks[1].text).toBe("12");
+    expect(blocks[1].enclosed).toEqual({ shape: "square", mode: "enlarge", symbol: "□" });
+    expect(blocks[1].style.color).toBe("#C00000");
+
+    expect(blocks[2].text).toBe("底纹");
+    expect(blocks[2].style.backgroundColor).toBe("#D9D9D9");
+  });
+
+  it("中文版式（纵横混排/合并字符/双行合一/调整宽度）及段落底纹与段落边框能写回再读回", async () => {
+    const document = new Document();
+    const p = new Paragraph(1);
+    p.attrs.shading = { val: "clear", color: "auto", fill: "EDEDED" };
+    p.attrs.borderTop = { val: "single", sz: "12", color: "2B579A", space: "4" };
+    p.attrs.borderBottom = { val: "single", sz: "12", color: "2B579A", space: "4" };
+
+    const r1 = new Block();
+    r1.text = "2026";
+    r1.asianLayout = { kind: "tatechuyoko", compress: true };
+
+    const r2 = new Block();
+    r2.text = "合并";
+    r2.asianLayout = { kind: "combine" };
+
+    const r3 = new Block();
+    r3.text = "双行合一";
+    r3.asianLayout = { kind: "twoInOne", brackets: "round" };
+
+    const r4 = new Block();
+    r4.text = "宽度";
+    r4.asianLayout = { kind: "fitWidth", fitWidthPx: 64 };
+
+    p.addBlock(r1);
+    p.addBlock(r2);
+    p.addBlock(r3);
+    p.addBlock(r4);
+    document.addParagraph(p);
+
+    const data = await new DocxWriter().write(document);
+    const back = await new DocxReader().read(data);
+    const pBack = back.paragraphs.toArray()[0];
+    expect(pBack.attrs.shading?.fill).toBe("EDEDED");
+    expect(pBack.attrs.borderTop?.color).toBe("2B579A");
+    expect(pBack.attrs.borderBottom?.sz).toBe("12");
+
+    expect(pBack.blocks[0].asianLayout).toEqual({ kind: "tatechuyoko", compress: true });
+    expect(pBack.blocks[1].asianLayout).toEqual({ kind: "combine" });
+    expect(pBack.blocks[2].asianLayout).toEqual({ kind: "twoInOne", brackets: "round" });
+    expect(pBack.blocks[3].asianLayout?.kind).toBe("fitWidth");
+    expect(pBack.blocks[3].asianLayout?.fitWidthPx).toBeCloseTo(64, 0);
+  });
 });
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";

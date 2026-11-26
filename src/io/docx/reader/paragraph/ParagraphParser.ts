@@ -1,6 +1,7 @@
 import { Block } from "../../../../model/block/Block";
 import { Paragraph } from "../../../../model/block/Paragraph";
 import { Drawing } from "../../../../model/inline/Drawing";
+import { enclosedShapeFromSymbol, parseEnclosedInstruction, type ParsedEnclosedField } from "../../../../model/inline/EnclosedChar";
 import { parseMath, serializeElement } from "../math/MathParser";
 import { mergeRunStyle } from "../../../../model/style/RunStyle";
 import { fieldKind, type FieldKind } from "../../../../model/document/PageLabel";
@@ -52,6 +53,19 @@ export class ParagraphParser {
         paragraph.addBlock(mathBlock(source.node));
         continue;
       }
+      if (source.enclosed) {
+        const block = this.runs.parse(source.node, ctx, paragraph.inheritedRunStyle);
+        block.text = source.enclosed.text;
+        block.enclosed = source.enclosed.spec;
+        if (source.enclosed.baseStyle) {
+          block.style = mergeRunStyle(block.style, source.enclosed.baseStyle);
+        }
+        if (source.commentIds?.length) {
+          block.commentIds = source.commentIds;
+        }
+        paragraph.addBlock(block);
+        continue;
+      }
       const block = this.runs.parse(source.node, ctx, paragraph.inheritedRunStyle);
       if (source.field) {
         block.field = source.field;
@@ -91,8 +105,10 @@ export class ParagraphParser {
     const runs: RunSource[] = [];
     const openComments: string[] = [];
     let instruction = "";
+    let instrRuns: { node: Element; text: string }[] = [];
     let active: FieldKind | undefined;
     let inResult = false;
+    let sawResult = false;
     for (const child of Array.from(pNode.children)) {
       if (matchesName(child, "m:oMath") || matchesName(child, "m:oMathPara")) {
         runs.push({ node: child, math: true });
@@ -121,12 +137,16 @@ export class ParagraphParser {
         const marker = fieldMarker(child);
         if (marker === "begin") {
           instruction = "";
+          instrRuns = [];
           active = undefined;
           inResult = false;
+          sawResult = false;
           continue;
         }
         if (marker === "instr") {
-          instruction += textOf(first(child, "w:instrText"));
+          const text = textOf(first(child, "w:instrText"));
+          instruction += text;
+          instrRuns.push({ node: child, text });
           active = fieldKind(instruction) ?? active;
           continue;
         }
@@ -136,10 +156,25 @@ export class ParagraphParser {
           continue;
         }
         if (marker === "end") {
+          if (!sawResult) {
+            const enclosed = this.enclosedFromInstr(instruction, instrRuns);
+            if (enclosed) {
+              runs.push({
+                node: enclosed.styleNode,
+                commentIds: openComments.slice(),
+                enclosed: enclosed.parsed,
+              });
+            }
+          }
           inResult = false;
+          sawResult = false;
           active = undefined;
           instruction = "";
+          instrRuns = [];
           continue;
+        }
+        if (inResult) {
+          sawResult = true;
         }
         runs.push({ node: child, commentIds: openComments.slice(), ...markedRun(inResult, active, instruction) });
         continue;
@@ -162,13 +197,52 @@ export class ParagraphParser {
       }
       if (matchesName(child, "w:fldSimple")) {
         const instr = attr(child, "w:instr") ?? "";
+        const nested = children(child, "w:r");
+        const enclosed = parseEnclosedInstruction(instr);
+        if (enclosed && !nested.length) {
+          runs.push({ node: child, commentIds: openComments.slice(), enclosed });
+          continue;
+        }
         const marked = markedRun(true, fieldKind(instr), instr);
-        for (const nested of children(child, "w:r")) {
-          runs.push({ node: nested, ...marked });
+        for (const run of nested) {
+          runs.push({ node: run, ...marked });
         }
       }
     }
     return runs;
+  }
+
+  private enclosedFromInstr(
+    instruction: string,
+    instrRuns: { node: Element; text: string }[],
+  ): { parsed: ParsedEnclosedField & { baseStyle?: ReturnType<RunPropertiesParser["parse"]> }; styleNode: Element } | null {
+    if (!instrRuns.length) {
+      return null;
+    }
+    const symbolEntry = instrRuns.find((entry) =>
+      [...entry.text].some((ch) => enclosedShapeFromSymbol(ch) != null),
+    );
+    const textEntry = instrRuns.find(
+      (entry) => entry !== symbolEntry && entry.text.trim() !== ")" && entry.text.trim() !== "",
+    );
+    const symbolStyle = symbolEntry ? this.runProperties.parse(first(symbolEntry.node, "w:rPr")) : undefined;
+    const textStyle = textEntry ? this.runProperties.parse(first(textEntry.node, "w:rPr")) : undefined;
+    const symbolPt = symbolStyle?.fontSizeHalfPoint != null ? symbolStyle.fontSizeHalfPoint / 2 : undefined;
+    const textPt = textStyle?.fontSizeHalfPoint != null ? textStyle.fontSizeHalfPoint / 2 : undefined;
+    const parsed = parseEnclosedInstruction(instruction, symbolPt, textPt);
+    if (!parsed) {
+      return null;
+    }
+    const baseStyle =
+      parsed.spec.mode === "shrink" &&
+      symbolStyle?.fontSizeHalfPoint != null &&
+      (textStyle?.fontSizeHalfPoint == null || symbolStyle.fontSizeHalfPoint > textStyle.fontSizeHalfPoint)
+        ? { fontSizePx: symbolStyle.fontSizePx, fontSizeHalfPoint: symbolStyle.fontSizeHalfPoint }
+        : undefined;
+    return {
+      parsed: { ...parsed, baseStyle },
+      styleNode: textEntry?.node ?? symbolEntry?.node ?? instrRuns[0].node,
+    };
   }
 
   private probe(pNode: Element): TocHint & { bookmarks: string[] } {
@@ -223,6 +297,7 @@ interface RunSource {
   revision?: RevisionMark;
   commentIds?: string[];
   math?: boolean;
+  enclosed?: ParsedEnclosedField & { baseStyle?: ReturnType<RunPropertiesParser["parse"]> };
 }
 
 function mathBlock(node: Element): Block {

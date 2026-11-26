@@ -48,6 +48,11 @@ export class RunPropertiesParser {
     if (italic) {
       style.italic = attr(italic, "w:val") !== "0";
     }
+    const smallCaps = first(rPr, "w:smallCaps");
+    if (smallCaps) {
+      const value = attr(smallCaps, "w:val");
+      style.smallCaps = value !== "0" && value !== "off" && value !== "false";
+    }
 
     const underline = attr(first(rPr, "w:u"), "w:val");
     if (underline) {

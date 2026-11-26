@@ -80,6 +80,7 @@ export class Table {
   rows: TableRow[] = [];
   columnWidths: number[] = [];
   rowHeights: number[] = [];
+  styleId?: string;
   borders?: TableBorders;
   anchorType?: "relative";
   anchorSet?: TableAnchor;

@@ -2,17 +2,19 @@ import { Block } from "../model/block/Block";
 import { Paragraph } from "../model/block/Paragraph";
 import type { Document } from "../model/document/Document";
 import type { Drawing } from "../model/inline/Drawing";
+import type { AsianLayoutSpec } from "../model/inline/AsianLayout";
+import type { EnclosedSpec } from "../model/inline/EnclosedChar";
 import type { Table } from "../model/table/Table";
 import { Word } from "../model/inline/Word";
 import type { LinkedNode } from "../model/list/LinkedList";
 import { CaretPos } from "../selection/CaretPos";
-import type { SelRange } from "../selection/SelRange";
+import { SelRange } from "../selection/SelRange";
 import type { StoryRef } from "../selection/StoryRef";
 import type { ParagraphAttrs } from "../model/style/ParagraphAttrs";
 import type { TextLink } from "../model/field/TextLink";
 import { mergeRunStyle, type RunStyle } from "../model/style/RunStyle";
 import { EditImpact, type EditStructure } from "./EditImpact";
-import type { MutationPatch, RemovedParagraph, RemovedWord } from "./MutationPatch";
+import type { CreatedParagraph, MutationPatch, RemovedParagraph, RemovedWord } from "./MutationPatch";
 
 export class Mutator {
   insert(document: Document, story: StoryRef, pos: CaretPos, text: string, runStyle?: RunStyle): MutationPatch {
@@ -192,6 +194,10 @@ export class Mutator {
 
     for (const node of nodes) {
       const paragraph = node.data.paragraph;
+      if (node.data.isEnterChar() && paragraph?.coverTemplate && !paragraph.getNextParagraph()?.coverTemplate) {
+        // 保留封面与正文的分界，避免正文文字并入封面后被一起删除。
+        continue;
+      }
       if (paragraph) {
         dirty.add(paragraph);
       }
@@ -222,39 +228,68 @@ export class Mutator {
       }
     }
 
+    const created: CreatedParagraph[] = [];
+    const inserted: LinkedNode<Word>[] = [];
+    if (!document.paragraphs.head) {
+      const empty = new Paragraph(document.nextParagraphId());
+      empty.changed = true;
+      empty.addBlock(new Block());
+      document.addParagraph(empty);
+      const enter = this.createText("\n", empty.blocks[0], empty);
+      const enterNode = document.words.append(enter);
+      created.push({ paragraph: empty, after: null, nodes: [enterNode] });
+      inserted.push(enterNode);
+      dirty.add(empty);
+      caret = new CaretPos(story, enterNode, false);
+    }
+
     this.syncAll(document, dirty);
     return {
       story,
       impact: this.impact(story, dirty, structure),
       caret,
       originalCaret: original,
-      inserted: [],
+      inserted,
       removed,
-      createdParagraphs: [],
+      createdParagraphs: created,
       removedParagraphs: removedParas,
     };
   }
 
-  applyRunStyle(document: Document, range: SelRange, patch: Partial<RunStyle>): { node: LinkedNode<Word>; block: Block | null }[] {
+  applyRunStyle(
+    document: Document,
+    range: SelRange,
+    patch: Partial<RunStyle> | ((word: Word) => RunStyle | undefined),
+  ): { node: LinkedNode<Word>; block: Block | null }[] {
     const nodes = this.nodesIn(range.normalized());
     const dirty = new Set<Paragraph>();
     const snapshots: { node: LinkedNode<Word>; block: Block | null }[] = [];
     let lastKey = "";
+    let lastParagraph: Paragraph | null = null;
     let lastBlock: Block | null = null;
     for (const node of nodes) {
-      if (node.data.kind !== "text" || node.data.isEnterChar()) {
+      const word = node.data;
+      const emptyParagraph = word.isEnterChar() && node.pre?.data.paragraph !== word.paragraph;
+      if (word.kind !== "text" || (word.isEnterChar() && !(typeof patch === "function" && emptyParagraph))) {
+        lastBlock = null;
         continue;
       }
-      snapshots.push({ node, block: node.data.block });
-      const next = mergeRunStyle(node.data.block?.style, patch);
-      const key = `${JSON.stringify(next)}|${linkKey(node.data.block)}|${reviewKey(node.data.block)}|${node.data.block?.field ?? ""}|${node.data.block?.fieldInstr ?? ""}`;
-      if (key !== lastKey || !lastBlock) {
-        lastBlock = copyRun(node.data.block, next);
-        lastKey = key;
+      const next = typeof patch === "function" ? patch(word) : mergeRunStyle(word.block?.style, patch);
+      if (!next) {
+        lastBlock = null;
+        continue;
       }
-      node.data.block = lastBlock;
-      if (node.data.paragraph) {
-        dirty.add(node.data.paragraph);
+      const source = word.block;
+      snapshots.push({ node, block: source });
+      const key = `${JSON.stringify(next)}|${linkKey(source)}|${reviewKey(source)}|${source?.field ?? ""}|${source?.fieldInstr ?? ""}|${JSON.stringify(source?.enclosed ?? null)}|${JSON.stringify(source?.asianLayout ?? null)}`;
+      if (key !== lastKey || !lastBlock || word.paragraph !== lastParagraph) {
+        lastBlock = copyRun(emptyParagraph ? null : source, next);
+        lastKey = key;
+        lastParagraph = word.paragraph;
+      }
+      word.block = lastBlock;
+      if (word.paragraph) {
+        dirty.add(word.paragraph);
       }
     }
     this.syncAll(document, dirty);
@@ -358,6 +393,20 @@ export class Mutator {
     return snapshots.map((item) => item.paragraph);
   }
 
+  replaceWordChars(document: Document, updates: { node: LinkedNode<Word>; char: string }[]): Paragraph[] {
+    const dirty = new Set<Paragraph>();
+    for (const item of updates) {
+      item.node.data.char = item.char;
+      item.node.data.intChar = item.char.codePointAt(0) ?? item.char.charCodeAt(0);
+      if (item.node.data.paragraph) {
+        item.node.data.paragraph.changed = true;
+        dirty.add(item.node.data.paragraph);
+      }
+    }
+    this.syncAll(document, dirty);
+    return [...dirty];
+  }
+
   private insertChar(document: Document, pos: CaretPos, char: string, runStyle?: RunStyle): LinkedNode<Word> | null {
     const paragraph = pos.node?.data.paragraph;
     if (!paragraph || paragraph.isTable) {
@@ -407,6 +456,7 @@ export class Mutator {
     const created = new Paragraph(document.nextParagraphId());
     created.changed = true;
     created.attrs = { ...paragraph.attrs };
+    created.coverTemplate = paragraph.coverTemplate;
     created.inheritedRunStyle = paragraph.inheritedRunStyle
       ? { ...paragraph.inheritedRunStyle }
       : undefined;
@@ -432,6 +482,7 @@ export class Mutator {
     const tablePara = new Paragraph(document.nextParagraphId());
     tablePara.isTable = true;
     tablePara.table = table;
+    tablePara.coverTemplate = pos.node?.data.paragraph?.coverTemplate;
     tablePara.changed = true;
 
     const word = new Word();
@@ -466,6 +517,7 @@ export class Mutator {
     if (!next || next.isTable) {
       const empty = new Paragraph(document.nextParagraphId());
       empty.changed = true;
+      empty.coverTemplate = tablePara.coverTemplate;
       empty.addBlock(new Block());
       document.insertParagraphAfter(tablePara, empty);
       const enter = this.createText("\n", empty.blocks[0], empty);
@@ -533,7 +585,7 @@ export class Mutator {
 
   private absorbParagraph(document: Document, from: Paragraph, into?: Paragraph): void {
     const target = into ?? from.getPreParagraph();
-    if (!target || target.isTable) {
+    if (from.isTable || !target || target.isTable) {
       document.removeParagraph(from);
       return;
     }
@@ -670,6 +722,104 @@ export class Mutator {
     };
   }
 
+  insertEnclosed(
+    document: Document,
+    story: StoryRef,
+    pos: CaretPos,
+    text: string,
+    runStyle: RunStyle | undefined,
+    enclosed: EnclosedSpec,
+  ): MutationPatch {
+    const original = pos;
+    const caret = this.prepare(document, story, pos);
+    const paragraph = caret.node?.data.paragraph;
+    if (!caret.node || !paragraph || paragraph.isTable || caret.node.data.kind === "table" || !text) {
+      return this.emptyPatch(story, original);
+    }
+    const inherited = this.inheritBlock(caret, paragraph);
+    const block = this.blockWithStyle(isAtomicBlock(inherited) ? this.seedBlock(caret, paragraph) : inherited, runStyle);
+    block.enclosed = { ...enclosed };
+    block.text = text;
+    const word = new Word();
+    word.kind = "text";
+    word.char = text;
+    word.intChar = text.codePointAt(0) ?? text.charCodeAt(0);
+    word.block = block;
+    word.paragraph = paragraph;
+    paragraph.changed = true;
+    const node = caret.after
+      ? document.words.insertAfter(caret.node, word)
+      : document.words.insertBefore(caret.node, word);
+    const after: LinkedNode<Word>[] = [];
+    let current = node.next;
+    while (current && current.data.paragraph === paragraph) {
+      after.push(current);
+      current = current.next;
+    }
+    this.cloneBlocks(after);
+    const dirty = new Set<Paragraph>([paragraph]);
+    this.syncAll(document, dirty);
+    return {
+      story,
+      impact: this.impact(story, dirty, "none"),
+      caret: new CaretPos(story, node, true),
+      originalCaret: original,
+      inserted: [node],
+      removed: [],
+      createdParagraphs: [],
+      removedParagraphs: [],
+    };
+  }
+
+  insertAsianLayout(
+    document: Document,
+    story: StoryRef,
+    pos: CaretPos,
+    text: string,
+    runStyle: RunStyle | undefined,
+    asianLayout: AsianLayoutSpec,
+  ): MutationPatch {
+    const original = pos;
+    const caret = this.prepare(document, story, pos);
+    const paragraph = caret.node?.data.paragraph;
+    if (!caret.node || !paragraph || paragraph.isTable || caret.node.data.kind === "table" || !text) {
+      return this.emptyPatch(story, original);
+    }
+    const inherited = this.inheritBlock(caret, paragraph);
+    const block = this.blockWithStyle(isAtomicBlock(inherited) ? this.seedBlock(caret, paragraph) : inherited, runStyle);
+    block.asianLayout = { ...asianLayout };
+    block.text = text;
+    const word = new Word();
+    word.kind = "text";
+    word.char = text;
+    word.intChar = text.codePointAt(0) ?? text.charCodeAt(0);
+    word.block = block;
+    word.paragraph = paragraph;
+    paragraph.changed = true;
+    const node = caret.after
+      ? document.words.insertAfter(caret.node, word)
+      : document.words.insertBefore(caret.node, word);
+    const after: LinkedNode<Word>[] = [];
+    let current = node.next;
+    while (current && current.data.paragraph === paragraph) {
+      after.push(current);
+      current = current.next;
+    }
+    this.cloneBlocks(after);
+    const dirty = new Set<Paragraph>([paragraph]);
+    this.syncAll(document, dirty);
+    return {
+      story,
+      impact: this.impact(story, dirty, "none"),
+      caret: new CaretPos(story, node, true),
+      originalCaret: original,
+      inserted: [node],
+      removed: [],
+      createdParagraphs: [],
+      removedParagraphs: [],
+    };
+  }
+
   insertPageBreak(document: Document, story: StoryRef, pos: CaretPos): MutationPatch {
     const original = pos;
     const caret = this.prepare(document, story, pos);
@@ -770,10 +920,15 @@ export class Mutator {
     }
     const order: Block[] = [];
     const texts = new Map<Block, string>();
+    let previousSource: Block | null = null;
+    let activeRun: Block | null = null;
     for (const node of nodes) {
       const word = node.data;
       if (word.isEnterChar()) {
         continue;
+      }
+      if (word.kind !== "text") {
+        activeRun = null;
       }
       if (word.kind === "page") {
         const block = word.block ?? new Block();
@@ -794,34 +949,35 @@ export class Mutator {
       if (word.kind !== "text") {
         continue;
       }
-      if (!word.block) {
-        word.block = order.at(-1) ?? new Block();
+      const source: Block = word.block ?? activeRun ?? new Block();
+      if (source !== previousSource || !activeRun) {
+        activeRun = texts.has(source) ? Object.assign(new Block(), source) : source;
+        previousSource = source;
+        texts.set(activeRun, "");
+        order.push(activeRun);
       }
-      if (!texts.has(word.block)) {
-        texts.set(word.block, "");
-        order.push(word.block);
-      }
-      texts.set(word.block, `${texts.get(word.block)}${word.char}`);
+      word.block = activeRun;
+      texts.set(activeRun, `${texts.get(activeRun)}${word.char}`);
     }
     for (const block of order) {
       if (texts.has(block)) {
         block.text = texts.get(block) ?? "";
       }
     }
+    const enter = nodes.find((node) => node.data.isEnterChar());
     if (!order.length) {
-      const empty = paragraph.blocks[0] ?? new Block();
-      if (!this.hasRunStyle(empty.style)) {
-        const styled = nodes.find((node) => node.data.block)?.data.block;
-        empty.style = this.styleFrom(paragraph, styled);
+      const source = enter?.data.block ?? paragraph.blocks[0];
+      let empty = source && !isAtomicBlock(source) ? source : new Block();
+      if (!this.hasRunStyle(empty.style) && paragraph.inheritedRunStyle) {
+        empty = copyRun(empty, this.styleFrom(paragraph, empty));
       }
       empty.text = "";
       paragraph.blocks = this.keepAnchors(paragraph.blocks, [empty]);
     } else {
       paragraph.blocks = this.keepAnchors(paragraph.blocks, order);
     }
-    const enter = nodes.find((node) => node.data.isEnterChar());
     if (enter) {
-      enter.data.block = paragraph.blocks.at(-1) ?? null;
+      enter.data.block = order.at(-1) ?? paragraph.blocks.find((block) => !isAtomicBlock(block)) ?? null;
     }
   }
 
@@ -866,16 +1022,36 @@ export class Mutator {
     return unique;
   }
 
+  paragraphRanges(range: SelRange): SelRange[] {
+    if (range.collapsed()) {
+      const paragraph = range.start.node?.data.paragraph;
+      return paragraph && !paragraph.isTable ? [range] : [];
+    }
+    const spans = new Map<Paragraph, { first: LinkedNode<Word>; last: LinkedNode<Word> }>();
+    for (const node of this.nodesIn(range.normalized())) {
+      const paragraph = node.data.paragraph;
+      if (!paragraph || paragraph.isTable) {
+        continue;
+      }
+      const span = spans.get(paragraph);
+      if (span) {
+        span.last = node;
+      } else {
+        spans.set(paragraph, { first: node, last: node });
+      }
+    }
+    return [...spans.values()].map(({ first, last }) => new SelRange(
+      range.story, new CaretPos(range.story, first, false), new CaretPos(range.story, last, true),
+    ));
+  }
+
   private nodesIn(range: SelRange): LinkedNode<Word>[] {
     const from = range.start.after ? (range.start.node?.next ?? null) : range.start.node;
-    const to = range.end.after ? range.end.node : (range.end.node?.pre ?? null);
+    const stop = range.end.after ? range.end.node?.next : range.end.node;
     const nodes: LinkedNode<Word>[] = [];
     let node = from;
-    while (node) {
+    while (node && node !== stop) {
       nodes.push(node);
-      if (node === to) {
-        break;
-      }
       node = node.next;
     }
     return nodes;
@@ -925,7 +1101,14 @@ export class Mutator {
 }
 
 function isAtomicBlock(block: Block): boolean {
-  return block.charType === "page" || block.drawing != null || block.math != null || block.mathXml != null;
+  return (
+    block.charType === "page" ||
+    block.drawing != null ||
+    block.math != null ||
+    block.mathXml != null ||
+    block.enclosed != null ||
+    block.asianLayout != null
+  );
 }
 
 function copyRun(source: Block | null | undefined, style: RunStyle): Block {
@@ -939,6 +1122,8 @@ function copyRun(source: Block | null | undefined, style: RunStyle): Block {
   block.commentIds = source?.commentIds?.slice();
   block.commentRef = source?.commentRef;
   block.footnoteId = source?.footnoteId;
+  block.enclosed = source?.enclosed ? { ...source.enclosed } : undefined;
+  block.asianLayout = source?.asianLayout ? { ...source.asianLayout } : undefined;
   return block;
 }
 

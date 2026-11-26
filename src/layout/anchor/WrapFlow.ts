@@ -107,12 +107,17 @@ export class WrapFlow {
     const lines: Line[] = [];
     let index = 0;
     let y = 0;
+    let passedCover = false;
     let guard = 0;
     const limit = Math.max(200, tokens.length * 40);
     while (index < tokens.length && guard < limit) {
       guard += 1;
       const token = tokens[index];
       const paragraph = token.start.data.paragraph;
+      if (!passedCover && Number.isFinite(pageH) && !paragraph?.coverTemplate && lines.at(-1)?.paragraph?.coverTemplate) {
+        y = this.skipTo(y, pageH);
+        passedCover = true;
+      }
       const isText = token.kind !== "page" && token.kind !== "table";
       const opens = isText && this.opensParagraph(lines, token);
       if (opens) {

@@ -280,4 +280,148 @@ describe("剪贴板动作", () => {
     history.undo();
     expect(join(cell.document)).toBe("old\n");
   });
+
+  it("表外文本与表格同时复制/剪切粘贴后保留表外文本及顺序，且支持 undo/redo", async () => {
+    const buildMixedDoc = (): Document => {
+      const document = new Document();
+      const before = new Paragraph(1);
+      const beforeBlock = new Block();
+      beforeBlock.text = "表前文本";
+      beforeBlock.style = { bold: true };
+      before.addBlock(beforeBlock);
+
+      const table = new Table();
+      table.columns = [0, 1].map(() => {
+        const col = new TableColumn();
+        col.width = 80;
+        return col;
+      });
+      const row = new TableRow();
+      row.cells.push(makeCell("A1", 0, 0), makeCell("B1", 0, 1));
+      table.rows.push(row);
+      const tablePara = new Paragraph(2);
+      tablePara.isTable = true;
+      tablePara.table = table;
+
+      const after = new Paragraph(3);
+      const afterBlock = new Block();
+      afterBlock.text = "表后文本";
+      after.addBlock(afterBlock);
+
+      document.addParagraph(before);
+      document.addParagraph(tablePara);
+      document.addParagraph(after);
+      new WordStreamBuilder().buildStoryOnly(document);
+      return document;
+    };
+
+    const source = buildMixedDoc();
+    const selection = new Selection();
+    selection.setFlow(new CaretPos(body, source.words.head, false), new CaretPos(body, source.words.tail, false));
+    const store = { text: "", html: "" };
+    const clipboard = new Clipboard({
+      writeText: async (text) => {
+        store.text = text;
+      },
+      readText: async () => store.text,
+      writeHtml: async (html, text) => {
+        store.html = html;
+        store.text = text;
+      },
+      readHtml: async () => store.html,
+    });
+    const payload = new SelectionFragment().extract(selection, undefined, { document: source, story: body });
+    await clipboard.write(payload);
+
+    // 剪切原选区
+    const cutCtx: EditContext = {
+      ...context(selection, (story) => (story.slot === "body" ? source : story.slot === "cell" ? story.cell.document : null)),
+      flowOwner: () => ({ document: source, story: body }),
+    };
+    const cutHistory = new History();
+    cutHistory.do(new DeleteCommand(cutCtx, "backward"));
+    expect(source.paragraphs.toArray().some((p) => p.isTable)).toBe(false);
+    expect(join(source)).toBe("\n");
+    cutHistory.undo();
+    expect(source.paragraphs.toArray().map((p) => (p.isTable ? "[T]" : p.getFullText()))).toEqual([
+      "表前文本",
+      "[T]",
+      "表后文本",
+    ]);
+
+    // 粘贴到另一文档段中 ("ab|cd")
+    const target = doc("abcd");
+    const dest = new Selection();
+    const cNode = target.words.head!.next!.next!;
+    dest.collapse(new CaretPos(body, cNode, false));
+    const pasteCtx = context(dest, (story) => (story.slot === "body" ? target : story.slot === "cell" ? story.cell.document : null));
+    const history = new History();
+    const read = await clipboard.read();
+    history.do(new InsertCommand(pasteCtx, read));
+
+    const summary = (d: Document): string[] =>
+      d.paragraphs.toArray().map((p) =>
+        p.isTable
+          ? `[T:${p.table?.rows.map((r) => r.cells.map((c) => c.document.paragraphText().join("")).join("|")).join(";")}]`
+          : p.getFullText(),
+      );
+
+    expect(summary(target)).toEqual(["ab表前文本", "[T:A1|B1]", "表后文本cd"]);
+    expect(target.paragraphs.head!.data.blocks[1]?.style?.bold).toBe(true);
+
+    history.undo();
+    expect(summary(target)).toEqual(["abcd"]);
+
+    history.redo();
+    expect(summary(target)).toEqual(["ab表前文本", "[T:A1|B1]", "表后文本cd"]);
+  });
+
+  it("多张表格与表间文本混排粘贴保留完整顺序", () => {
+    const makePayloadTable = (left: string, right: string) => ({
+      columnWidths: [80, 80],
+      rows: [
+        {
+          cells: [
+            { colSpan: 1, rowSpan: 1, paragraphs: [{ attrs: {}, runs: [{ text: left, style: {} }] }] },
+            { colSpan: 1, rowSpan: 1, paragraphs: [{ attrs: {}, runs: [{ text: right, style: {} }] }] },
+          ],
+        },
+      ],
+    });
+    const payload = new ClipboardPayload(
+      "前\nA\tB\n中\nC\tD\n后",
+      [
+        { attrs: {}, runs: [{ text: "前", style: {} }] },
+        { attrs: {}, runs: [{ text: "中", style: {} }] },
+        { attrs: {}, runs: [{ text: "后", style: {} }] },
+      ],
+      undefined,
+      [
+        { type: "paragraph", paragraph: { attrs: {}, runs: [{ text: "前", style: {} }] } },
+        { type: "table", table: makePayloadTable("A", "B") },
+        { type: "paragraph", paragraph: { attrs: {}, runs: [{ text: "中", style: {} }] } },
+        { type: "table", table: makePayloadTable("C", "D") },
+        { type: "paragraph", paragraph: { attrs: {}, runs: [{ text: "后", style: {} }] } },
+      ],
+    );
+
+    const target = doc("");
+    const dest = new Selection();
+    dest.collapse(new CaretPos(body, target.words.head, false));
+    const ctx = context(dest, () => target);
+    const history = new History();
+    history.do(new InsertCommand(ctx, payload));
+
+    const summary = target.paragraphs
+      .toArray()
+      .map((p) =>
+        p.isTable
+          ? `[T:${p.table?.rows[0].cells.map((c) => c.document.paragraphText().join("")).join("|")}]`
+          : p.getFullText(),
+      );
+    expect(summary).toEqual(["前", "[T:A|B]", "中", "[T:C|D]", "后"]);
+
+    history.undo();
+    expect(target.paragraphs.toArray().map((p) => p.getFullText())).toEqual([""]);
+  });
 });

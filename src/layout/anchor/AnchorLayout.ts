@@ -166,15 +166,32 @@ export class AnchorLayout {
   }
 
   private collect(document: Document): { drawing: Drawing; paragraph: Paragraph }[] {
-    const found: { drawing: Drawing; paragraph: Paragraph }[] = [];
+    const found: { drawing: Drawing; paragraph: Paragraph; order: number }[] = [];
+    let order = 0;
+    let maxZ = 0;
     document.paragraphs.each((node) => {
       for (const block of node.data.blocks) {
         if (block.drawing?.position === "anchor") {
-          found.push({ drawing: block.drawing, paragraph: node.data });
+          const z = block.drawing.anchorSet?.zIndex;
+          if (z != null && Number.isFinite(z)) {
+            maxZ = Math.max(maxZ, z);
+          }
+          found.push({ drawing: block.drawing, paragraph: node.data, order });
+          order += 1;
         }
       }
     });
-    return found;
+    found.sort((a, b) => {
+      const behindA = a.drawing.anchorSet?.behind ? 0 : 1;
+      const behindB = b.drawing.anchorSet?.behind ? 0 : 1;
+      if (behindA !== behindB) {
+        return behindA - behindB;
+      }
+      const zA = a.drawing.anchorSet?.zIndex ?? maxZ + 1 + a.order;
+      const zB = b.drawing.anchorSet?.zIndex ?? maxZ + 1 + b.order;
+      return zA - zB || a.order - b.order;
+    });
+    return found.map(({ drawing, paragraph }) => ({ drawing, paragraph }));
   }
 
   private pageMetrics(
@@ -211,7 +228,7 @@ export class AnchorLayout {
     const atChar = this.locateChar(paragraph, this.charIndex(paragraph, drawing));
     placed.x = this.resolveX(drawing, paragraph, constraints, atChar);
     const baseTop = origin ?? host?.top ?? 0;
-    placed.y = this.resolveY(drawing, baseTop, pageStart, pageH, constraints.contentHeight, atChar);
+    placed.y = this.resolveY(drawing, baseTop, pageStart, pageH, constraints.contentHeight, atChar, constraints);
     const set = drawing.anchorSet;
     placed.wrapLeft = placed.x - (set?.distLeft ?? 0);
     placed.wrapRight = placed.x + placed.width + (set?.distRight ?? 0);
@@ -262,17 +279,28 @@ export class AnchorLayout {
     const width = drawing.width;
     const contentWidth = constraints.contentWidth;
     const align = set?.leftAlign;
-    if (align === "center") {
-      return (contentWidth - width) / 2;
-    }
-    if (align === "right") {
-      return contentWidth - width;
-    }
-    if (align === "left") {
+    const from = set?.leftFrom;
+    if (align === "center" || align === "right" || align === "left") {
+      if (from === "page") {
+        const leftMargin = constraints.leftMargin ?? 0;
+        const pageWidth = constraints.pageWidth ?? contentWidth + leftMargin * 2;
+        if (align === "center") {
+          return (pageWidth - width) / 2 - leftMargin;
+        }
+        if (align === "right") {
+          return pageWidth - width - leftMargin;
+        }
+        return -leftMargin;
+      }
+      if (align === "center") {
+        return (contentWidth - width) / 2;
+      }
+      if (align === "right") {
+        return contentWidth - width;
+      }
       return 0;
     }
     const offset = set?.left ?? 0;
-    const from = set?.leftFrom;
     if (from === "character") {
       return (atChar?.x ?? 0) + offset;
     }
@@ -303,21 +331,34 @@ export class AnchorLayout {
     pageH: number,
     contentHeight: number,
     atChar: CharPoint | null,
+    constraints?: LayoutConstraints,
   ): number {
     const set = drawing.anchorSet;
     const height = drawing.height;
     const align = set?.topAlign;
-    if (align === "center") {
-      return pageStart + (pageH - height) / 2;
-    }
-    if (align === "bottom") {
-      return pageStart + contentHeight - height;
-    }
-    if (align === "top") {
+    const from = set?.topFrom;
+    if (align === "center" || align === "bottom" || align === "top") {
+      if (from === "page") {
+        const topMargin = constraints?.topMargin ?? 0;
+        const fullPageH =
+          constraints?.paginate === false || !Number.isFinite(contentHeight) ? pageH : (constraints?.pageHeight ?? pageH);
+        if (align === "center") {
+          return pageStart + (fullPageH - height) / 2 - topMargin;
+        }
+        if (align === "bottom") {
+          return pageStart + fullPageH - height - topMargin;
+        }
+        return pageStart - topMargin;
+      }
+      if (align === "center") {
+        return pageStart + (pageH - height) / 2;
+      }
+      if (align === "bottom") {
+        return pageStart + contentHeight - height;
+      }
       return pageStart;
     }
     const offset = set?.top ?? 0;
-    const from = set?.topFrom;
     if (from === "character" || from === "line") {
       return (atChar?.y ?? hostTop) + offset;
     }

@@ -33,6 +33,15 @@ let caption = "未命名文档";
 
 const ribbon = new Ribbon(ribbonHost, {
   applyFormat: (action) => workspace.applyFormat(action),
+  applyCase: (mode) => workspace.applyCase(mode),
+  applyEnclosed: (action) => workspace.applyEnclosed(action),
+  inspectEnclosed: () => workspace.inspectEnclosed(),
+  applyAsianLayout: (action) => workspace.applyAsianLayout(action),
+  inspectAsianLayout: (kind) => workspace.inspectAsianLayout(kind),
+  applySort: (options) => workspace.applySort(options),
+  inspectSort: () => workspace.inspectSort(),
+  toggleShowMarks: () => workspace.toggleShowMarks(),
+  applyShading: (color) => workspace.applyShading(color),
   applyOutline: (action) => workspace.applyOutline(action),
   applyTableBorder: (mode) => workspace.applyTableBorder(mode),
   setBorderPen: (pen) => workspace.setBorderPen(pen),
@@ -51,12 +60,21 @@ const ribbon = new Ribbon(ribbonHost, {
     void downloadDocx();
   },
   insertTable: (rows, cols) => workspace.insertTable(rows, cols),
+  insertCoverPage: (template) => workspace.insertCoverPage(template),
+  removeCoverPage: () => workspace.removeCoverPage(),
+  drawTextBox: (direction) => workspace.drawTextBox(direction),
   insertPageBreak: () => workspace.insertPageBreak(),
   insertBlankPage: () => workspace.insertBlankPage(),
   insertPicture: () => imageInput.click(),
   applyPictureWrap: (wrap) => workspace.applyPictureWrap(wrap),
   applyPicturePlace: (place) => workspace.applyPicturePlace(place),
   applyPictureSize: (width, height, lock) => workspace.applyPictureSize(width, height, lock),
+  applyTextBoxFormat: (change) => workspace.applyTextBoxFormat(change),
+  applyLayerOrder: (action) => workspace.applyLayerOrder(action),
+  applyAlign: (action, reference) => workspace.applyAlign(action, reference),
+  applyDistribute: (axis) => workspace.applyDistribute(axis),
+  applyRotate: (action) => workspace.applyRotate(action),
+  toggleSelectionPane: () => workspace.toggleSelectionPane(),
   editHeader: () => workspace.editHeader(),
   editFooter: () => workspace.editFooter(),
   insertTableRow: () => workspace.insertTableRow(),
@@ -87,6 +105,10 @@ const ribbon = new Ribbon(ribbonHost, {
   },
   paste: () => {
     void workspace.paste();
+  },
+  startFormatPainter: (locked) => workspace.startFormatPainter(locked),
+  cancelFormatPainter: () => {
+    workspace.cancelFormatPainter();
   },
   findNext: (query) => workspace.findNext(query),
   findPrev: (query) => workspace.findPrev(query),

@@ -1,5 +1,5 @@
 import type { Paragraph } from "../../../../model/block/Paragraph";
-import type { Table, TableBorder, TableBorders, TableCell, TableInsets, TableLength, TableRow } from "../../../../model/table/Table";
+import type { Table, TableBorders, TableCell, TableInsets, TableLength, TableRow } from "../../../../model/table/Table";
 import { pxToTwip } from "../../../../shared/units";
 import { escapeXml, hexColor } from "../../ooxml/XmlEscape";
 import type { ParagraphSerializer } from "../paragraph/ParagraphSerializer";
@@ -21,8 +21,9 @@ export class TableSerializer {
   serialize(table: Table): string {
     const widths = this.columnWidths(table);
     const total = widths.reduce((sum, width) => sum + width, 0);
-    const borders = this.bordersXml(table.borders, "w:tblBorders");
-    const tblPr = `<w:tblPr>${this.widthXml("w:tblW", table.width, total)}${this.alignXml(table)}${this.indentXml(table)}${this.insetsXml("w:tblCellMar", table.cellMargin)}${borders}</w:tblPr>`;
+    const style = table.styleId ? `<w:tblStyle w:val="${escapeXml(table.styleId)}"/>` : "";
+    const borders = tableBordersXml(table.borders, "w:tblBorders");
+    const tblPr = `<w:tblPr>${style}${this.widthXml("w:tblW", table.width, total)}${this.alignXml(table)}${this.indentXml(table)}${tableInsetsXml("w:tblCellMar", table.cellMargin)}${borders}</w:tblPr>`;
     const grid = widths.map((width) => `<w:gridCol w:w="${width}"/>`).join("");
     const rows = table.rows.map((_, index) => this.rowXml(table, index, widths)).join("");
     return `<w:tbl>${tblPr}<w:tblGrid>${grid}</w:tblGrid>${rows}</w:tbl>`;
@@ -82,11 +83,11 @@ export class TableSerializer {
     if (cell.vAlign && cell.vAlign !== "top") {
       parts.push(`<w:vAlign w:val="${escapeXml(cell.vAlign)}"/>`);
     }
-    const margin = this.insetsXml("w:tcMar", cell.margin);
+    const margin = tableInsetsXml("w:tcMar", cell.margin);
     if (margin) {
       parts.push(margin);
     }
-    const borders = this.bordersXml(cell.borders, "w:tcBorders");
+    const borders = tableBordersXml(cell.borders, "w:tcBorders");
     if (borders) {
       parts.push(borders);
     }
@@ -141,28 +142,6 @@ export class TableSerializer {
     return total;
   }
 
-  private bordersXml(borders: TableBorders | undefined, tag: "w:tblBorders" | "w:tcBorders"): string {
-    if (!borders) {
-      return "";
-    }
-    const parts: string[] = [];
-    for (const [side, name] of BORDER_TAGS) {
-      const border = borders[side];
-      const xml = border ? this.borderXml(name, border) : "";
-      if (xml) {
-        parts.push(xml);
-      }
-    }
-    return parts.length ? `<${tag}>${parts.join("")}</${tag}>` : "";
-  }
-
-  private borderXml(tag: string, border: TableBorder): string {
-    const type = border.type || "single";
-    const size = border.size || "4";
-    const color = hexColor(border.color) ?? "000000";
-    return `<${tag} w:val="${type}" w:sz="${size}" w:space="0" w:color="${color}"/>`;
-  }
-
   private rowProps(row: TableRow | undefined): string {
     if (!row) {
       return "";
@@ -204,15 +183,40 @@ export class TableSerializer {
     return `<${tag} w:w="${this.twip(length.value)}" w:type="dxa"/>`;
   }
 
-  private insetsXml(tag: string, insets: TableInsets | undefined): string {
-    if (!insets) {
-      return "";
-    }
-    const side = (name: string, px: number) => `<${name} w:w="${this.twip(px)}" w:type="dxa"/>`;
-    return `<${tag}>${side("w:top", insets.top)}${side("w:left", insets.left)}${side("w:bottom", insets.bottom)}${side("w:right", insets.right)}</${tag}>`;
-  }
-
   private twip(px: number): number {
     return Math.max(0, Math.round(px * 15));
   }
+}
+
+export function tableBordersXml(
+  borders: TableBorders | undefined,
+  tag: "w:tblBorders" | "w:tcBorders",
+): string {
+  if (!borders) {
+    return "";
+  }
+  const parts: string[] = [];
+  for (const [side, name] of BORDER_TAGS) {
+    const border = borders[side];
+    if (!border) {
+      continue;
+    }
+    const type = border.type || "single";
+    const size = border.size || "4";
+    const color = hexColor(border.color) ?? "000000";
+    parts.push(`<${name} w:val="${type}" w:sz="${size}" w:space="0" w:color="${color}"/>`);
+  }
+  return parts.length ? `<${tag}>${parts.join("")}</${tag}>` : "";
+}
+
+export function tableInsetsXml(
+  tag: "w:tblCellMar" | "w:tcMar",
+  insets: TableInsets | undefined,
+): string {
+  if (!insets) {
+    return "";
+  }
+  const side = (name: string, px: number) =>
+    `<${name} w:w="${Math.max(0, Math.round(px * 15))}" w:type="dxa"/>`;
+  return `<${tag}>${side("w:top", insets.top)}${side("w:left", insets.left)}${side("w:bottom", insets.bottom)}${side("w:right", insets.right)}</${tag}>`;
 }

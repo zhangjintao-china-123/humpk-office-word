@@ -1,4 +1,5 @@
 import type { Document } from "../model/document/Document";
+import { textBoxGeometry } from "../model/graphic/TextBoxGeometry";
 import type { Paragraph } from "../model/block/Paragraph";
 import { Line } from "../model/line/Line";
 import type { LinkedNode } from "../model/list/LinkedList";
@@ -96,11 +97,11 @@ export class StoryLayout {
           if (!inner || !block.drawing) {
             continue;
           }
-          const width = Math.max(8, block.drawing.width - shape.insets.left - shape.insets.right);
+          const area = textBoxGeometry(block.drawing);
           this.layout(inner, {
             ...constraints,
-            contentWidth: width,
-            contentHeight: Math.max(block.drawing.height, 1000),
+            contentWidth: area.width,
+            contentHeight: Math.max(area.height, 1000),
             paginate: false,
           });
         }

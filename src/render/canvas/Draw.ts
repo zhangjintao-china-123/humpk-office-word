@@ -53,6 +53,10 @@ export class Draw implements IDraw {
     this.ctx.scale(x, y);
   }
 
+  rotate(radians: number): void {
+    this.ctx.rotate(radians);
+  }
+
   setFill(color: string): void {
     this.ctx.fillStyle = color;
   }

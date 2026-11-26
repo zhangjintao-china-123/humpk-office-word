@@ -3,10 +3,16 @@ import type { DocNote } from "../../model/review/Review";
 import { Draw } from "../canvas/Draw";
 import { Line } from "../../model/line/Line";
 import type { Drawing } from "../../model/inline/Drawing";
+import { textBoxContentGeometry } from "../../model/graphic/TextBoxGeometry";
+import { drawingRotationRadians } from "../../model/graphic/DrawingTransform";
+import { isEastAsiaWord } from "../../layout/classify/CharClass";
 import type { Block } from "../../model/block/Block";
 import type { Word } from "../../model/inline/Word";
 import { cellDocumentHeight, cellContentOrigin } from "../../layout/table/TableMetrics";
-import { fillColorOf, fontCss } from "../../layout/measure/FontSpec";
+import { asianBracketPair, splitAsianTwoLines } from "../../model/inline/AsianLayout";
+import { asianSubFontCss } from "../../layout/measure/AsianLayoutMetrics";
+import { enclosedInnerFontCss, enclosedInnerFontSize } from "../../layout/measure/EnclosedMetrics";
+import { fillColorOf, fontCss, glyphSizeOf } from "../../layout/measure/FontSpec";
 import { paintShape } from "../graphic/ShapePainter";
 import type { MathView } from "../../model/math/MathExpr";
 import type { ParagraphBorder, ParagraphShading } from "../../model/style/ParagraphAttrs";
@@ -24,7 +30,7 @@ export class StoryPainter {
 
   constructor(private readonly images: ImageCache = imageCache) {}
 
-  paintLine(draw: Draw, line: Line, x: number, top: number, pageNumber?: number, fields?: FieldView): void {
+  paintLine(draw: Draw, line: Line, x: number, top: number, pageNumber?: number, fields?: FieldView, vertical = false): void {
     if (line.type === "table") {
       this.paintTable(draw, line, x, top, pageNumber, fields);
       return;
@@ -47,11 +53,14 @@ export class StoryPainter {
       if (!node) {
         break;
       }
-      this.paintWord(draw, node.data, line, x, top, pageNumber, paintedFields, fields);
+      this.paintWord(draw, node.data, line, x, top, pageNumber, paintedFields, fields, vertical);
       node = node.next;
     }
     if (line.isLast && line.paragraph?.toc?.role === "entry") {
       this.paintTocPage(draw, line, x, top);
+    }
+    if (fields?.showMarks && !line.type) {
+      this.paintFormattingMark(draw, line, x, top);
     }
     if (exact) {
       draw.restore();
@@ -95,42 +104,93 @@ export class StoryPainter {
   }
 
   paintDrawing(draw: Draw, drawing: Drawing, x: number, y: number): void {
+    if (drawing.hidden) {
+      return;
+    }
+    const boxW = Math.max(drawing.width, 1);
+    const boxH = Math.max(drawing.height, 1);
+    const cx = x + boxW / 2;
+    const cy = y + boxH / 2;
+    const rot = drawingRotationRadians(drawing);
+    const scaleX = drawing.flipH ? -1 : 1;
+    const scaleY = drawing.flipV ? -1 : 1;
     if (drawing.shape) {
-      paintShape(draw, drawing, x, y);
-      this.paintTextBox(draw, drawing, x, y);
+      if (rot || scaleX !== 1 || scaleY !== 1) {
+        draw.save();
+        draw.translate(cx, cy);
+        if (rot) {
+          draw.rotate(rot);
+        }
+        if (scaleX !== 1 || scaleY !== 1) {
+          draw.scale(scaleX, scaleY);
+        }
+        draw.translate(-cx, -cy);
+        paintShape(draw, drawing, x, y);
+        draw.restore();
+      } else {
+        paintShape(draw, drawing, x, y);
+      }
+      if (rot) {
+        draw.save();
+        draw.translate(cx, cy);
+        draw.rotate(rot);
+        draw.translate(-cx, -cy);
+        this.paintTextBox(draw, drawing, x, y);
+        draw.restore();
+      } else {
+        this.paintTextBox(draw, drawing, x, y);
+      }
       return;
     }
     const { width, height, url } = drawing;
     const img = this.images.ensure(url);
-    const boxW = Math.max(width, 24);
-    const boxH = Math.max(height, 16);
+    const fallbackW = Math.max(width, 24);
+    const fallbackH = Math.max(height, 16);
+    if (rot || scaleX !== 1 || scaleY !== 1) {
+      draw.save();
+      draw.translate(cx, cy);
+      if (rot) {
+        draw.rotate(rot);
+      }
+      if (scaleX !== 1 || scaleY !== 1) {
+        draw.scale(scaleX, scaleY);
+      }
+      draw.translate(-cx, -cy);
+    }
     if (img && width > 0 && height > 0) {
       draw.drawImage(img, x, y, width, height);
-      return;
+    } else {
+      draw.setFill("#e6e6e6");
+      draw.fillRect(x, y, fallbackW, fallbackH);
+      const label = formatLabel(drawing.sourceUrl);
+      if (label && fallbackW >= 36 && fallbackH >= 16) {
+        draw.setFill("#666666");
+        draw.setFont("12px sans-serif");
+        draw.fillText(label, x + 4, y + 14);
+      }
     }
-    draw.setFill("#e6e6e6");
-    draw.fillRect(x, y, boxW, boxH);
-    const label = formatLabel(drawing.sourceUrl);
-    if (label && boxW >= 36 && boxH >= 16) {
-      draw.setFill("#666666");
-      draw.setFont("12px sans-serif");
-      draw.fillText(label, x + 4, y + 14);
+    if (rot || scaleX !== 1 || scaleY !== 1) {
+      draw.restore();
     }
   }
 
   private paintTextBox(draw: Draw, drawing: Drawing, x: number, y: number): void {
     const story = drawing.shape?.text;
-    const insets = drawing.shape?.insets;
-    if (!story || !insets) {
+    if (!story) {
       return;
     }
+    const area = textBoxContentGeometry(drawing, x, y);
     draw.save();
     draw.beginPath();
     draw.rect(x, y, Math.max(drawing.width, 1), Math.max(drawing.height, 1));
     draw.clip();
+    draw.translate(area.x, area.y);
+    if (area.vertical) {
+      draw.rotate(Math.PI / 2);
+    }
     story.paragraphs.each((node) => {
       for (const line of node.data.lines) {
-        this.paintLine(draw, line, x + insets.left, y + insets.top + line.top);
+        this.paintLine(draw, line, 0, line.top, undefined, undefined, area.vertical);
       }
     });
     draw.restore();
@@ -163,6 +223,7 @@ export class StoryPainter {
     pageNumber?: number,
     paintedFields?: Set<Block>,
     fields?: FieldView,
+    vertical = false,
   ): void {
     if (word.kind === "drawing" && word.drawing) {
       const left = x + word.left;
@@ -174,11 +235,20 @@ export class StoryPainter {
       this.paintDrawing(draw, word.drawing, left, boxTop);
       return;
     }
+    if (word.kind === "page") {
+      if (fields?.showMarks) {
+        this.paintPageBreakMark(draw, line, x, top);
+      }
+      return;
+    }
     if (word.kind !== "text" || word.isEnterChar()) {
       return;
     }
     if (word.char === "\t") {
       this.paintTabLeader(draw, word, line, x, top);
+      if (fields?.showMarks) {
+        this.paintTabMark(draw, word, line, x, top);
+      }
       return;
     }
     const style = word.getStyle();
@@ -219,7 +289,22 @@ export class StoryPainter {
       draw.fillText(text, left, baseline);
       return;
     }
-    draw.fillText(word.char, left, baseline);
+    if (word.block?.enclosed) {
+      this.paintEnclosed(draw, word, left, boxTop, height);
+    } else if (word.block?.asianLayout) {
+      this.paintAsianLayout(draw, word, left, boxTop, height, baseline);
+    } else if (word.char === " " && fields?.showMarks) {
+      this.paintSpaceMark(draw, word, left, boxTop, height);
+    } else if (vertical && isEastAsiaWord(word.char, word.char.codePointAt(0) ?? word.intChar)) {
+      const glyph = VERTICAL_GLYPHS[word.char] ?? word.char;
+      draw.save();
+      draw.translate(left + word.kernedWidth / 2, boxTop + height / 2);
+      draw.rotate(-Math.PI / 2);
+      draw.fillText(glyph, -draw.measureText(glyph) / 2, glyphSizeOf(style) * 0.35);
+      draw.restore();
+    } else {
+      draw.fillText(word.char, left, baseline);
+    }
     const ink = fillColorOf(style);
     if (style?.underline && style.underline !== "none") {
       draw.setStroke(ink, 1);
@@ -235,6 +320,209 @@ export class StoryPainter {
       draw.lineTo(left + word.kernedWidth, boxTop + height * 0.5);
       draw.stroke();
     }
+  }
+
+  private paintEnclosed(draw: Draw, word: Word, left: number, boxTop: number, lineBoxH: number): void {
+    const spec = word.block?.enclosed;
+    if (!spec) {
+      return;
+    }
+    const style = word.getStyle();
+    const ink = fillColorOf(style);
+    const boxW = Math.max(word.kernedWidth, 10);
+    const boxSize = Math.max(word.height || boxW, 10);
+    const cx = left + boxW / 2;
+    const cy = boxTop + lineBoxH - boxSize / 2;
+    const pad = Math.max(1.2, boxSize * 0.08);
+    const rx = Math.max(3, boxW / 2 - pad);
+    const ry = Math.max(3, boxSize / 2 - pad);
+    const strokeW = Math.max(1, Math.min(2, boxSize * 0.055));
+
+    draw.setStroke(ink, strokeW);
+    if (spec.shape === "square") {
+      draw.strokeRect(cx - rx, cy - ry, rx * 2, ry * 2);
+    } else if (spec.shape === "triangle") {
+      draw.beginPath();
+      draw.moveTo(cx, cy - ry);
+      draw.lineTo(cx + rx, cy + ry);
+      draw.lineTo(cx - rx, cy + ry);
+      draw.closePath();
+      draw.stroke();
+    } else if (spec.shape === "diamond") {
+      draw.beginPath();
+      draw.moveTo(cx, cy - ry);
+      draw.lineTo(cx + rx, cy);
+      draw.lineTo(cx, cy + ry);
+      draw.lineTo(cx - rx, cy);
+      draw.closePath();
+      draw.stroke();
+    } else {
+      draw.beginPath();
+      draw.ellipse(cx, cy, rx, ry);
+      draw.stroke();
+    }
+
+    const glyph = glyphSizeOf(style);
+    const innerPx = enclosedInnerFontSize(glyph, word.char, spec.mode);
+    draw.setFill(ink);
+    draw.setFont(enclosedInnerFontCss(style, innerPx, word.intChar));
+    const innerW = draw.measureText(word.char);
+    const yOffset = spec.shape === "triangle" ? innerPx * 0.45 : innerPx * 0.34;
+    draw.fillText(word.char, cx - innerW / 2, cy + yOffset);
+  }
+
+  private paintAsianLayout(
+    draw: Draw,
+    word: Word,
+    left: number,
+    boxTop: number,
+    height: number,
+    baseline: number,
+  ): void {
+    const spec = word.block?.asianLayout;
+    if (!spec) {
+      return;
+    }
+    const style = word.getStyle();
+    const ink = fillColorOf(style);
+    const boxW = Math.max(word.kernedWidth, 1);
+    draw.setFill(ink);
+
+    if (spec.kind === "fitWidth") {
+      const chars = Array.from(word.char);
+      if (chars.length <= 1) {
+        const w = draw.measureText(word.char);
+        draw.fillText(word.char, left + Math.max(0, (boxW - w) / 2), baseline);
+        return;
+      }
+      const widths = chars.map((ch) => Math.max(1, draw.measureText(ch)));
+      const total = widths.reduce((sum, item) => sum + item, 0);
+      if (total > boxW && total > 0) {
+        draw.save();
+        draw.translate(left, 0);
+        draw.scale(boxW / total, 1);
+        draw.fillText(word.char, 0, baseline);
+        draw.restore();
+        return;
+      }
+      const gap = (boxW - total) / Math.max(1, chars.length - 1);
+      let cursor = left;
+      for (let i = 0; i < chars.length; i += 1) {
+        draw.fillText(chars[i], cursor, baseline);
+        cursor += widths[i] + gap;
+      }
+      return;
+    }
+
+    if (spec.kind === "tatechuyoko") {
+      const natural = Math.max(1, draw.measureText(word.char));
+      if (natural > boxW) {
+        draw.save();
+        draw.translate(left, 0);
+        draw.scale(boxW / natural, 1);
+        draw.fillText(word.char, 0, baseline);
+        draw.restore();
+      } else {
+        draw.fillText(word.char, left + (boxW - natural) / 2, baseline);
+      }
+      return;
+    }
+
+    // combine or twoInOne
+    const glyph = glyphSizeOf(style);
+    const subPx = Math.max(7, glyph * 0.52);
+    const [topText, bottomText] = splitAsianTwoLines(word.char);
+    const [openB, closeB] = spec.kind === "twoInOne" ? asianBracketPair(spec.brackets) : ["", ""];
+    const openW = openB ? draw.measureText(openB) : 0;
+    const closeW = closeB ? draw.measureText(closeB) : 0;
+    if (openB) {
+      draw.fillText(openB, left, baseline);
+    }
+    if (closeB) {
+      draw.fillText(closeB, left + boxW - closeW, baseline);
+    }
+    const innerLeft = left + openW;
+    const innerW = Math.max(1, boxW - openW - closeW);
+    draw.setFont(asianSubFontCss(style, subPx, word.intChar));
+    if (topText) {
+      const topW = draw.measureText(topText);
+      const topBase = boxTop + height * 0.45;
+      draw.fillText(topText, innerLeft + Math.max(0, (innerW - topW) / 2), topBase);
+    }
+    if (bottomText) {
+      const botW = draw.measureText(bottomText);
+      const botBase = boxTop + height * 0.94;
+      draw.fillText(bottomText, innerLeft + Math.max(0, (innerW - botW) / 2), botBase);
+    }
+  }
+
+  private paintSpaceMark(draw: Draw, word: Word, left: number, boxTop: number, height: number): void {
+    const cx = left + Math.max(word.kernedWidth, 4) / 2;
+    const cy = boxTop + height * 0.54;
+    draw.setFill("#6B8EBF");
+    draw.beginPath();
+    draw.ellipse(cx, cy, 1.15, 1.15);
+    draw.fill();
+  }
+
+  private paintTabMark(draw: Draw, word: Word, line: Line, x: number, top: number): void {
+    const height = Math.max(line.maxCharHeight, 14);
+    const boxTop = top + line.beforeHeight + line.contentOffsetY;
+    const cy = boxTop + height * 0.55;
+    const startX = x + word.left + 2;
+    const endX = Math.min(x + word.left + Math.max(word.kernedWidth - 2, 6), startX + 12);
+    if (endX <= startX + 2) {
+      return;
+    }
+    draw.setStroke("#6B8EBF", 1.1);
+    draw.beginPath();
+    draw.moveTo(startX, cy);
+    draw.lineTo(endX, cy);
+    draw.moveTo(endX - 3, cy - 2.5);
+    draw.lineTo(endX, cy);
+    draw.lineTo(endX - 3, cy + 2.5);
+    draw.stroke();
+  }
+
+  private paintPageBreakMark(draw: Draw, line: Line, x: number, top: number): void {
+    const width = Math.max(line.contentWidth, 80);
+    const cy = top + Math.max(line.height, 14) * 0.5;
+    draw.save();
+    draw.setStroke("#6B8EBF", 1);
+    draw.setLineDash([4, 3]);
+    draw.beginPath();
+    draw.moveTo(x, cy);
+    draw.lineTo(x + width, cy);
+    draw.stroke();
+    draw.setLineDash([]);
+    draw.setFill("#6B8EBF");
+    draw.setFont("10px sans-serif");
+    const label = "分页符";
+    const lw = draw.measureText(label);
+    draw.fillRect(x + (width - lw - 8) / 2, cy - 7, lw + 8, 14);
+    draw.setFill("#ffffff");
+    draw.fillText(label, x + (width - lw) / 2, cy + 3.5);
+    draw.restore();
+  }
+
+  private paintFormattingMark(draw: Draw, line: Line, x: number, top: number): void {
+    if (!line.isLast) {
+      return;
+    }
+    const height = Math.max(line.maxCharHeight, 14);
+    const boxTop = top + line.beforeHeight + line.contentOffsetY;
+    const baseY = boxTop + height * 0.72;
+    const rightX = Math.min(x + line.contentWidth - 2, x + line.leftBlankWidth + line.totalCharWidth + 3);
+    const tailY = boxTop + height * 0.28;
+    draw.setStroke("#6B8EBF", 1.2);
+    draw.beginPath();
+    draw.moveTo(rightX + 6, tailY);
+    draw.lineTo(rightX + 6, baseY);
+    draw.lineTo(rightX, baseY);
+    draw.moveTo(rightX + 3, baseY - 2.5);
+    draw.lineTo(rightX, baseY);
+    draw.lineTo(rightX + 3, baseY + 2.5);
+    draw.stroke();
   }
 
   private paintShading(draw: Draw, line: Line, x: number, top: number): void {
@@ -422,6 +710,12 @@ export class StoryPainter {
     draw.setFill(fillColorOf(style));
   }
 }
+
+const VERTICAL_GLYPHS: Record<string, string> = {
+  "（": "︵", "）": "︶", "【": "︻", "】": "︼", "「": "﹁", "」": "﹂", "『": "﹃", "』": "﹄",
+  "《": "︽", "》": "︾", "〈": "︿", "〉": "﹀", "，": "︐", "、": "︑", "。": "︒", "：": "︓", "；": "︔",
+  "！": "︕", "？": "︖",
+};
 
 function shadeColor(shading: ParagraphShading | undefined): string | null {
   if (!shading || shading.val === "nil" || shading.val === "none") {

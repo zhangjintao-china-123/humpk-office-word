@@ -10,6 +10,7 @@ export interface PointerHost {
   cellsInRect(from: TableCell, to: TableCell): TableCell[];
   sameFlow?(from: CaretPos, to: CaretPos): boolean;
   onChange(): void;
+  onPointerUp?(event: PointerEvent): void;
   followLink?(pos: CaretPos): boolean;
 }
 
@@ -26,7 +27,7 @@ export class PointerController {
     element.addEventListener("pointerdown", this.onDown);
     element.addEventListener("pointermove", this.onMove);
     element.addEventListener("pointerup", this.onUp);
-    element.addEventListener("pointercancel", this.onUp);
+    element.addEventListener("pointercancel", this.onCancel);
   }
 
   detach(): void {
@@ -37,7 +38,7 @@ export class PointerController {
     element.removeEventListener("pointerdown", this.onDown);
     element.removeEventListener("pointermove", this.onMove);
     element.removeEventListener("pointerup", this.onUp);
-    element.removeEventListener("pointercancel", this.onUp);
+    element.removeEventListener("pointercancel", this.onCancel);
     this.attached = null;
   }
 
@@ -113,7 +114,17 @@ export class PointerController {
     this.host.onChange();
   };
 
-  private onUp = (): void => {
+  private onUp = (event: PointerEvent): void => {
+    if (!this.dragging) {
+      return;
+    }
+    this.dragging = false;
+    this.host.selection.dragging = false;
+    this.host.onChange();
+    this.host.onPointerUp?.(event);
+  };
+
+  private onCancel = (): void => {
     if (!this.dragging) {
       return;
     }

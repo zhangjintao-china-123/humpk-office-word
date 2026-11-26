@@ -1,7 +1,9 @@
+import type { Document } from "../model/document/Document";
 import type { LinkedNode } from "../model/list/LinkedList";
 import type { Word } from "../model/inline/Word";
-import type { TableCell } from "../model/table/Table";
+import type { Table, TableCell } from "../model/table/Table";
 import { CaretPos } from "./CaretPos";
+import { caretRank, coverFlow } from "./MainWalk";
 import { SelRange } from "./SelRange";
 import { Selection } from "./Selection";
 import { storyEquals, type StoryRef } from "./StoryRef";
@@ -86,7 +88,36 @@ export class SelectionText {
     return selection.normalized().some((range) => range.mode === "cell" || !range.collapsed());
   }
 
-  covers(selection: Selection, pos: CaretPos): boolean {
+  covers(selection: Selection, pos: CaretPos, owner?: { document: Document; story: StoryRef } | null): boolean {
+    const flow = selection.flow;
+    if (flow && !flow.anchor.equals(flow.focus)) {
+      if (owner) {
+        const start = caretRank(owner.document, owner.story, flow.anchor);
+        const end = caretRank(owner.document, owner.story, flow.focus);
+        if (start != null && end != null) {
+          const target = caretRank(owner.document, owner.story, pos);
+          if (target != null) {
+            return Math.min(start, end) <= target && target <= Math.max(start, end);
+          }
+          if (pos.story.slot === "cell") {
+            const targetCell = pos.story.cell;
+            const cover = coverFlow(owner.document, owner.story, flow.anchor, flow.focus);
+            if (cover.tables.some((item) => tableContainsCell(item.table, targetCell))) {
+              return true;
+            }
+          }
+        }
+      }
+      const anchorNode = flow.anchor.node;
+      if (anchorNode && anchorNode === flow.focus.node && anchorNode.data.kind === "table") {
+        if (pos.node === anchorNode) {
+          return true;
+        }
+        if (pos.story.slot === "cell" && anchorNode.data.table && tableContainsCell(anchorNode.data.table, pos.story.cell)) {
+          return true;
+        }
+      }
+    }
     for (const range of selection.normalized()) {
       if (range.mode === "cell" && range.story.slot === "cell") {
         if (pos.story.slot === "cell" && pos.story.cell === range.story.cell) {
@@ -121,4 +152,22 @@ export class SelectionText {
     }
     return nodes;
   }
+}
+
+function tableContainsCell(table: Table, target: TableCell): boolean {
+  for (const row of table.rows) {
+    for (const cell of row.cells) {
+      if (cell === target) {
+        return true;
+      }
+      let nested = cell.document.words.head;
+      while (nested) {
+        if (nested.data.kind === "table" && nested.data.table && tableContainsCell(nested.data.table, target)) {
+          return true;
+        }
+        nested = nested.next;
+      }
+    }
+  }
+  return false;
 }

@@ -1,15 +1,28 @@
 import type { ParagraphAttrs } from "../model/style/ParagraphAttrs";
 import type { RunStyle } from "../model/style/RunStyle";
 import { ptToPx, pxToPt } from "../shared/units";
-import { ClipboardPayload, type ClipboardDrawing, type ClipboardParagraph, type ClipboardRun, type ClipboardTable } from "./ClipboardPayload";
+import {
+  ClipboardPayload,
+  type ClipboardBlock,
+  type ClipboardDrawing,
+  type ClipboardParagraph,
+  type ClipboardRun,
+  type ClipboardTable,
+} from "./ClipboardPayload";
 
 const MARK = "humpk-office:";
 
 /** 系统剪贴板用的 HTML：外面能看见样式，注释里留一份完整副本。 */
 export function clipboardHtml(payload: ClipboardPayload): string {
-  const body = payload.table ? tableHtml(payload.table) : payload.paragraphs.map(paragraphHtml).join("");
+  const body = payload.blocks?.length
+    ? payload.blocks
+        .map((block) => (block.type === "table" ? tableHtml(block.table) : paragraphHtml(block.paragraph)))
+        .join("")
+    : payload.table
+      ? tableHtml(payload.table)
+      : payload.paragraphs.map(paragraphHtml).join("");
   const stored = encodeURIComponent(
-    JSON.stringify({ v: 1, paragraphs: payload.paragraphs, table: payload.table }),
+    JSON.stringify({ v: 1, paragraphs: payload.paragraphs, table: payload.table, blocks: payload.blocks }),
   );
   return `<!DOCTYPE html><html><body><!--${MARK}${stored}-->${body}</body></html>`;
 }
@@ -92,6 +105,9 @@ function cssOf(style: RunStyle): string {
   if (style.color) {
     parts.push(`color:${style.color}`);
   }
+  if (style.smallCaps) {
+    parts.push("font-variant:small-caps");
+  }
   const fill = style.backgroundColor || style.highlight;
   if (fill) {
     parts.push(`background-color:${fill}`);
@@ -118,6 +134,7 @@ interface StoredPayload {
   v?: number;
   paragraphs?: ClipboardParagraph[];
   table?: ClipboardTable;
+  blocks?: ClipboardBlock[];
 }
 
 function payloadFromStored(data: StoredPayload): ClipboardPayload | undefined {
@@ -125,7 +142,40 @@ function payloadFromStored(data: StoredPayload): ClipboardPayload | undefined {
     return undefined;
   }
   const paragraphs = data.paragraphs.filter((item) => item && Array.isArray(item.runs));
+  const blocks = Array.isArray(data.blocks) ? data.blocks.filter(isValidBlock) : undefined;
+  if (blocks?.length) {
+    return new ClipboardPayload(blocksText(blocks), paragraphs, data.table, blocks);
+  }
+  if (data.table && !paragraphs.length) {
+    return new ClipboardPayload(tableText(data.table), paragraphs, data.table);
+  }
   return new ClipboardPayload(joinText(paragraphs), paragraphs, data.table);
+}
+
+function isValidBlock(block: unknown): block is ClipboardBlock {
+  if (!block || typeof block !== "object") {
+    return false;
+  }
+  const candidate = block as Partial<ClipboardBlock>;
+  if (candidate.type === "paragraph") {
+    return !!candidate.paragraph && Array.isArray(candidate.paragraph.runs);
+  }
+  if (candidate.type === "table") {
+    return !!candidate.table && Array.isArray(candidate.table.rows);
+  }
+  return false;
+}
+
+function tableText(table: ClipboardTable): string {
+  return table.rows
+    .map((row) => row.cells.map((cell) => joinText(cell.paragraphs)).join("\t"))
+    .join("\n");
+}
+
+function blocksText(blocks: ClipboardBlock[]): string {
+  return blocks
+    .map((block) => (block.type === "table" ? tableText(block.table) : joinText([block.paragraph])))
+    .join("\n");
 }
 
 function paragraphsFromHtml(body: HTMLElement): ClipboardParagraph[] {
@@ -293,6 +343,9 @@ function mergeElementStyle(base: RunStyle, element: HTMLElement): RunStyle {
     }
     if (key === "font-style" && value === "italic") {
       next.italic = true;
+    }
+    if ((key === "font-variant" || key === "font-variant-caps") && value === "small-caps") {
+      next.smallCaps = true;
     }
     if (key === "text-decoration" || key === "text-decoration-line") {
       if (value.includes("underline")) {
