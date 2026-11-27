@@ -5,8 +5,10 @@ import { DocxReader } from "../../src/io/docx/reader/DocxReader";
 import { Block } from "../../src/model/block/Block";
 import { Paragraph } from "../../src/model/block/Paragraph";
 import { Document } from "../../src/model/document/Document";
+import { Drawing } from "../../src/model/inline/Drawing";
 import { WordStreamBuilder } from "../../src/model/flatten/WordStreamBuilder";
 import { CaretPos } from "../../src/selection/CaretPos";
+import { SelectionPainter } from "../../src/selection/SelectionPainter";
 import { Workspace } from "../../src/ui/workspace/Workspace";
 
 function createWorkspace() {
@@ -53,7 +55,7 @@ function createWorkspace() {
   }
 
   return {
-    workspace, model, pointer, drag,
+    workspace, model, root, pointer, drag,
     dispose: () => {
       workspace.dispose();
       host.remove();
@@ -61,6 +63,166 @@ function createWorkspace() {
     },
   };
 }
+
+describe("图片拖动", () => {
+  const pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+  it.each([
+    { ratio: 0.25, page: 0, angle: 0 },
+    { ratio: 0.75, page: 1, angle: 0 },
+    { ratio: 0.25, page: 0, angle: 45 },
+    { ratio: 0.75, page: 1, angle: 45 },
+  ])("页缝松手后，旋转 $angle 度的图片完整吸附到索引 $page 的页面", ({ ratio, page, angle }) => {
+    const { workspace, model, root, drag, dispose } = createWorkspace();
+    const drawing = new Drawing();
+    drawing.width = 150;
+    drawing.height = 270;
+    drawing.rotation = angle;
+    drawing.position = "anchor";
+    drawing.anchorSet = { leftFrom: "column", left: 80, topFrom: "paragraph", top: 96, wrapType: "none" };
+    const block = new Block();
+    block.drawing = drawing;
+    model.paragraphs.head!.data.addBlock(block);
+    const second = new Paragraph(2);
+    second.attrs.pageBreakBefore = "1";
+    const text = new Block();
+    text.text = "第二页";
+    second.addBlock(text);
+    model.addParagraph(second);
+    new WordStreamBuilder().build(model);
+
+    try {
+      workspace.load(model);
+      const ctx = workspace.hitContext();
+      const initial = workspace.hitTester.pictures(ctx)[0];
+      root.scrollTop = initial.y - 110;
+      workspace.paint();
+      const start = workspace.viewport.worldToCss(initial.x + initial.width / 2, initial.y + initial.height / 2);
+      const firstBottom = ctx.origins[0].y + ctx.pageSetup.height;
+      const releaseY = firstBottom + ctx.pageSetup.pageGap * ratio;
+      const release = workspace.viewport.worldToCss(initial.x + initial.width / 2, releaseY);
+      drag(start.x, start.y, 0, release.y - start.y);
+
+      expect(model.anchors[0].pageIndex).toBe(page);
+      const placed = workspace.hitTester.pictures(workspace.hitContext())[0];
+      const radians = angle * Math.PI / 180;
+      const halfHeight = (Math.sin(radians) * placed.width + Math.cos(radians) * placed.height) / 2;
+      const placedCenter = placed.y + placed.height / 2;
+      if (page === 0) {
+        expect(placedCenter + halfHeight).toBeCloseTo(firstBottom);
+      } else {
+        expect(placedCenter - halfHeight).toBeCloseTo(ctx.origins[1].y);
+      }
+    } finally {
+      dispose();
+    }
+  });
+
+  it("保留正文与滚动位置，跨页按松手位置提交并可保存重开", async () => {
+    const { workspace, model, root, pointer, dispose } = createWorkspace();
+    const drawing = new Drawing();
+    drawing.width = 110;
+    drawing.height = 44;
+    drawing.url = pixel;
+    drawing.position = "anchor";
+    drawing.anchorSet = {
+      leftFrom: "column", left: 80, topFrom: "paragraph", top: workspace.pageSetup.contentHeight - 21, wrapType: "square",
+    };
+    const block = new Block();
+    block.drawing = drawing;
+    const first = model.paragraphs.head!.data;
+    first.addBlock(block);
+    const second = new Paragraph(2);
+    second.attrs.pageBreakBefore = "1";
+    const text = new Block();
+    text.text = "第二页正文";
+    second.addBlock(text);
+    model.addParagraph(second);
+    new WordStreamBuilder().build(model);
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((frame) => frames.push(frame));
+    const layout = vi.spyOn(workspace.relayout, "apply");
+    const handles = vi.spyOn(SelectionPainter.prototype, "paintPictureHandles");
+    try {
+      workspace.load(model);
+      const ctx = workspace.hitContext();
+      const initial = workspace.hitTester.pictures(ctx)[0];
+      root.scrollTop = initial.y - 280;
+      workspace.paint();
+      const scrollBefore = root.scrollTop;
+      const start = workspace.viewport.worldToCss(initial.x + 48, initial.y + 20);
+      const targetY = ctx.origins[1].y + 36;
+      pointer("pointerdown", start.x, start.y);
+      expect(root.scrollTop).toBe(scrollBefore);
+      pointer("pointermove", start.x, start.y + 20);
+      pointer("pointermove", start.x, start.y + 21);
+      expect(frames).toHaveLength(1);
+      expect(layout).not.toHaveBeenCalled();
+      expect(model.anchors[0].pageIndex).toBe(0);
+      frames[0](0);
+      expect(handles.mock.lastCall?.[1].y).toBeCloseTo(initial.y + 21);
+      pointer("pointerup", start.x + 18, start.y + targetY - initial.y);
+      expect(layout).toHaveBeenCalledTimes(1);
+      expect(model.anchors[0]).toMatchObject({ pageIndex: 1, paragraph: second, wrap: "square" });
+      expect(workspace.selectedPicture()).toMatchObject({ y: targetY, x: initial.x + 18 });
+      expect(workspace.history.undo()).toBe(true);
+      expect(first.blocks).toContain(block);
+      expect(workspace.hitTester.pictures(workspace.hitContext())[0]).toMatchObject({ y: initial.y, x: initial.x });
+      expect(workspace.history.redo()).toBe(true);
+      expect(second.blocks).toContain(block);
+      expect(workspace.hitTester.pictures(workspace.hitContext())[0]).toMatchObject({ y: targetY, x: initial.x + 18 });
+
+      workspace.load(await new DocxReader().read(await workspace.exportDocx()));
+      const reopened = workspace.hitContext();
+      expect(workspace.hitTester.pictures(reopened)[0]).toMatchObject({ y: reopened.origins[1].y + 36, x: initial.x + 18 });
+    } finally {
+      handles.mockRestore();
+      layout.mockRestore();
+      raf.mockRestore();
+      dispose();
+    }
+  });
+
+  it("取消保留内嵌图片，撤销将图片放回原有文字之间", () => {
+    const { workspace, model, pointer, dispose } = createWorkspace();
+    const paragraph = model.paragraphs.head!.data;
+    paragraph.blocks[0].text = "前文字";
+    const drawing = new Drawing();
+    drawing.width = 110;
+    drawing.height = 55;
+    const image = new Block();
+    image.drawing = drawing;
+    paragraph.addBlock(image);
+    const tail = new Block();
+    tail.text = "后文字";
+    paragraph.addBlock(tail);
+    new WordStreamBuilder().build(model);
+    try {
+      workspace.load(model);
+      const initial = workspace.hitTester.pictures(workspace.hitContext())[0];
+      const point = workspace.viewport.worldToCss(initial.x + 46, initial.y + 24);
+      pointer("pointerdown", point.x, point.y);
+      pointer("pointermove", point.x + 25, point.y + 18);
+      expect(drawing.position).toBe("inline");
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      expect(workspace.history.canUndo()).toBe(false);
+      expect(workspace.hitTester.pictures(workspace.hitContext())[0].node).toBe(initial.node);
+      pointer("pointerdown", point.x, point.y);
+      pointer("pointermove", point.x + 25, point.y + 18);
+      pointer("pointerup", point.x + 25, point.y + 26);
+      expect(drawing.position).toBe("anchor");
+      expect(workspace.selectedPicture()).toMatchObject({ x: initial.x + 25, y: initial.y + 26 });
+      expect(workspace.history.undo()).toBe(true);
+      const restored = workspace.hitTester.pictures(workspace.hitContext())[0];
+      expect([restored.x, restored.y]).toEqual([initial.x, initial.y]);
+      expect(restored.node).toBe(initial.node);
+      expect(restored.node?.pre?.data.block).toBe(paragraph.blocks[0]);
+      expect(restored.node?.next?.data.block).toBe(tail);
+    } finally {
+      dispose();
+    }
+  });
+});
 
 describe("文本框调整", () => {
   it.each(["horizontal", "vertical"] as const)("支持 %s 文本框移动、缩放和继续编辑", async (direction) => {

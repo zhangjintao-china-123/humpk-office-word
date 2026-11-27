@@ -2,6 +2,15 @@ import { Document } from "../document/Document";
 import { Word } from "../inline/Word";
 import type { Block } from "../block/Block";
 import type { Paragraph } from "../block/Paragraph";
+import type { LinkedNode } from "../list/LinkedList";
+
+export function paragraphStartWord(anchor: LinkedNode<Word>): LinkedNode<Word> {
+  let first = anchor;
+  while (first.pre && first.pre.data.paragraph === anchor.data.paragraph) {
+    first = first.pre;
+  }
+  return first;
+}
 
 /** 把段落/Block 拆成按字双向链表。不修改 Block 原文。 */
 export class WordStreamBuilder {

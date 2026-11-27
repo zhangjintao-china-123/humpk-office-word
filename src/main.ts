@@ -1,9 +1,11 @@
 import { DocxReader } from "./io/docx/reader/DocxReader";
 import { Ribbon } from "./ui/ribbon/Ribbon";
+import { StatusBar } from "./ui/statusbar/StatusBar";
 import { Workspace } from "./ui/workspace/Workspace";
 import "./styles/workspace.css";
 import "./styles/ribbon.css";
 import "./styles/contextmenu.css";
+import "./styles/statusbar.css";
 
 document.title = "humpk-office";
 
@@ -18,17 +20,20 @@ app.innerHTML = `
   <input id="file" type="file" accept=".docx" hidden />
   <input id="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml" hidden />
   <div id="workspace"></div>
+  <footer id="statusbar" aria-label="文档状态"></footer>
 `;
 
 const ribbonHost = app.querySelector<HTMLElement>("#ribbon");
 const fileInput = app.querySelector<HTMLInputElement>("#file");
 const imageInput = app.querySelector<HTMLInputElement>("#image");
 const workspaceHost = app.querySelector<HTMLElement>("#workspace");
-if (!ribbonHost || !fileInput || !imageInput || !workspaceHost) {
+const statusHost = app.querySelector<HTMLElement>("#statusbar");
+if (!ribbonHost || !fileInput || !imageInput || !workspaceHost || !statusHost) {
   throw new Error("app chrome missing");
 }
 
 const workspace = new Workspace(workspaceHost);
+new StatusBar(statusHost, workspace);
 let caption = "未命名文档";
 
 const ribbon = new Ribbon(ribbonHost, {

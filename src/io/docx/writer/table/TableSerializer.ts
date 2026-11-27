@@ -23,10 +23,32 @@ export class TableSerializer {
     const total = widths.reduce((sum, width) => sum + width, 0);
     const style = table.styleId ? `<w:tblStyle w:val="${escapeXml(table.styleId)}"/>` : "";
     const borders = tableBordersXml(table.borders, "w:tblBorders");
-    const tblPr = `<w:tblPr>${style}${this.widthXml("w:tblW", table.width, total)}${this.alignXml(table)}${this.indentXml(table)}${tableInsetsXml("w:tblCellMar", table.cellMargin)}${borders}</w:tblPr>`;
+    const tblPr = `<w:tblPr>${style}${this.anchorXml(table)}${this.widthXml("w:tblW", table.width, total)}${this.alignXml(table)}${this.indentXml(table)}${tableInsetsXml("w:tblCellMar", table.cellMargin)}${borders}</w:tblPr>`;
     const grid = widths.map((width) => `<w:gridCol w:w="${width}"/>`).join("");
     const rows = table.rows.map((_, index) => this.rowXml(table, index, widths)).join("");
     return `<w:tbl>${tblPr}<w:tblGrid>${grid}</w:tblGrid>${rows}</w:tbl>`;
+  }
+
+  private anchorXml(table: Table): string {
+    if (!table.anchorType) {
+      return "";
+    }
+    const set = table.anchorSet;
+    const attrs: [string, string | number | undefined][] = [
+      ["horzAnchor", set?.leftFrom === "column" || set?.leftFrom === "paragraph" ? "text" : set?.leftFrom ?? "text"],
+      ["vertAnchor", set?.topFrom === "paragraph" || set?.topFrom === "line" ? "text" : set?.topFrom ?? "margin"],
+      ["tblpXSpec", set?.leftAlign],
+      ["tblpYSpec", set?.topAlign],
+      ["tblpX", set?.leftAlign ? undefined : pxToTwip(set?.left ?? 0)],
+      ["tblpY", set?.topAlign ? undefined : pxToTwip(set?.top ?? 0)],
+      ["leftFromText", set?.distLeft === undefined ? undefined : pxToTwip(set.distLeft)],
+      ["rightFromText", set?.distRight === undefined ? undefined : pxToTwip(set.distRight)],
+      ["topFromText", set?.distTop === undefined ? undefined : pxToTwip(set.distTop)],
+      ["bottomFromText", set?.distBottom === undefined ? undefined : pxToTwip(set.distBottom)],
+    ];
+    const values = attrs.filter(([, value]) => value !== undefined).map(([name, value]) => `w:${name}="${escapeXml(String(value))}"`);
+    const overlap = set?.allowOverlap === undefined ? "" : `<w:tblOverlap w:val="${set.allowOverlap ? "overlap" : "never"}"/>`;
+    return `<w:tblpPr ${values.join(" ")}/>${overlap}`;
   }
 
   private rowXml(table: Table, rowIndex: number, widths: number[]): string {

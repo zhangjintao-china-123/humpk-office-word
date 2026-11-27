@@ -32,7 +32,9 @@ export class InsertCommand implements EditCommand {
         const document = this.ctx.documentOf(patch.story);
         if (document) {
           this.ctx.mutator.replay(document, patch);
-          renumberStory(document);
+          if (!patch.impact.textAnchor) {
+            renumberStory(document);
+          }
           this.ctx.relayout.apply(patch.impact);
         }
       }

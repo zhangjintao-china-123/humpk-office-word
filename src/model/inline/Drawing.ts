@@ -24,6 +24,11 @@ export interface DrawingAnchor {
   distTop?: number;
   distBottom?: number;
   polygon?: WrapPoint[];
+  polygonExtent?: { width: number; height: number };
+  effectExtent?: { left: number; right: number; top: number; bottom: number };
+  simplePosition?: WrapPoint;
+  layoutInCell?: boolean;
+  allowOverlap?: boolean;
 }
 
 export class Drawing {
@@ -37,6 +42,8 @@ export class Drawing {
   /** 缩放时锁住宽高比，和 Word 图片默认一致。 */
   lockAspect = true;
   anchorSet?: DrawingAnchor;
+  /** 移动命令本次排版的目标页，提交后写入相对纸张的偏移。 */
+  dropPage?: number;
   /** 顺时针旋转角度（度）。 */
   rotation?: number;
   /** 水平翻转。 */

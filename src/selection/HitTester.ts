@@ -12,8 +12,8 @@ import type { Word } from "../model/inline/Word";
 import type { StoryEditor } from "../editor/StoryEditor";
 import type { PageOrigin } from "../editor/StoryEditor";
 import type { PageSetup } from "../render/page/PageSetup";
-import { cellVisibleRect, TableGeometry, type TableCellBox } from "../render/table/TableGeometry";
-import { cellContentOrigin, cellDocumentHeight } from "../layout/table/TableMetrics";
+import { cellVisibleRect, clipCellBox, TableGeometry, type TableCellBox } from "../render/table/TableGeometry";
+import { cellContentOrigin, cellDocumentHeight, cellLineBand } from "../layout/table/TableMetrics";
 import { CaretPos } from "./CaretPos";
 import { isVerticalTextBox, storyKind, storySection, type StoryRef } from "./StoryRef";
 import { guidesFromBoxes, pickGuide, type TableGuide, type TableGuideKind } from "./TableGuides";
@@ -63,6 +63,8 @@ export interface PictureBox {
   width: number;
   height: number;
   behind: boolean;
+  anchorOffset?: { left: number; top: number };
+  clip?: { x: number; y: number; width: number; height: number };
 }
 
 export class HitTester {
@@ -113,6 +115,9 @@ export class HitTester {
     const pictures = this.pictures(ctx);
     for (let i = pictures.length - 1; i >= 0; i -= 1) {
       const box = pictures[i];
+      if (box.clip && !this.contains(worldX, worldY, box.clip.x, box.clip.y, box.clip.width, box.clip.height)) {
+        continue;
+      }
       const pt = unrotatePoint(worldX, worldY, box, box.drawing.rotation);
       if (box.drawing.shape?.text) {
         const inner = Math.min(textBoxSlop, box.width / 4, box.height / 4);
@@ -241,10 +246,7 @@ export class HitTester {
       if (line.type === "table" || line.type === "page") {
         continue;
       }
-      const origin = this.lineOrigin(line, story, ctx);
-      if (!origin) {
-        continue;
-      }
+      let origin: ReturnType<HitTester["lineOrigin"]> = null;
       let node = line.startNode;
       for (let i = 0; i < line.length && node; i += 1) {
         const drawing = node.data.drawing;
@@ -255,6 +257,11 @@ export class HitTester {
           node.data.paragraph &&
           (includeHidden || !drawing.hidden)
         ) {
+          // 普通文字行不需要坐标。单元格的行坐标还需要查找所在的表格切片。
+          origin ??= this.lineOrigin(line, story, ctx);
+          if (!origin) {
+            break;
+          }
           found.push({
             drawing,
             paragraph: node.data.paragraph,
@@ -301,6 +308,8 @@ export class HitTester {
             width: Math.max(anchor.width, 1),
             height: Math.max(anchor.height, 1),
             behind: anchor.behind,
+            anchorOffset: anchor.paragraphOffset(),
+            clip: cellVisibleRect(box),
           });
         }
         this.collectCellPictures(inner, ctx, found, false, origin.x, origin.y, includeHidden);
@@ -338,11 +347,13 @@ export class HitTester {
             x: origin.x + ctx.pageSetup.contentLeft() + anchor.x,
             y: origin.y + ctx.pageSetup.bandTop(editor.slot) + anchor.y,
             width: Math.max(anchor.width, 1), height: Math.max(anchor.height, 1), behind: anchor.behind,
+            anchorOffset: anchor.paragraphOffset(),
+            clip: { ...origin, width: ctx.pageSetup.width, height: ctx.pageSetup.height },
           });
         }
         continue;
       }
-      const pageIndex = Math.min(ctx.origins.length - 1, Math.max(0, Math.floor(anchor.y / pageH)));
+      const pageIndex = anchor.pageOn(pageH);
       const origin = ctx.origins[pageIndex];
       if (!origin) {
         continue;
@@ -358,6 +369,8 @@ export class HitTester {
         width: Math.max(anchor.width, 1),
         height: Math.max(anchor.height, 1),
         behind: anchor.behind,
+        anchorOffset: anchor.paragraphOffset(),
+        clip: { ...origin, width: ctx.pageSetup.width, height: ctx.pageSetup.height },
       });
     }
   }
@@ -526,7 +539,7 @@ export class HitTester {
     }
     const pageH = ctx.pageSetup.contentHeight;
     if (story.slot === "body") {
-      const pageIndex = Math.min(ctx.origins.length - 1, Math.floor(line.top / pageH));
+      const pageIndex = Math.min(ctx.origins.length - 1, line.pageIndex ?? Math.max(0, Math.floor(line.top / pageH)));
       const origin = ctx.origins[pageIndex];
       return {
         x: origin.x + ctx.pageSetup.contentLeft(),
@@ -554,11 +567,9 @@ export class HitTester {
 
   private lineHitsSlice(box: TableCellBox, line: Line, table: Table | undefined, contentH: number): boolean {
     const origin = cellContentOrigin(table, box, contentH);
-    const top = origin.y + line.top;
-    const bottom = top + Math.max(line.height, 1);
-    const visTop = box.visibleY ?? box.y;
-    const visBottom = visTop + (box.visibleHeight ?? box.height);
-    return bottom > visTop + 0.5 && top < visBottom - 0.5;
+    const band = cellLineBand(line);
+    const visible = cellVisibleRect(box);
+    return origin.y + band.bottom > visible.y + 0.01 && origin.y + band.top < visible.y + visible.height - 0.01;
   }
 
   cellBoxes(cell: TableCell, ctx: HitContext): TableCellBox[] {
@@ -610,6 +621,9 @@ export class HitTester {
     const frames = this.textboxFrames(ctx);
     for (let i = frames.length - 1; i >= 0; i -= 1) {
       const frame = frames[i];
+      if (frame.clip && !this.contains(worldX, worldY, frame.clip.x, frame.clip.y, frame.clip.width, frame.clip.height)) {
+        continue;
+      }
       if (frame.block.drawing?.hidden) {
         continue;
       }
@@ -656,7 +670,7 @@ export class HitTester {
         const origin = cellContentOrigin(placed.line.startNode?.data.table, box, cellDocumentHeight(box.cell.document));
         for (const anchor of box.cell.document.anchors) {
           const block = anchor.paragraph?.blocks.find((item) => item.drawing === anchor.drawing);
-          const frame = block && textboxFrame(block, origin.x + anchor.x, origin.y + anchor.y);
+          const frame = block && textboxFrame(block, origin.x + anchor.x, origin.y + anchor.y, cellVisibleRect(box));
           if (frame) {
             frames.push(frame);
           }
@@ -726,7 +740,7 @@ export class HitTester {
     this.collectAnchorPictures(editor, this.storyForEditor(editor, ctx), ctx, pictures);
     for (const picture of pictures) {
       const block = picture.paragraph.blocks.find((item) => item.drawing === picture.drawing);
-      const frame = block && textboxFrame(block, picture.x, picture.y);
+      const frame = block && textboxFrame(block, picture.x, picture.y, picture.clip);
       if (frame) {
         frames.push(frame);
       }
@@ -757,14 +771,18 @@ export class HitTester {
         }
         const story: StoryRef = { slot: "cell", cell: box.cell };
         const inner = this.storyLines(story, ctx);
-        const origin = cellContentOrigin(placed.line.startNode?.data.table, box, cellDocumentHeight(box.cell.document));
+        const table = placed.line.startNode?.data.table;
+        const contentHeight = cellDocumentHeight(box.cell.document);
+        const origin = cellContentOrigin(table, box, contentHeight);
         const nested = this.hitTableLines(inner, ctx, false, origin.x, origin.y, worldX, worldY);
         if (nested) {
           return nested;
         }
         const localX = worldX - origin.x;
         const localY = worldY - origin.y;
-        return this.hitLines(inner, localX, localY, story) ?? this.fallbackLine(inner, localY, story);
+        const visibleLines = inner.filter((line) => this.lineHitsSlice(box, line, table, contentHeight));
+        const candidates = visibleLines.length ? visibleLines : inner;
+        return this.hitLines(candidates, localX, localY, story) ?? this.fallbackLine(candidates, localY, story);
       }
     }
     return null;
@@ -777,13 +795,18 @@ export class HitTester {
     originX: number,
     originY: number,
     visit: (box: TableCellBox) => void,
+    bounds?: { y: number; height: number },
   ): void {
     for (const placed of this.tablePlacements(lines, ctx, paginate, originX, originY)) {
-      for (const box of placed.boxes) {
+      for (const candidate of placed.boxes) {
+        const box = bounds ? clipCellBox(candidate, bounds.y, bounds.y + bounds.height) : candidate;
+        if (!box) {
+          continue;
+        }
         visit(box);
         const inner = this.storyLines({ slot: "cell", cell: box.cell }, ctx);
         const origin = cellContentOrigin(placed.line.startNode?.data.table, box, cellDocumentHeight(box.cell.document));
-        this.walkTables(inner, ctx, false, origin.x, origin.y, visit);
+        this.walkTables(inner, ctx, false, origin.x, origin.y, visit, cellVisibleRect(box));
       }
     }
   }
@@ -803,7 +826,7 @@ export class HitTester {
     let y = originY + line.top;
     if (paginate) {
       const pageH = ctx.pageSetup.contentHeight;
-      const pageIndex = Math.min(ctx.origins.length - 1, Math.floor(line.top / pageH));
+      const pageIndex = Math.min(ctx.origins.length - 1, line.pageIndex ?? Math.max(0, Math.floor(line.top / pageH)));
       const origin = ctx.origins[pageIndex];
       if (!origin) {
         return null;
@@ -831,33 +854,11 @@ export class HitTester {
     originY: number,
   ): { line: Line; boxes: TableCellBox[] }[] {
     const placed: { line: Line; boxes: TableCellBox[] }[] = [];
-    const pageH = ctx.pageSetup.contentHeight;
     for (const line of lines) {
-      if (line.type !== "table" || !line.startNode?.data.table) {
-        continue;
+      const boxes = this.placeTableLine(line, ctx, paginate, originX, originY);
+      if (boxes) {
+        placed.push({ line, boxes });
       }
-      const table = line.startNode.data.table;
-      let x = originX;
-      let y = originY + line.top;
-      if (paginate) {
-        const pageIndex = Math.min(ctx.origins.length - 1, Math.floor(line.top / pageH));
-        const origin = ctx.origins[pageIndex];
-        x = origin.x + ctx.pageSetup.contentLeft() + line.leftBlankWidth;
-        y = origin.y + ctx.pageSetup.contentTop() + (line.top - pageIndex * pageH);
-      }
-      placed.push({
-        line,
-        boxes: this.tables.boxesForSlice(
-          table,
-          line.tableRowFrom,
-          line.tableRowTo || table.rows.length,
-          line.tableHeaderRows,
-          x,
-          y,
-          line.tableClipTop,
-          line.height,
-        ),
-      });
     }
     return placed;
   }
@@ -1154,9 +1155,10 @@ interface TextboxFrame {
   width: number;
   height: number;
   text: ReturnType<typeof textBoxContentGeometry>;
+  clip?: PictureBox["clip"];
 }
 
-function textboxFrame(block: Block, x: number, y: number): TextboxFrame | null {
+function textboxFrame(block: Block, x: number, y: number, clip?: PictureBox["clip"]): TextboxFrame | null {
   const drawing = block.drawing;
   const shape = drawing?.shape;
   if (!drawing || !shape?.text) {
@@ -1164,6 +1166,7 @@ function textboxFrame(block: Block, x: number, y: number): TextboxFrame | null {
   }
   return {
     block,
+    clip,
     x,
     y,
     width: Math.max(drawing.width, 1),

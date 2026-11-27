@@ -1,0 +1,78 @@
+.ho-word-statusbar {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 16px;
+  min-height: 32px;
+  padding: 0 12px;
+  border-top: 1px solid #d5dce4;
+  background: #f7f9fc;
+  color: #3c4858;
+  font: 12px/1.4 system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ho-word-statusbar-count {
+  padding-left: 16px;
+  border-left: 1px solid #d5dce4;
+}
+
+.ho-word-statusbar-zoom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.ho-word-statusbar-zoom button {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ho-word-statusbar-zoom button:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.ho-word-statusbar-zoom button:hover:not(:disabled) {
+  background: #e5edf8;
+}
+
+.ho-word-statusbar-zoom button:focus-visible,
+.ho-word-statusbar-zoom input:focus-visible {
+  outline: 2px solid #285f9b;
+  outline-offset: 1px;
+}
+
+.ho-word-statusbar-zoom button[data-zoom="reset"] {
+  min-width: 43px;
+}
+
+.ho-word-statusbar-zoom input {
+  width: clamp(48px, 11vw, 128px);
+  margin: 0;
+  accent-color: #285f9b;
+}
+
+@media (max-width: 440px) {
+  .ho-word-statusbar {
+    padding: 0 6px;
+    gap: 8px;
+  }
+
+  .ho-word-statusbar-count {
+    padding-left: 8px;
+  }
+
+  .ho-word-statusbar-zoom input {
+    display: none;
+  }
+}

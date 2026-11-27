@@ -43,8 +43,15 @@ export interface TableInsets {
 export interface TableAnchor {
   leftFrom?: string;
   left?: number;
+  leftAlign?: string;
   topFrom?: string;
   top?: number;
+  topAlign?: string;
+  distLeft?: number;
+  distRight?: number;
+  distTop?: number;
+  distBottom?: number;
+  allowOverlap?: boolean;
 }
 
 export class TableCell {

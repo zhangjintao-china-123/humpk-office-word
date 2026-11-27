@@ -117,6 +117,17 @@ export class LineBreaker {
     this.metrics.collapseAdjacent(lines);
   }
 
+  /** 下一次分页从原有行框和段落属性开始，不能沿用上次合并或去掉的段间距。 */
+  restoreSpacing(line: Line): void {
+    if (line.boxHeight === undefined) {
+      return;
+    }
+    line.beforeHeight = this.metrics.beforeHeight(line.paragraph, line.isFirst);
+    line.afterHeight = this.metrics.afterHeight(line.paragraph, line.isLast);
+    line.height = line.boxHeight + line.beforeHeight + line.afterHeight;
+    line.fullHeight = line.height;
+  }
+
   private startLine(token: LayoutToken, isFirst: boolean): Line {
     const line = new Line();
     line.startNode = token.start;
@@ -272,13 +283,11 @@ export class LineBreaker {
       node = node.next;
     }
     line.maxCharHeight = maxFont;
-    line.beforeHeight = this.metrics.beforeHeight(line.paragraph, line.isFirst);
-    line.afterHeight = this.metrics.afterHeight(line.paragraph, line.isLast);
     const content = this.metrics.lineHeight(line.paragraph, maxFont);
     const rule = line.paragraph?.attrs.lineRule;
     const box = rule === "exact" ? content : Math.max(content, maxFont);
     line.contentOffsetY = this.metrics.contentOffset(box, maxFont, line.paragraph?.attrs.textAlignment);
-    line.height = box + line.beforeHeight + line.afterHeight;
-    line.fullHeight = line.height;
+    line.boxHeight = box;
+    this.restoreSpacing(line);
   }
 }

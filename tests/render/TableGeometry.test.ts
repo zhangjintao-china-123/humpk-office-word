@@ -46,4 +46,22 @@ describe("TableGeometry", () => {
     table.rowHeights = [10, 15, 20];
     expect(new TableGeometry().sliceHeight(table, 1, 3)).toBe(35);
   });
+
+  it("重复标题和表身分别裁剪，跨行合并格保留续页部分", () => {
+    const table = new Table();
+    table.columnWidths = [50];
+    table.rowHeights = [20, 40, 150];
+    table.rows = table.rowHeights.map(() => new TableRow());
+    const header = new TableCell(new Document());
+    const merged = new TableCell(new Document());
+    merged.rowIndex = 1;
+    merged.rowSpan = 2;
+    table.rows[0].cells = [header];
+    table.rows[1].cells = [merged];
+    const boxes = new TableGeometry().boxesForSlice(table, 2, 3, 1, 0, 100, 30, 90);
+    expect(boxes).toMatchObject([
+      { cell: header, y: 100, visibleY: 100, visibleHeight: 20 },
+      { cell: merged, y: 50, height: 190, visibleY: 120, visibleHeight: 70 },
+    ]);
+  });
 });

@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { Block } from "../../src/model/block/Block";
+import { InsertCommand } from "../../src/edit/InsertCommand";
 import { Paragraph } from "../../src/model/block/Paragraph";
 import { Document } from "../../src/model/document/Document";
 import { WordStreamBuilder } from "../../src/model/flatten/WordStreamBuilder";
+import { StoryPainter } from "../../src/render/story/StoryPainter";
+import { PagePainter } from "../../src/render/page/PagePainter";
+import { StatusBar } from "../../src/ui/statusbar/StatusBar";
 import { Workspace } from "../../src/ui/workspace/Workspace";
 
 function stubCanvas2d() {
@@ -45,6 +49,141 @@ function emptyDoc(): Document {
   new WordStreamBuilder().buildStoryOnly(document);
   return document;
 }
+
+describe("Workspace 多页绘制", () => {
+  it("一帧合并多次滚动，按原页码绘制可见页，并独立刷新光标", () => {
+    const canvas = stubCanvas2d();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const workspace = new Workspace(host);
+    const statusHost = document.createElement("footer");
+    host.after(statusHost);
+    const status = new StatusBar(statusHost, workspace);
+    const scroll = host.querySelector<HTMLElement>(".ho-word-scroll")!;
+    Object.defineProperties(scroll, { clientWidth: { value: 1000 }, clientHeight: { value: 500 } });
+    const model = new Document();
+    for (let index = 0; index < 3; index += 1) {
+      const paragraph = new Paragraph(index + 1);
+      paragraph.attrs.pageBreakBefore = index ? "1" : undefined;
+      const block = new Block();
+      block.text = `第${index + 1}页`;
+      paragraph.addBlock(block);
+      model.addParagraph(paragraph);
+    }
+    const pagePaint = vi.spyOn(PagePainter.prototype, "paint");
+    const linePaint = vi.spyOn(StoryPainter.prototype, "paintLine");
+    const printCanvas = vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,");
+    let frame: FrameRequestCallback | undefined;
+    const request = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frame = callback;
+      return 1;
+    });
+    try {
+      workspace.load(model);
+      expect(workspace.pageCount).toBe(3);
+      expect(statusHost.textContent).toContain("第 1 页 / 共 3 页");
+      expect(statusHost.textContent).toContain("9 个字符");
+      expect(pagePaint.mock.calls.map((call) => call[4])).toEqual([0]);
+      pagePaint.mockClear();
+      linePaint.mockClear();
+
+      const { origins, pageSetup } = workspace.hitContext();
+      scroll.scrollTop = origins[1].y;
+      scroll.dispatchEvent(new Event("scroll"));
+      scroll.scrollTop = origins[2].y;
+      scroll.dispatchEvent(new Event("scroll"));
+      expect(workspace.viewport.scrollY).toBe(origins[2].y);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(pagePaint).not.toHaveBeenCalled();
+      frame!(0);
+      expect(pagePaint.mock.calls.map((call) => call[4])).toEqual([2]);
+      expect(statusHost.textContent).toContain("第 3 页 / 共 3 页");
+      const pageText = linePaint.mock.calls.filter((call) => call[1].length > 0);
+      expect(pageText.map((call) => call[1].paragraph?.getFullText())).toContain("第3页");
+      expect(pageText.every((call) => call[4] === 3 && call[5]?.values.NUMPAGES === "3")).toBe(true);
+
+      const point = workspace.viewport.worldToCss(origins[2].x + pageSetup.contentLeft() + 4, origins[2].y + pageSetup.contentTop() + 5);
+      const caret = workspace.hitClient(point.x, point.y);
+      expect(caret?.node?.data.paragraph?.getFullText()).toBe("第3页");
+      linePaint.mockClear();
+      workspace.selection.collapse(caret!);
+      workspace.onSelectionChange();
+      expect(linePaint).not.toHaveBeenCalled();
+      expect(host.querySelector<HTMLElement>(".ho-word-caret")?.hidden).toBe(false);
+
+      host.querySelector(".ho-word-ime")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+      expect(workspace.selection.caret()?.equals(caret!)).toBe(false);
+      expect(linePaint).not.toHaveBeenCalled();
+
+      workspace.setZoom(0.75);
+      expect(statusHost.querySelector("input")?.getAttribute("aria-valuetext")).toBe("75%");
+      pagePaint.mockClear();
+      scroll.scrollTop = origins[2].y * 0.75;
+      scroll.dispatchEvent(new Event("scroll"));
+      frame!(0);
+      expect(pagePaint.mock.calls.map((call) => call[4])).toEqual([2]);
+
+      linePaint.mockClear();
+      expect(workspace["renderPrintImages"]()).toHaveLength(3);
+      const printedText = linePaint.mock.calls.filter((call) => call[1].length > 0);
+      expect(printedText.map((call) => call[1].paragraph?.getFullText())).toEqual(["第1页", "第2页", "第3页"]);
+    } finally {
+      status.dispose();
+      statusHost.remove();
+      workspace.dispose();
+      host.remove();
+      request.mockRestore();
+      printCanvas.mockRestore();
+      linePaint.mockRestore();
+      pagePaint.mockRestore();
+      canvas.mockRestore();
+    }
+  });
+
+  it("编辑后更新字符数，并将滑块、按钮和工作区缩放保持同步", () => {
+    const canvas = stubCanvas2d();
+    const host = document.createElement("div");
+    const statusHost = document.createElement("footer");
+    document.body.append(host, statusHost);
+    const workspace = new Workspace(host);
+    const status = new StatusBar(statusHost, workspace);
+    const steps: FrameRequestCallback[] = [];
+    const frames = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => steps.push(callback));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      workspace.load(emptyDoc());
+      expect(statusHost.textContent).toContain("0 个字符");
+      workspace.history.do(new InsertCommand(workspace, "中文 AB"));
+      vi.advanceTimersByTime(150);
+      expect(statusHost.textContent).toContain("4 个字符");
+      workspace.history.undo();
+      vi.advanceTimersByTime(150);
+      expect(statusHost.textContent).toContain("0 个字符");
+
+      const slider = statusHost.querySelector("input")!;
+      slider.value = "127";
+      slider.dispatchEvent(new Event("input"));
+      slider.value = "140";
+      slider.dispatchEvent(new Event("input"));
+      expect(steps).toHaveLength(1);
+      steps[0](0);
+      expect(workspace.viewport.zoom).toBe(1.4);
+      expect(statusHost.textContent).toContain("140%");
+      statusHost.querySelector<HTMLButtonElement>('[data-zoom="in"]')!.click();
+      expect(slider.value).toBe("150");
+      statusHost.querySelector<HTMLButtonElement>('[data-zoom="reset"]')!.click();
+      expect(workspace.viewport.zoom).toBe(1);
+    } finally {
+      status.dispose();
+      workspace.dispose();
+      host.remove();
+      statusHost.remove();
+      vi.useRealTimers();
+      frames.mockRestore();
+      canvas.mockRestore();
+    }
+  });
+});
 
 describe("Workspace 整表选择与操作", () => {
   it("点击和右键表格左上角控点后，工具栏与右键菜单均可操作整张表", () => {

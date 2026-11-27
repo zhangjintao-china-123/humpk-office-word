@@ -40,9 +40,7 @@ export class StoryPainter {
     if (exact) {
       const box = Math.max(0, line.height - line.beforeHeight - line.afterHeight);
       draw.save();
-      draw.beginPath();
-      draw.rect(x, top + line.beforeHeight, Math.max(line.width, 1) + line.leftBlankWidth + line.rightBlankWidth + 8, box);
-      draw.clip();
+      draw.clipLineHeight(top + line.beforeHeight, box);
     }
     if (line.isFirst && line.outlineLabel) {
       this.paintOutline(draw, line, x, top);

@@ -16,13 +16,19 @@ import { LineMetrics } from "../line/LineMetrics";
 import { LinePositioner } from "../line/LinePositioner";
 import { LayoutToken, gluedWidth } from "../token/LayoutToken";
 import { TokenBuilder } from "../token/TokenBuilder";
-import { pageBreakAdvance, paginateTableRows } from "../page/Paginator";
-import { headerRowCount } from "../table/TableMetrics";
+import { pageBreakAdvance } from "../page/Paginator";
+import { paginateTableRows } from "../page/TablePagination";
 import { WrapScanline } from "./WrapScanline";
 
 interface Span {
   left: number;
   right: number;
+}
+
+interface BandAttempt {
+  splitTokens: Map<number, LayoutToken>;
+  wordWidths: Map<Word, { width: number; spacing: number }>;
+  beforeHeight?: number;
 }
 
 /** 绕排时的一块障碍。坐标都在版心内。 */
@@ -34,10 +40,10 @@ export interface FlowBox {
   wrap: WrapType;
   side: WrapSide;
   polygon?: WrapPoint[];
-  originX: number;
-  originY: number;
   distLeft: number;
   distRight: number;
+  distTop: number;
+  distBottom: number;
 }
 
 const MIN_SEGMENT = 8;
@@ -62,28 +68,32 @@ export class WrapFlow {
     this.resetWidths(document);
     this.mix.apply(document);
     const pageH = constraints.paginate === false ? Number.POSITIVE_INFINITY : Math.max(1, constraints.contentHeight);
-    const boxes = [...anchors.map((anchor) => this.boxOf(anchor)), ...extras];
+    const boxes = [
+      ...anchors.filter((anchor) => !anchor.drawing.hidden && anchor.wrap !== "none").map((anchor) => this.boxOf(anchor, pageH)),
+      ...extras,
+    ].filter((box) => box.bottom > box.top);
     const source = this.tokens.build(document.words.head);
     const origins = new Map<Paragraph, number>();
     const lines = this.flow(source, boxes, constraints.contentWidth, pageH, origins);
-    this.collapseSpacing(lines, pageH);
     return { lines, origins };
   }
 
-  private boxOf(anchor: PlacedAnchor): FlowBox {
+  private boxOf(anchor: PlacedAnchor, pageH: number): FlowBox {
     const set = anchor.drawing.anchorSet;
+    const pageStart = Number.isFinite(pageH) ? anchor.pageOn(pageH) * pageH : Number.NEGATIVE_INFINITY;
+    const pageEnd = Number.isFinite(pageH) ? pageStart + pageH : Number.POSITIVE_INFINITY;
     return {
       left: anchor.wrapLeft,
       right: anchor.wrapRight,
-      top: anchor.wrapTop,
-      bottom: anchor.wrapBottom,
+      top: Math.max(anchor.wrapTop, pageStart),
+      bottom: Math.min(anchor.wrapBottom, pageEnd),
       wrap: anchor.wrap,
       side: set?.wrapSide ?? "both",
-      polygon: set?.polygon,
-      originX: anchor.x,
-      originY: anchor.y,
+      polygon: anchor.wrapPolygon,
       distLeft: set?.distLeft ?? 0,
       distRight: set?.distRight ?? 0,
+      distTop: set?.distTop ?? 0,
+      distBottom: set?.distBottom ?? 0,
     };
   }
 
@@ -108,10 +118,7 @@ export class WrapFlow {
     let index = 0;
     let y = 0;
     let passedCover = false;
-    let guard = 0;
-    const limit = Math.max(200, tokens.length * 40);
-    while (index < tokens.length && guard < limit) {
-      guard += 1;
+    while (index < tokens.length) {
       const token = tokens[index];
       const paragraph = token.start.data.paragraph;
       if (!passedCover && Number.isFinite(pageH) && !paragraph?.coverTemplate && lines.at(-1)?.paragraph?.coverTemplate) {
@@ -121,7 +128,16 @@ export class WrapFlow {
       const isText = token.kind !== "page" && token.kind !== "table";
       const opens = isText && this.opensParagraph(lines, token);
       if (opens) {
-        y = this.paragraphStartY(tokens, index, lines, y, pageH, contentWidth);
+        y = this.paragraphStartY(tokens, index, lines, y, pageH, contentWidth, boxes);
+      }
+      const prev = lines.at(-1);
+      const previousBand = bandOwner(lines);
+      let beforeHeight: number | undefined;
+      if (opens && paragraph && prev?.isLast && prev.paragraph && prev.paragraph !== paragraph &&
+        !prev.type && !atPageTop(y, pageH) && Math.abs(prev.top + (previousBand?.height ?? prev.height) - y) < 0.01) {
+        beforeHeight = this.metrics.collapsedGap(prev.paragraph, paragraph, prev.afterHeight, this.metrics.beforeHeight(paragraph, true));
+        y -= prev.afterHeight;
+        this.shrinkAfter(lines, prev);
       }
       if (paragraph && !origins.has(paragraph)) {
         origins.set(paragraph, y);
@@ -138,53 +154,66 @@ export class WrapFlow {
       }
 
       const isFirst = this.opensParagraph(lines, token);
-      let probe = this.estimate(token, isFirst);
+      const estimate = () => this.estimate(token, isFirst, beforeHeight);
+      let probe = estimate();
       if (isFirst && atPageTop(y, pageH)) {
-        probe = Math.max(1, probe - this.metrics.beforeHeight(paragraph, true));
+        probe = Math.max(1, probe - (beforeHeight ?? this.metrics.beforeHeight(paragraph, true)));
       }
-      let lineY = this.skipPage(y, probe, pageH);
-      lineY = this.belowNowrap(lineY, probe, boxes);
-      lineY = this.skipPage(lineY, probe, pageH);
-      lineY = this.belowNowrap(lineY, probe, boxes);
-
+      let lineY = y;
       const bounds = this.bounds(token, isFirst, contentWidth);
-      const blocked = this.blockedAt(lineY, probe, bounds, contentWidth, boxes);
-      const segments = freeSegments(blocked, bounds.left, bounds.right).filter((span) => span.right - span.left >= MIN_SEGMENT);
-      if (segments.length === 0) {
-        const next = this.nextY(lineY, probe, boxes);
-        y = next > lineY ? next : lineY + Math.max(4, probe * 0.25);
-        continue;
-      }
-
-      const band: Line[] = [];
+      let band: Line[] = [];
       let cursor = index;
-      let ended = false;
-      for (const segment of segments) {
-        if (cursor >= tokens.length || ended) {
-          break;
+      let bandH = 0;
+      let contourSteps = 0;
+      while (true) {
+        lineY = this.fitY(lineY, probe, pageH, boxes);
+        const segments = this.segmentsAt(lineY, probe, bounds, contentWidth, boxes);
+        const attempt: BandAttempt = {
+          splitTokens: new Map(),
+          wordWidths: new Map(),
+          beforeHeight: isFirst ? beforeHeight ?? this.metrics.beforeHeight(paragraph, true) : undefined,
+        };
+        band = [];
+        cursor = index;
+        for (const segment of segments) {
+          if (cursor >= tokens.length || band.at(-1)?.isLast) {
+            break;
+          }
+          const filled = this.fillSegment(tokens, cursor, segment, contentWidth, band.length === 0 && isFirst, bounds, attempt);
+          if (filled) {
+            band.push(filled.line);
+            cursor = filled.next;
+          }
         }
-        const filled = this.fillSegment(tokens, cursor, segment, contentWidth, band.length === 0 && isFirst, bounds);
-        if (!filled) {
+        if (cursor === index) {
+          // 轮廓没有可排空间时直接越过。推进版面坐标，始终保留当前文字 token。
+          const skipContour = contourSteps >= 128;
+          lineY = this.nextY(lineY, probe, boxes, skipContour);
+          contourSteps = skipContour ? 0 : contourSteps + 1;
+          probe = estimate();
           continue;
         }
-        band.push(filled.line);
-        cursor = filled.next;
-        ended = filled.ended;
-      }
-      if (cursor === index) {
-        y = this.nextY(lineY, probe, boxes);
-        if (y <= lineY) {
-          y = lineY + Math.max(4, probe * 0.25);
+        if (isFirst && atPageTop(lineY, pageH)) {
+          for (const line of band) {
+            this.stripBefore(line);
+          }
         }
-        continue;
-      }
-
-      if (isFirst && atPageTop(lineY, pageH)) {
-        for (const line of band) {
-          this.stripBefore(line);
+        bandH = Math.max(...band.map((line) => line.height));
+        if (bandH <= probe + 0.01 || (
+          this.fitY(lineY, bandH, pageH, boxes) === lineY &&
+          sameSegments(segments, this.segmentsAt(lineY, bandH, bounds, contentWidth, boxes))
+        )) {
+          break;
         }
+        for (const [at, original] of attempt.splitTokens) {
+          tokens[at] = original;
+        }
+        for (const [word, prior] of attempt.wordWidths) {
+          word.kernedWidth = prior.width;
+          word.spacingAfter = prior.spacing;
+        }
+        probe = bandH;
       }
-      const bandH = Math.max(...band.map((line) => line.height));
       band[0].height = bandH;
       band[0].fullHeight = bandH;
       for (let i = 0; i < band.length; i += 1) {
@@ -192,7 +221,7 @@ export class WrapFlow {
         band[i].sharesBand = i > 0;
         lines.push(band[i]);
       }
-      y = this.pullOrphan(lines, band, lineY, bandH, pageH);
+      y = this.pullOrphan(lines, band, lineY, bandH, pageH, boxes);
       y = this.afterSection(band[band.length - 1], y, pageH);
       index = cursor;
     }
@@ -205,11 +234,11 @@ export class WrapFlow {
     return !prev || prev.isLast || prev.paragraph !== paragraph;
   }
 
-  private estimate(token: LayoutToken, isFirst: boolean): number {
+  private estimate(token: LayoutToken, isFirst: boolean, beforeHeight?: number): number {
     const paragraph = token.start.data.paragraph;
     const size = Math.max(fontSizeOf(token.start.data.getStyle()), token.start.data.height, DEFAULT_FONT_SIZE);
     const content = this.metrics.lineHeight(paragraph, size);
-    const before = isFirst ? this.metrics.beforeHeight(paragraph, true) : 0;
+    const before = isFirst ? beforeHeight ?? this.metrics.beforeHeight(paragraph, true) : 0;
     return Math.max(content + before, size);
   }
 
@@ -251,7 +280,22 @@ export class WrapFlow {
     return floor;
   }
 
-  private nextY(y: number, height: number, boxes: FlowBox[]): number {
+  private fitY(y: number, height: number, pageH: number, boxes: FlowBox[]): number {
+    while (true) {
+      const next = this.belowNowrap(this.skipPage(y, height, pageH), height, boxes);
+      if (next === y) {
+        return y;
+      }
+      y = next;
+    }
+  }
+
+  private segmentsAt(y: number, height: number, bounds: Span, contentWidth: number, boxes: FlowBox[]): Span[] {
+    const blocked = this.blockedAt(y, height, bounds, contentWidth, boxes);
+    return freeSegments(blocked, bounds.left, bounds.right).filter((span) => span.right - span.left >= MIN_SEGMENT - 0.01);
+  }
+
+  private nextY(y: number, height: number, boxes: FlowBox[], skipContour: boolean): number {
     let next = Number.POSITIVE_INFINITY;
     for (const box of boxes) {
       if (box.wrap === "none" || box.wrap === "nowrap") {
@@ -260,7 +304,7 @@ export class WrapFlow {
       if (y >= box.bottom || y + height <= box.top) {
         continue;
       }
-      const step = box.wrap === "tight" || box.wrap === "through" ? y + Math.max(4, height * 0.25) : box.bottom;
+      const step = box.polygon && !skipContour ? Math.min(box.bottom, y + Math.max(4, height * 0.25)) : box.bottom;
       next = Math.min(next, step);
     }
     return Number.isFinite(next) ? next : y + Math.max(4, height * 0.25);
@@ -275,40 +319,28 @@ export class WrapFlow {
       if (y + height <= box.top || y >= box.bottom) {
         continue;
       }
-      const sample = Math.min(box.bottom - 0.5, Math.max(box.top + 0.5, y + height * 0.5));
-      for (const piece of this.pieces(box, sample)) {
-        spans.push(this.applySide(piece, box.side, bounds.left, Math.min(bounds.right, contentWidth)));
+      const pieces = this.pieces(box, y, y + height);
+      if (box.side === "both") {
+        spans.push(...pieces);
+      } else if (pieces.length) {
+        const whole = { left: pieces[0].left, right: pieces.at(-1)!.right };
+        spans.push(this.applySide(whole, box.side, bounds.left, Math.min(bounds.right, contentWidth)));
       }
     }
     return spans;
   }
 
-  private pieces(box: FlowBox, mid: number): Span[] {
+  private pieces(box: FlowBox, top: number, bottom: number): Span[] {
     const polygon = box.polygon;
-    const contour = (box.wrap === "tight" || box.wrap === "through") && polygon && polygon.length >= 3;
-    if (!contour || !polygon) {
+    if (!polygon || polygon.length < 3) {
       return [{ left: box.left, right: box.right }];
     }
-    const localY = mid - box.originY;
-    if (box.wrap === "through") {
-      const intervals = this.scanline.intervalsAt(polygon, localY);
-      if (intervals.length === 0) {
-        return [{ left: box.left, right: box.right }];
-      }
-      return intervals.map((interval) => this.toContent(box, interval));
+    const intervals = this.scanline.intervalsInBand(polygon, top - box.distBottom, bottom + box.distTop);
+    if (!intervals.length) {
+      return [];
     }
-    const range = this.scanline.rangeAt(polygon, localY);
-    if (!range) {
-      return [{ left: box.left, right: box.right }];
-    }
-    return [this.toContent(box, range)];
-  }
-
-  private toContent(box: FlowBox, local: Span): Span {
-    return {
-      left: box.originX + local.left - box.distLeft,
-      right: box.originX + local.right + box.distRight,
-    };
+    const blocked = box.wrap === "tight" ? [{ left: intervals[0].left, right: intervals.at(-1)!.right }] : intervals;
+    return blocked.map((span) => ({ left: span.left - box.distLeft, right: span.right + box.distRight }));
   }
 
   /** left：字只留在图左侧；right：只留在右侧；largest：留在更宽的一侧。 */
@@ -334,8 +366,10 @@ export class WrapFlow {
     contentWidth: number,
     isFirst: boolean,
     bounds: Span,
-  ): { line: Line; next: number; ended: boolean } | null {
+    attempt: BandAttempt,
+  ): { line: Line; next: number } | null {
     const line = new Line();
+    const { splitTokens, wordWidths } = attempt;
     const roomOf = () => segment.right - segment.left - line.width;
     let cursor = start;
     let ended = false;
@@ -349,25 +383,25 @@ export class WrapFlow {
         break;
       }
       if (token.kind === "break") {
-        this.append(line, token);
+        this.append(line, token, wordWidths);
         cursor += 1;
         ended = true;
         break;
       }
       const need = this.lookahead(tokens, cursor);
-      if (line.length > 0 && line.width + need > roomOf() + 0.01) {
+      if (line.length > 0 && need > roomOf() + 0.01) {
         const kinsoku = !flagOff(line.paragraph?.attrs.kinsoku);
-        const short = line.width + need - roomOf();
+        const short = need - roomOf();
         if (kinsoku && short > 0 && this.compressor.tryCompress(line, short)) {
           this.syncWidth(line);
-          if (line.width + need <= roomOf() + 0.01) {
-            this.append(line, token);
+          if (need <= roomOf() + 0.01) {
+            this.append(line, token, wordWidths);
             cursor += 1;
             continue;
           }
         }
-        if (token.canOverflow) {
-          this.append(line, token);
+        if (token.canOverflow && segment.right >= bounds.right - 0.01) {
+          this.append(line, token, wordWidths);
           line.overflowPun = true;
           cursor += 1;
           continue;
@@ -381,9 +415,12 @@ export class WrapFlow {
         if (take <= 0) {
           return null;
         }
-        this.append(line, this.slice(token, take));
+        this.append(line, this.slice(token, take), wordWidths);
         const rest = this.rest(token, take);
         if (rest) {
+          if (!splitTokens.has(cursor)) {
+            splitTokens.set(cursor, token);
+          }
           tokens[cursor] = rest;
         } else {
           cursor += 1;
@@ -396,18 +433,18 @@ export class WrapFlow {
           return null;
         }
       }
-      this.append(line, token);
+      this.append(line, token, wordWidths);
       cursor += 1;
     }
     if (line.length === 0) {
       return null;
     }
     line.isLast = ended;
-    this.finish(line, segment, contentWidth, isFirst);
-    return { line, next: cursor, ended };
+    this.finish(line, segment, contentWidth, isFirst, attempt.beforeHeight);
+    return { line, next: cursor };
   }
 
-  private finish(line: Line, segment: Span, contentWidth: number, isFirst: boolean): void {
+  private finish(line: Line, segment: Span, contentWidth: number, isFirst: boolean, beforeHeight?: number): void {
     line.isFirst = isFirst;
     line.leftBlankWidth = segment.left;
     line.rightBlankWidth = Math.max(0, contentWidth - segment.right);
@@ -417,11 +454,11 @@ export class WrapFlow {
         line.outlineLabel = label;
       }
     }
-    this.applyHeights(line);
+    this.applyHeights(line, beforeHeight);
     this.positioner.place(line, contentWidth);
   }
 
-  private applyHeights(line: Line): void {
+  private applyHeights(line: Line, beforeHeight?: number): void {
     let maxFont = DEFAULT_FONT_SIZE;
     let node = line.startNode;
     for (let i = 0; i < line.length; i += 1) {
@@ -436,7 +473,7 @@ export class WrapFlow {
       node = node.next;
     }
     line.maxCharHeight = maxFont;
-    line.beforeHeight = this.metrics.beforeHeight(line.paragraph, line.isFirst);
+    line.beforeHeight = beforeHeight ?? this.metrics.beforeHeight(line.paragraph, line.isFirst);
     line.afterHeight = this.metrics.afterHeight(line.paragraph, line.isLast);
     const content = this.metrics.lineHeight(line.paragraph, maxFont);
     const rule = line.paragraph?.attrs.lineRule;
@@ -474,7 +511,7 @@ export class WrapFlow {
       lines.push(line);
       return y + height;
     }
-    const laid = paginateTableRows(heights, headerRowCount(table), y, pageH);
+    const laid = paginateTableRows(table, y, pageH);
     laid.slices.forEach((slice, index) => {
       const line = this.marker(token, "table");
       line.top = slice.top;
@@ -532,6 +569,7 @@ export class WrapFlow {
     y: number,
     pageH: number,
     contentWidth: number,
+    boxes: FlowBox[],
   ): number {
     if (!Number.isFinite(pageH)) {
       return y;
@@ -551,7 +589,7 @@ export class WrapFlow {
         y = this.skipTo(y, pageH);
       }
     }
-    y = this.holdWrapPrevious(lines, y, pageH, this.estimate(token, true));
+    y = this.holdWrapPrevious(lines, y, pageH, this.estimate(token, true), boxes);
     if (!flagOff(attrs?.widowControl) && this.likelyMultiLine(tokens, index, contentWidth)) {
       const probe = this.estimate(token, true);
       const rem = pageH - (y % pageH);
@@ -617,7 +655,7 @@ export class WrapFlow {
     return false;
   }
 
-  private holdWrapPrevious(lines: Line[], y: number, pageH: number, probe: number): number {
+  private holdWrapPrevious(lines: Line[], y: number, pageH: number, probe: number, boxes: FlowBox[]): number {
     const prev = lines.at(-1);
     if (!prev?.isLast || !flagOn(prev.paragraph?.attrs.keepNext) || !Number.isFinite(pageH)) {
       return y;
@@ -634,10 +672,12 @@ export class WrapFlow {
     }
     const nextTop = (Math.floor(startTop / pageH) + 1) * pageH;
     const shift = nextTop - startTop;
-    for (const line of lines) {
-      if (line.paragraph === prev.paragraph && line.top >= startTop - 0.5) {
-        line.top += shift;
-      }
+    const movedLines = lines.filter((line) => line.paragraph === prev.paragraph && line.top >= startTop - 0.5);
+    if (movedLines.some((line) => !this.canMoveLine(line, line.top + shift, pageH, boxes))) {
+      return y;
+    }
+    for (const line of movedLines) {
+      line.top += shift;
     }
     const moved = lines.find((line) => line.paragraph === prev.paragraph && line.isFirst);
     let dropped = 0;
@@ -656,7 +696,7 @@ export class WrapFlow {
   }
 
   private stripBefore(line: Line): void {
-    if (!line.isFirst || line.beforeHeight <= 0) {
+    if (line.beforeHeight <= 0) {
       return;
     }
     line.height -= line.beforeHeight;
@@ -664,7 +704,7 @@ export class WrapFlow {
     line.beforeHeight = 0;
   }
 
-  private pullOrphan(lines: Line[], band: Line[], lineY: number, bandH: number, pageH: number): number {
+  private pullOrphan(lines: Line[], band: Line[], lineY: number, bandH: number, pageH: number, boxes: FlowBox[]): number {
     const line = band[0];
     const placed = lineY + bandH;
     if (!line?.isLast || line.isFirst || !Number.isFinite(pageH) || flagOff(line.paragraph?.attrs.widowControl)) {
@@ -675,16 +715,29 @@ export class WrapFlow {
       return placed;
     }
     const prevTop = prev.top;
-    for (const item of lines) {
-      if (item.paragraph === line.paragraph && Math.abs(item.top - prevTop) < 0.5) {
-        item.top += line.top - prevTop;
-      }
-    }
+    const prevBand = lines.filter((item) => item.paragraph === line.paragraph && Math.abs(item.top - prevTop) < 0.5);
     const newTop = line.top + prev.height;
+    if (prevBand.some((item) => !this.canMoveLine(item, line.top, pageH, boxes)) ||
+      band.some((item) => !this.canMoveLine(item, newTop, pageH, boxes))) {
+      return placed;
+    }
+    for (const item of prevBand) {
+      item.top = line.top;
+    }
     for (const item of band) {
       item.top = newTop;
     }
     return newTop + bandH;
+  }
+
+  private canMoveLine(line: Line, y: number, pageH: number, boxes: FlowBox[]): boolean {
+    if (this.fitY(y, line.height, pageH, boxes) !== y) {
+      return false;
+    }
+    const bounds = { left: 0, right: line.contentWidth };
+    return !this.blockedAt(y, line.height, bounds, line.contentWidth, boxes).some((span) =>
+      span.left < line.contentWidth - line.rightBlankWidth - 0.01 && span.right > line.leftBlankWidth + 0.01,
+    );
   }
 
   private syncWidth(line: Line): void {
@@ -700,51 +753,14 @@ export class WrapFlow {
     line.width = width;
   }
 
-  private collapseSpacing(lines: Line[], pageH: number): void {
-    for (let i = 1; i < lines.length; i += 1) {
-      const prev = lines[i - 1];
-      const curr = lines[i];
-      if (curr.sharesBand || Math.abs(curr.top - prev.top) < 0.5) {
-        continue;
-      }
-      if (Number.isFinite(pageH) && atPageTop(curr.top, pageH)) {
-        continue;
-      }
-      if (prev.type || curr.type || !prev.isLast || !curr.isFirst) {
-        continue;
-      }
-      if (!prev.paragraph || !curr.paragraph || prev.paragraph === curr.paragraph) {
-        continue;
-      }
-      const gap = this.metrics.collapsedGap(prev.paragraph, curr.paragraph, prev.afterHeight, curr.beforeHeight);
-      const after = prev.afterHeight;
-      const oldBefore = curr.beforeHeight;
-      const bandTop = curr.top;
-      const following = gap - after - oldBefore;
-      this.shrinkAfter(lines, prev);
-      for (let j = i; j < lines.length; j += 1) {
-        const line = lines[j];
-        if (Math.abs(line.top - bandTop) < 0.5) {
-          const before = line.beforeHeight;
-          line.top -= after;
-          line.beforeHeight = gap;
-          line.height += gap - before;
-          line.fullHeight = line.height;
-          continue;
-        }
-        line.top += following;
-      }
-    }
-  }
-
   /** 段后间距记在带断行的片段上，行高记在这一基线的主片段上。 */
   private shrinkAfter(lines: Line[], last: Line): void {
     const after = last.afterHeight;
     last.afterHeight = 0;
     last.height -= after;
     last.fullHeight = last.height;
-    const owner = lines.find((line) => !line.sharesBand && Math.abs(line.top - last.top) < 0.5 && line !== last);
-    if (owner) {
+    const owner = bandOwner(lines);
+    if (owner && owner !== last) {
       owner.height -= after;
       owner.fullHeight = owner.height;
     }
@@ -806,13 +822,20 @@ export class WrapFlow {
     return width;
   }
 
-  private append(line: Line, token: LayoutToken): void {
+  private append(line: Line, token: LayoutToken, widths: Map<Word, { width: number; spacing: number }>): void {
     if (!line.startNode) {
       line.startNode = token.start;
       line.paragraph = token.start.data.paragraph;
     }
     line.length += token.length;
     line.width += token.width;
+    let node: LinkedNode<Word> | null = token.start;
+    for (let i = 0; i < token.length && node; i += 1, node = node.next) {
+      const word = node.data;
+      if (!widths.has(word)) {
+        widths.set(word, { width: word.kernedWidth, spacing: word.spacingAfter });
+      }
+    }
   }
 }
 
@@ -822,6 +845,20 @@ function atPageTop(y: number, pageH: number): boolean {
   }
   const rem = pageH - (y % pageH);
   return rem >= pageH - 0.5;
+}
+
+function bandOwner(lines: Line[]): Line | undefined {
+  let index = lines.length - 1;
+  while (lines[index]?.sharesBand) {
+    index -= 1;
+  }
+  return lines[index];
+}
+
+function sameSegments(a: Span[], b: Span[]): boolean {
+  return a.length === b.length && a.every((span, index) =>
+    Math.abs(span.left - b[index].left) < 0.01 && Math.abs(span.right - b[index].right) < 0.01,
+  );
 }
 
 function freeSegments(blocks: Span[], left: number, right: number): Span[] {

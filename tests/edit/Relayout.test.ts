@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Block } from "../../src/model/block/Block";
 import { Paragraph } from "../../src/model/block/Paragraph";
 import { Document } from "../../src/model/document/Document";
@@ -6,11 +6,13 @@ import { Table, TableCell, TableColumn, TableRow } from "../../src/model/table/T
 import { WordStreamBuilder } from "../../src/model/flatten/WordStreamBuilder";
 import { FallbackMeasurer } from "../../src/layout/measure/FallbackMeasurer";
 import { StoryLayout } from "../../src/layout/StoryLayout";
+import { Paginator } from "../../src/layout/page/Paginator";
 import { CaretPos } from "../../src/selection/CaretPos";
 import type { StoryRef } from "../../src/selection/StoryRef";
 import { Mutator } from "../../src/edit/Mutator";
 import { Relayout, type RelayoutHost } from "../../src/edit/Relayout";
 import { PageSetup } from "../../src/render/page/PageSetup";
+import type { Line } from "../../src/model/line/Line";
 
 function paragraph(text: string, id: number): Paragraph {
   const p = new Paragraph(id);
@@ -36,7 +38,90 @@ function constraints(width = 200, pageHeight = 400) {
   };
 }
 
+function geometry(lines: Line[]) {
+  return lines.map((line) => [
+    line.paragraph?.id, line.type, line.top, line.height, line.beforeHeight, line.afterHeight,
+    line.tableRowFrom, line.tableRowTo, line.tableClipTop,
+    Array.from({ length: line.length }, (_, index) => {
+      const word = line.getWord(index);
+      return [word?.char, word?.left, word?.kernedWidth];
+    }),
+  ]);
+}
+
 describe("StoryLayout.reflow", () => {
+  it("反复分页能还原页首段前距和跨段合并的间距", () => {
+    const document = doc(...Array.from({ length: 18 }, () => "这是一段普通测试文字"));
+    document.paragraphs.each(({ data }, index) => {
+      data.attrs = {
+        before: index % 3 === 1 ? "250" : "120",
+        after: index % 3 === 2 ? "430" : "80",
+        keepNext: index % 4 === 1 ? "1" : undefined,
+      };
+    });
+    const layout = new StoryLayout();
+    const settings = constraints(115, 83);
+    const initial = geometry(layout.layout(document, settings));
+    const reflowed = layout.reflow(document, settings, []);
+    expect(geometry(reflowed)).toEqual(initial);
+    expect(geometry(layout.reflow(document, settings, [], reflowed))).toEqual(initial);
+  });
+
+  it.each([false, true])("普通文本取得相同的完整排版结果，复用旧分页与行对象（行尾 %s）", (append) => {
+    const document = doc("上一段", "居中的标题 12", "下一段");
+    const paragraph = document.paragraphs.head!.next!.data;
+    paragraph.attrs = { textAlign: "center", before: "240", after: "220" };
+    const settings = constraints(260, 120);
+    const engine = new StoryLayout();
+    const previous = new StoryLayout().layout(document, settings);
+    const before = geometry(previous);
+    const line = paragraph.lines[0];
+    const body: StoryRef = { slot: "body" };
+    const mutator = new Mutator();
+    const paginate = vi.spyOn(Paginator.prototype, "paginate");
+    try {
+      const node = append ? line.getLastNode() : line.getNode(2);
+      const patch = mutator.insert(document, body, new CaretPos(body, node, false), "中A");
+      const reflow = (impact = patch.impact) => engine.reflow(document, settings, impact.dirty, previous, impact.textAnchor);
+      expect(reflow()).toBe(previous);
+      expect(paragraph.lines[0]).toBe(line);
+      const edited = geometry(previous);
+      expect(edited).not.toEqual(before);
+      expect(reflow(mutator.invert(document, patch))).toBe(previous);
+      expect(geometry(previous)).toEqual(before);
+      expect(reflow(mutator.replay(document, patch))).toBe(previous);
+      expect(geometry(previous)).toEqual(edited);
+      expect(paginate).not.toHaveBeenCalled();
+      expect(geometry(new StoryLayout().layout(document, settings))).toEqual(edited);
+    } finally {
+      paginate.mockRestore();
+    }
+  });
+
+  it.each(["wrap", "height"] as const)("输入改变 %s 时重新分页并匹配完整排版", (change) => {
+    const document = doc("上一段", "正在输入", "下一段");
+    const paragraph = document.paragraphs.head!.next!.data;
+    const settings = constraints(92, 90);
+    const engine = new StoryLayout();
+    const previous = engine.layout(document, settings);
+    const initial = geometry(previous);
+    const mutator = new Mutator();
+    const body: StoryRef = { slot: "body" };
+    const end = new CaretPos(body, paragraph.lines.at(-1)!.getLastNode(), false);
+    const patch = change === "wrap"
+      ? mutator.insert(document, body, end, "字".repeat(34))
+      : mutator.insert(document, body, end, "字", { fontSizePx: 26 });
+    const reflowed = engine.reflow(document, settings, patch.impact.dirty, previous, patch.impact.textAnchor);
+    expect(reflowed).not.toBe(previous);
+    const edited = geometry(reflowed);
+    const undo = mutator.invert(document, patch);
+    const undone = engine.reflow(document, settings, undo.dirty, reflowed, undo.textAnchor);
+    expect(geometry(undone)).toEqual(initial);
+    const redo = mutator.replay(document, patch);
+    expect(geometry(engine.reflow(document, settings, redo.dirty, undone, redo.textAnchor))).toEqual(edited);
+    expect(geometry(new StoryLayout().layout(document, settings))).toEqual(edited);
+  });
+
   it("改第二段时第一段 Line 仍是原对象，后续 top 跟着加高", () => {
     const document = doc("第一段", "第二段");
     const engine = new StoryLayout();

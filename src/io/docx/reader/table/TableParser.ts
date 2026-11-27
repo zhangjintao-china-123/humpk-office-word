@@ -31,13 +31,22 @@ export class TableParser {
     table.indent = readLength(first(tblPr, "w:tblInd"));
     table.cellMargin = readInsets(first(tblPr, "w:tblCellMar")) ?? styleDef?.tableCellMargin;
     const tblpPr = first(tblPr, "w:tblpPr");
-    if (tblpPr) {
+    if (tblpPr?.attributes.length) {
       table.anchorType = "relative";
+      const offset = (name: string) => ctx.units.twipToPx(attr(tblpPr, name));
+      const overlap = attr(first(tblPr, "w:tblOverlap"), "w:val");
       table.anchorSet = {
-        leftFrom: "page",
-        left: ctx.units.twipToPx(attr(tblpPr, "w:tblpX")),
-        topFrom: "paragraph",
-        top: ctx.units.twipToPx(attr(tblpPr, "w:tblpY")),
+        leftFrom: attr(tblpPr, "w:horzAnchor") ?? "text",
+        left: offset("w:tblpX"),
+        leftAlign: attr(tblpPr, "w:tblpXSpec"),
+        topFrom: attr(tblpPr, "w:vertAnchor") ?? "margin",
+        top: offset("w:tblpY"),
+        topAlign: attr(tblpPr, "w:tblpYSpec"),
+        distLeft: offset("w:leftFromText"),
+        distRight: offset("w:rightFromText"),
+        distTop: offset("w:topFromText"),
+        distBottom: offset("w:bottomFromText"),
+        allowOverlap: overlap ? overlap !== "never" : undefined,
       };
     }
 

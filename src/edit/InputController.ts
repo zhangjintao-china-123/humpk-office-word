@@ -1,7 +1,6 @@
 import { moveLeft, moveLineEnd, moveLineStart, movePage, moveRight, moveVertical } from "./CaretMotion";
 import { cellsInReadingOrder, moveInFlow } from "../selection/MainWalk";
 import type { DeleteDirection } from "./DeleteCommand";
-import { EditImpact } from "./EditImpact";
 import type { EditContext } from "./EditContext";
 import { FormatCommand, type FormatAction } from "./FormatCommand";
 import { caretParagraph, OutlineCommand } from "./OutlineCommand";
@@ -27,6 +26,7 @@ export interface InputHost extends EditContext {
   hitContext(): HitContext;
   caretCss(): { x: number; y: number; height: number } | null;
   caretWorld(): CaretBox | null;
+  onSelectionChange(): void;
   requestSave(): void;
   copy(): Promise<void> | void;
   cut(): Promise<void> | void;
@@ -303,12 +303,12 @@ export class InputController {
       const norm = primary.normalized();
       if (key === "ArrowLeft") {
         selection.collapse(norm.start);
-        this.host.afterEdit(new EditImpact(norm.start.story, []));
+        this.host.onSelectionChange();
         return true;
       }
       if (key === "ArrowRight") {
         selection.collapse(norm.end);
-        this.host.afterEdit(new EditImpact(norm.end.story, []));
+        this.host.onSelectionChange();
         return true;
       }
     }
@@ -331,7 +331,7 @@ export class InputController {
     } else {
       selection.collapse(next);
     }
-    this.host.afterEdit(new EditImpact(next.story, []));
+    this.host.onSelectionChange();
     return true;
   }
 
@@ -441,6 +441,6 @@ export class InputController {
     }
     this.resetColumn();
     this.clearPending();
-    this.host.afterEdit(new EditImpact(story, []));
+    this.host.onSelectionChange();
   }
 }

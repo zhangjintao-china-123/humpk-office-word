@@ -6,6 +6,7 @@ import type { AsianLayoutSpec } from "../model/inline/AsianLayout";
 import type { EnclosedSpec } from "../model/inline/EnclosedChar";
 import type { Table } from "../model/table/Table";
 import { Word } from "../model/inline/Word";
+import { paragraphStartWord } from "../model/flatten/WordStreamBuilder";
 import type { LinkedNode } from "../model/list/LinkedList";
 import { CaretPos } from "../selection/CaretPos";
 import { SelRange } from "../selection/SelRange";
@@ -53,10 +54,11 @@ export class Mutator {
       current = new CaretPos(story, node, true);
     }
 
-    this.syncAll(document, dirty);
+    const textAnchor = structure === "none" && inserted.length ? caret.node : undefined;
+    this.syncAll(document, dirty, textAnchor);
     return {
       story,
-      impact: this.impact(story, dirty, structure),
+      impact: this.impact(story, dirty, structure, textAnchor),
       caret: current,
       originalCaret: original,
       inserted,
@@ -130,8 +132,8 @@ export class Mutator {
     }
 
     const dirty = new Set(patch.impact.dirty);
-    this.syncAll(document, dirty);
-    return this.impact(patch.story, dirty, "none");
+    this.syncAll(document, dirty, patch.impact.textAnchor);
+    return this.impact(patch.story, dirty, "none", patch.impact.textAnchor);
   }
 
   replay(document: Document, patch: MutationPatch): EditImpact {
@@ -176,7 +178,7 @@ export class Mutator {
       }
     }
     const dirty = new Set(patch.impact.dirty);
-    this.syncAll(document, dirty);
+    this.syncAll(document, dirty, patch.impact.textAnchor);
     return patch.impact;
   }
 
@@ -907,14 +909,14 @@ export class Mutator {
     }
   }
 
-  private syncAll(document: Document, dirty: Iterable<Paragraph>): void {
+  private syncAll(document: Document, dirty: Iterable<Paragraph>, textAnchor?: LinkedNode<Word>): void {
     for (const paragraph of dirty) {
-      this.syncBlocks(document, paragraph);
+      this.syncBlocks(document, paragraph, textAnchor);
     }
   }
 
-  private syncBlocks(document: Document, paragraph: Paragraph): void {
-    const nodes = this.nodesOf(document, paragraph);
+  private syncBlocks(document: Document, paragraph: Paragraph, textAnchor?: LinkedNode<Word>): void {
+    const nodes = this.nodesOf(document, paragraph, textAnchor);
     if (!nodes.length && !paragraph.node) {
       return;
     }
@@ -994,8 +996,16 @@ export class Mutator {
     return next;
   }
 
-  private nodesOf(document: Document, paragraph: Paragraph): LinkedNode<Word>[] {
+  private nodesOf(document: Document, paragraph: Paragraph, textAnchor?: LinkedNode<Word>): LinkedNode<Word>[] {
     const nodes: LinkedNode<Word>[] = [];
+    if (textAnchor?.data.paragraph === paragraph) {
+      let node: LinkedNode<Word> | null = paragraphStartWord(textAnchor);
+      while (node?.data.paragraph === paragraph) {
+        nodes.push(node);
+        node = node.next;
+      }
+      return nodes;
+    }
     let node = document.words.head;
     while (node) {
       if (node.data.paragraph === paragraph) {
@@ -1072,14 +1082,14 @@ export class Mutator {
     return false;
   }
 
-  private impact(story: StoryRef, dirty: Iterable<Paragraph>, structure: EditStructure): EditImpact {
+  private impact(story: StoryRef, dirty: Iterable<Paragraph>, structure: EditStructure, textAnchor?: LinkedNode<Word>): EditImpact {
     const unique: Paragraph[] = [];
     for (const paragraph of dirty) {
       if (!unique.includes(paragraph)) {
         unique.push(paragraph);
       }
     }
-    return new EditImpact(story, unique, structure);
+    return new EditImpact(story, unique, structure, undefined, textAnchor);
   }
 
   private hasRunStyle(style: RunStyle): boolean {

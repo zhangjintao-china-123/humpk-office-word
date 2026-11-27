@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Block } from "../../src/model/block/Block";
 import { Paragraph } from "../../src/model/block/Paragraph";
 import { Document } from "../../src/model/document/Document";
@@ -6,9 +6,50 @@ import { WordStreamBuilder } from "../../src/model/flatten/WordStreamBuilder";
 import { FallbackMeasurer } from "../../src/layout/measure/FallbackMeasurer";
 import { StoryLayout } from "../../src/layout/StoryLayout";
 import { StoryPainter } from "../../src/render/story/StoryPainter";
-import type { Draw } from "../../src/render/canvas/Draw";
+import { Draw } from "../../src/render/canvas/Draw";
 
 describe("StoryPainter 编辑标记与中文版式绘制", () => {
+  it.each(["center", "right", "distribute"] as const)("固定行距保留 %s 对齐的行尾字符", (alignment) => {
+    const model = new Document();
+    const paragraph = new Paragraph(1);
+    paragraph.attrs = { lineRule: "exact", line: "900", textAlign: alignment, firstLineChars: 201 };
+    const block = new Block();
+    block.text = "示例封面标题";
+    block.style.fontSizePx = 34;
+    paragraph.addBlock(block);
+    model.addParagraph(paragraph);
+    new WordStreamBuilder().build(model);
+    const [line] = new StoryLayout().layout(model, {
+      contentWidth: 580,
+      contentHeight: 700,
+      measurer: new FallbackMeasurer(),
+    });
+
+    const rect = vi.fn<(left: number, top: number, width: number, height: number) => void>();
+    const fillText = vi.fn<(text: string, left: number, baseline: number) => void>();
+    const context = {
+      save() {}, restore() {}, beginPath() {}, clip() {},
+      getTransform: () => ({ inverse: () => ({ a: 0.5, c: 0, e: 20 }) }),
+      rect, fillText,
+    };
+    const draw = new Draw({
+      width: 1600,
+      height: 1000,
+      getContext: () => context,
+    } as unknown as HTMLCanvasElement);
+
+    new StoryPainter().paintLine(draw, line, 70, 100);
+
+    expect(fillText.mock.calls.map(([text]) => text).join("")).toBe(block.text);
+    const [left, top, width, height] = rect.mock.calls[0];
+    expect(top).toBe(100 + line.beforeHeight);
+    expect(height).toBe(60);
+    for (const [index, [, x]] of fillText.mock.calls.entries()) {
+      expect(x).toBeGreaterThanOrEqual(left);
+      expect(x + line.getWord(index)!.kernedWidth).toBeLessThanOrEqual(left + width);
+    }
+  });
+
   it("开启 showMarks 时绘制空格点、制表符箭头和回车符，并正确绘制中文版式与段落底纹边框", () => {
     const document = new Document();
     const p = new Paragraph(1);

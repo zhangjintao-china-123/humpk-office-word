@@ -18,6 +18,9 @@ export function buildFieldView(document: Document, lines: Line[], labels: PageLa
   const bookmarkText = new Map<string, string>();
   const bookmarkPage = new Map<string, string>();
   for (const paragraph of paragraphs) {
+    if (!paragraph.bookmarks.length) {
+      continue;
+    }
     const page = pageOf(paragraph, lines, labels, pageHeight);
     for (const name of paragraph.bookmarks) {
       bookmarkText.set(name, paragraph.getFullText());

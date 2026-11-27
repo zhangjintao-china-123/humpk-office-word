@@ -20,6 +20,13 @@ export function cellVisibleRect(box: TableCellBox): { x: number; y: number; widt
   };
 }
 
+export function clipCellBox(box: TableCellBox, top: number, bottom: number): TableCellBox | null {
+  const visible = cellVisibleRect(box);
+  const visibleY = Math.max(visible.y, top);
+  const visibleHeight = Math.min(visible.y + visible.height, bottom) - visibleY;
+  return visibleHeight > 0 ? { ...box, visibleY, visibleHeight } : null;
+}
+
 export class TableGeometry {
   boxesForSlice(
     table: Table,
@@ -31,46 +38,13 @@ export class TableGeometry {
     clipTop = 0,
     sliceHeight?: number,
   ): TableCellBox[] {
-    const boxes = this.placeSlice(table, from, to, headerRows, originX, originY, clipTop);
-    if (sliceHeight == null) {
-      return boxes;
-    }
-    return boxes.map((box) => {
-      const top = Math.max(box.y, originY);
-      const bottom = Math.min(box.y + box.height, originY + sliceHeight);
-      return { ...box, visibleY: top, visibleHeight: Math.max(0, bottom - top) };
-    });
-  }
-
-  private placeSlice(
-    table: Table,
-    from: number,
-    to: number,
-    headerRows: number,
-    originX: number,
-    originY: number,
-    clipTop: number,
-  ): TableCellBox[] {
-    if (headerRows <= 0) {
-      return this.shiftY(this.boxesInSlice(table, from, to, originX, originY), clipTop);
-    }
-    const headerH = this.span(table.rowHeights, 0, headerRows);
-    const header = this.boxesInSlice(table, 0, headerRows, originX, originY).map((box) => {
-      const room = headerH - (box.y - originY);
-      return { ...box, height: Math.min(box.height, Math.max(0, room)) };
-    });
-    const body = this.shiftY(
-      this.boxesInSlice(table, from, to, originX, originY + headerH).filter((box) => box.cell.rowIndex >= from),
-      clipTop,
-    );
+    const bottom = originY + (sliceHeight ?? Infinity);
+    const bodyTop = originY + this.sliceHeight(table, 0, headerRows);
+    const clip = (boxes: TableCellBox[], top: number, end: number) =>
+      boxes.map((box) => clipCellBox(box, top, end)).filter((box) => box !== null);
+    const header = headerRows ? clip(this.boxesInSlice(table, 0, headerRows, originX, originY), originY, Math.min(bodyTop, bottom)) : [];
+    const body = clip(this.boxesInSlice(table, from, to, originX, bodyTop - clipTop), bodyTop, bottom);
     return [...header, ...body];
-  }
-
-  private shiftY(boxes: TableCellBox[], clipTop: number): TableCellBox[] {
-    if (clipTop <= 0) {
-      return boxes;
-    }
-    return boxes.map((box) => ({ ...box, y: box.y - clipTop }));
   }
 
   boxesInSlice(table: Table, from: number, to: number, originX: number, originY: number): TableCellBox[] {

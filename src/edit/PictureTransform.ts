@@ -4,7 +4,7 @@ import type { Document } from "../model/document/Document";
 import { normalizeRotation, rotateVector, unrotatePoint } from "../model/graphic/DrawingTransform";
 import type { Drawing, DrawingAnchor } from "../model/inline/Drawing";
 import { Word } from "../model/inline/Word";
-import type { LinkedNode } from "../model/list/LinkedList";
+import { LinkedNode } from "../model/list/LinkedList";
 import type { StoryRef } from "../selection/StoryRef";
 import type { EditCommand } from "./EditCommand";
 import type { EditContext } from "./EditContext";
@@ -121,6 +121,7 @@ export function applyPictureWrap(drawing: Drawing, wrap: PictureWrap, offset?: {
   const previous = drawing.anchorSet;
   drawing.position = "anchor";
   drawing.anchorSet = {
+    ...previous,
     wrapSide: previous?.wrapSide ?? "both",
     distLeft: previous?.distLeft ?? PICTURE_WRAP_GAP,
     distRight: previous?.distRight ?? PICTURE_WRAP_GAP,
@@ -128,8 +129,8 @@ export function applyPictureWrap(drawing: Drawing, wrap: PictureWrap, offset?: {
     distBottom: previous?.distBottom ?? PICTURE_WRAP_GAP,
     leftFrom: previous?.leftFrom ?? "column",
     topFrom: previous?.topFrom ?? "paragraph",
-    left: previous?.left ?? offset?.left ?? 0,
-    top: previous?.top ?? offset?.top ?? 0,
+    left: previous?.leftAlign ? undefined : previous?.left ?? offset?.left ?? 0,
+    top: previous?.topAlign ? undefined : previous?.top ?? offset?.top ?? 0,
     leftAlign: previous?.leftAlign,
     topAlign: previous?.topAlign,
     wrapType: wrapTypeOf(wrap),
@@ -140,10 +141,10 @@ export function applyPictureWrap(drawing: Drawing, wrap: PictureWrap, offset?: {
 export function applyPicturePlace(drawing: Drawing, place: PicturePlace): void {
   const [vertical, horizontal] = place.split("-");
   const keep = drawing.position === "anchor" ? drawing.anchorSet : undefined;
-  const wrapType = keep?.wrapType ?? "none";
   drawing.position = "anchor";
   drawing.anchorSet = {
-    wrapType: wrapType === "none" && !drawing.shape?.text ? "square" : wrapType,
+    ...keep,
+    wrapType: keep ? keep.wrapType ?? "none" : drawing.shape?.text ? "none" : "square",
     wrapSide: keep?.wrapSide ?? "both",
     distLeft: keep?.distLeft ?? PICTURE_WRAP_GAP,
     distRight: keep?.distRight ?? PICTURE_WRAP_GAP,
@@ -152,6 +153,9 @@ export function applyPicturePlace(drawing: Drawing, place: PicturePlace): void {
     behind: keep?.behind === true,
     leftFrom: "margin",
     topFrom: "margin",
+    left: undefined,
+    top: undefined,
+    simplePosition: undefined,
     leftAlign: horizontal,
     topAlign: vertical === "middle" ? "center" : vertical,
   };
@@ -439,39 +443,58 @@ export function findDrawingNode(document: Document, drawing: Drawing): LinkedNod
   return null;
 }
 
-/** 浮动图不进字流；改回嵌入时插到段尾回车前。 */
-export function syncPictureStream(document: Document, paragraph: Paragraph, drawing: Drawing): void {
+/** 浮动图不进字流；嵌入图跟随段落中对应 Block 的顺序。 */
+export function syncPictureStream(
+  document: Document,
+  paragraph: Paragraph,
+  drawing: Drawing,
+  detached?: LinkedNode<Word>,
+): LinkedNode<Word> | null {
   const found = findDrawingNode(document, drawing);
   if (drawing.position === "anchor") {
     if (found) {
       document.words.removeNode(found);
     }
-    return;
+    return found;
   }
   if (found) {
     found.data.kind = "drawing";
     found.data.drawing = drawing;
     found.data.paragraph = paragraph;
-    return;
+    return found;
   }
-  const block = paragraph.blocks.find((item) => item.drawing === drawing);
-  if (!block) {
-    return;
+  const index = paragraph.blocks.findIndex((item) => item.drawing === drawing);
+  if (index < 0) {
+    return null;
   }
-  const word = new Word();
+  const block = paragraph.blocks[index];
+  const node = detached ?? new LinkedNode(new Word());
+  const word = node.data;
   word.kind = "drawing";
   word.drawing = drawing;
   word.block = block;
   word.paragraph = paragraph;
-  const enter = enterOf(document, paragraph);
-  if (enter) {
-    document.words.insertBefore(enter, word);
-  } else {
-    document.words.append(word);
+  const following = new Set(paragraph.blocks.slice(index + 1));
+  let next = document.words.head;
+  while (next) {
+    const word = next.data;
+    if (word.paragraph === paragraph && (word.isEnterChar() || (word.block && following.has(word.block)))) {
+      break;
+    }
+    next = next.next;
   }
+  if (next) {
+    document.words.insertNodeBefore(next, node);
+  } else {
+    document.words.appendNode(node);
+  }
+  return node;
 }
 
 export class PictureTransformCommand implements EditCommand {
+  private inlineNode?: LinkedNode<Word>;
+  private originalBlockIndex?: number;
+
   constructor(
     private readonly ctx: EditContext,
     private readonly drawing: Drawing,
@@ -479,24 +502,48 @@ export class PictureTransformCommand implements EditCommand {
     private readonly paragraph: Paragraph,
     private readonly before: PictureSnap,
     private readonly after: PictureSnap,
+    private readonly drop?: { paragraph: Paragraph; page?: { index: number; height: number } },
   ) {}
 
   do(): void {
-    this.apply(this.after);
+    this.apply(this.after, this.drop?.paragraph ?? this.paragraph, this.drop?.page);
   }
 
   undo(): void {
-    this.apply(this.before);
+    this.apply(this.before, this.paragraph);
   }
 
-  private apply(snap: PictureSnap): void {
+  private apply(snap: PictureSnap, target: Paragraph, page?: { index: number; height: number }): void {
+    const origin = target === this.paragraph ? this.drop?.paragraph ?? target : this.paragraph;
+    if (origin !== target) {
+      const index = origin.blocks.findIndex((block) => block.drawing === this.drawing);
+      if (index >= 0) {
+        const [block] = origin.blocks.splice(index, 1);
+        if (target === this.paragraph) {
+          target.blocks.splice(this.originalBlockIndex ?? target.blocks.length, 0, block);
+        } else {
+          this.originalBlockIndex = index;
+          target.addBlock(block);
+        }
+      }
+    }
     restorePicture(this.drawing, snap);
     const document = this.ctx.documentOf(this.story);
     if (document) {
-      syncPictureStream(document, this.paragraph, this.drawing);
+      this.inlineNode = syncPictureStream(document, target, this.drawing, this.inlineNode) ?? this.inlineNode;
     }
-    const impact = new EditImpact(this.story, [this.paragraph]);
-    this.ctx.relayout.apply(impact);
+    const impact = new EditImpact(this.story, origin === target ? [target] : [origin, target]);
+    this.drawing.dropPage = page?.index;
+    try {
+      this.ctx.relayout.apply(impact);
+      const placed = page == null ? undefined : document?.anchors.find((anchor) => anchor.drawing === this.drawing);
+      if (page && placed?.referencePage != null && this.drawing.anchorSet) {
+        this.drawing.anchorSet.top = (snap.anchorSet?.top ?? 0) +
+          (page.index - placed.referencePage) * page.height;
+      }
+    } finally {
+      this.drawing.dropPage = undefined;
+    }
     this.ctx.afterEdit(impact);
   }
 }
@@ -550,6 +597,9 @@ function copyAnchor(set?: DrawingAnchor): DrawingAnchor | undefined {
   return {
     ...set,
     polygon: set.polygon?.map((point) => ({ x: point.x, y: point.y })),
+    polygonExtent: set.polygonExtent && { ...set.polygonExtent },
+    effectExtent: set.effectExtent && { ...set.effectExtent },
+    simplePosition: set.simplePosition && { ...set.simplePosition },
   };
 }
 
@@ -568,18 +618,14 @@ function sameAnchor(a?: DrawingAnchor, b?: DrawingAnchor): boolean {
     a.topAlign === b.topAlign &&
     a.leftFrom === b.leftFrom &&
     a.topFrom === b.topFrom &&
+    a.wrapSide === b.wrapSide &&
+    a.distLeft === b.distLeft &&
+    a.distRight === b.distRight &&
+    a.distTop === b.distTop &&
+    a.distBottom === b.distBottom &&
+    a.simplePosition?.x === b.simplePosition?.x &&
+    a.simplePosition?.y === b.simplePosition?.y &&
     Math.abs((a.left ?? 0) - (b.left ?? 0)) < 0.5 &&
     Math.abs((a.top ?? 0) - (b.top ?? 0)) < 0.5
   );
-}
-
-function enterOf(document: Document, paragraph: Paragraph): LinkedNode<Word> | null {
-  let node = document.words.head;
-  while (node) {
-    if (node.data.paragraph === paragraph && node.data.isEnterChar()) {
-      return node;
-    }
-    node = node.next;
-  }
-  return null;
 }

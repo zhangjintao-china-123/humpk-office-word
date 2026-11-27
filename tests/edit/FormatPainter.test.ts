@@ -228,6 +228,7 @@ describe("FormatPainter", () => {
       hitContext: () => ({ pageSetup: { contentHeight: 400 } as never, origins: [], body: undefined }),
       caretCss: () => null,
       caretWorld: () => null,
+      onSelectionChange: () => undefined,
       requestSave: () => undefined,
       copy: () => {
         calls.push("copy");

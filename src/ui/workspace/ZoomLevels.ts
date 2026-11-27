@@ -1,4 +1,6 @@
-export const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+export const MIN_ZOOM = 0.25;
+export const MAX_ZOOM = 2;
+export const ZOOM_LEVELS = [MIN_ZOOM, 0.5, 0.75, 1, 1.25, 1.5, MAX_ZOOM];
 
 export function stepZoom(current: number, direction: -1 | 1): number {
   if (direction > 0) {

@@ -24,6 +24,11 @@ export interface PageOrigin {
   y: number;
 }
 
+export interface PageRange {
+  start: number;
+  end: number;
+}
+
 export class StoryEditor extends EditorBase {
   readonly pageSetup: PageSetup;
   readonly slot: StorySlot;
@@ -31,6 +36,7 @@ export class StoryEditor extends EditorBase {
   showMarks = false;
   private readonly layoutEngine = new StoryLayout();
   private readonly painter = new StoryPainter();
+  private pageLines?: { source: Line[]; pageHeight: number; pageCount: number; pages: Line[][] };
 
   constructor(options: StoryEditorOptions) {
     super(options);
@@ -46,21 +52,31 @@ export class StoryEditor extends EditorBase {
     for (const line of this.lines) {
       total = Math.max(total, line.top + line.height);
     }
-    return Math.max(1, Math.ceil(total / this.pageSetup.contentHeight) || 1);
+    const contentHeight = this.pageSetup.contentHeight;
+    const lastLinePage = this.lines.reduce((max, line) => Math.max(max, line.pageIndex ?? 0), 0);
+    const lastPicturePage = this.document?.anchors.reduce((max, anchor) =>
+      anchor.referencePage != null && !anchor.drawing.hidden ? Math.max(max, anchor.pageOn(contentHeight)) : max, 0,
+    ) ?? 0;
+    return Math.max(lastLinePage + 1, lastPicturePage + 1, Math.ceil(total / contentHeight) || 1);
   }
 
-  paintOnPages(origins: PageOrigin[], labels?: PageLabel[], target?: Draw): void {
+  paintOnPages(
+    origins: PageOrigin[],
+    labels?: PageLabel[],
+    target?: Draw,
+    range: PageRange = { start: 0, end: origins.length },
+  ): void {
     const draw = target ?? (this.draw instanceof Draw ? this.draw : null);
-    if (!draw || origins.length === 0) {
+    if (!draw || range.start >= range.end) {
       return;
     }
     if (this.slot === "body") {
-      this.paintBody(draw, origins, labels);
+      this.paintBody(draw, origins, range, labels);
       return;
     }
-    origins.forEach((origin, index) => {
-      this.paintBand(draw, origin, labels?.[index] ?? fallbackLabel(index, origins.length));
-    });
+    for (let index = range.start; index < range.end; index += 1) {
+      this.paintBand(draw, origins[index], labels?.[index] ?? fallbackLabel(index, origins.length));
+    }
   }
 
   reflow(dirty: Paragraph[]): void {
@@ -76,6 +92,7 @@ export class StoryEditor extends EditorBase {
       contentHeight: this.pageSetup.contentHeight,
       leftMargin: this.pageSetup.leftMargin,
       topMargin: this.pageSetup.contentTop(),
+      storyTop: this.slot === "header" || this.slot === "footer" ? this.pageSetup.bandTop(this.slot) : this.pageSetup.contentTop(),
       pageWidth: this.pageSetup.width,
       pageHeight: this.pageSetup.height,
       linePitchPx: this.pageSetup.linePitchPx,
@@ -95,49 +112,68 @@ export class StoryEditor extends EditorBase {
 
   protected override onRender(): void {}
 
-  private paintBody(draw: Draw, origins: PageOrigin[], labels?: PageLabel[]): void {
+  private paintBody(draw: Draw, origins: PageOrigin[], range: PageRange, labels?: PageLabel[]): void {
     const pageH = this.pageSetup.contentHeight;
     const contentX = (origin: PageOrigin) => origin.x + this.pageSetup.contentLeft();
-    const contentY = (origin: PageOrigin, storyY: number) => {
-      const pageIndex = Math.min(origins.length - 1, Math.max(0, Math.floor(storyY / pageH)));
-      return origin.y + this.pageSetup.contentTop() + (storyY - pageIndex * pageH);
-    };
+    const contentY = (origin: PageOrigin, storyY: number, pageIndex: number) =>
+      origin.y + this.pageSetup.contentTop() + (storyY - pageIndex * pageH);
     this.paintAnchors(draw, origins, true, (anchor, origin) => ({
       x: contentX(origin) + anchor.x,
-      y: contentY(origin, anchor.y),
-    }));
+      y: contentY(origin, anchor.y, anchor.pageOn(pageH)),
+    }), range);
     const text = this.fieldText(labels, origins.length);
-    for (const line of this.lines) {
-      const pageIndex = Math.min(origins.length - 1, Math.floor(line.top / pageH));
+    const pages = this.linesByPage(pageH, origins.length);
+    for (let pageIndex = range.start; pageIndex < range.end; pageIndex += 1) {
       const origin = origins[pageIndex];
       draw.save();
       draw.beginPath();
       draw.rect(origin.x, origin.y, this.pageSetup.width, this.pageSetup.height);
       draw.clip();
       const label = labels?.[pageIndex] ?? fallbackLabel(pageIndex, origins.length);
-      this.painter.paintLine(draw, line, contentX(origin), contentY(origin, line.top), label.pageNumber, {
-        values: fieldValues(label),
-        text,
-        showMarks: this.showMarks,
-      });
+      const view: FieldView = { values: fieldValues(label), text, showMarks: this.showMarks };
+      for (const line of pages[pageIndex] ?? []) {
+        draw.save();
+        this.painter.paintLine(draw, line, contentX(origin), contentY(origin, line.top, pageIndex), label.pageNumber, view);
+        draw.restore();
+      }
       draw.restore();
     }
     this.paintAnchors(draw, origins, false, (anchor, origin) => ({
       x: contentX(origin) + anchor.x,
-      y: contentY(origin, anchor.y),
-    }));
-    origins.forEach((origin, pageIndex) => {
+      y: contentY(origin, anchor.y, anchor.pageOn(pageH)),
+    }), range);
+    const notes = this.document?.footnotes;
+    if (!notes?.length) {
+      return;
+    }
+    for (let pageIndex = range.start; pageIndex < range.end; pageIndex += 1) {
+      const origin = origins[pageIndex];
       draw.save();
       draw.beginPath();
       draw.rect(origin.x, origin.y, this.pageSetup.width, this.pageSetup.height);
       draw.clip();
-      this.painter.paintFootnotes(draw, this.document?.footnotes ?? [], this.lines, pageIndex, {
+      this.painter.paintFootnotes(draw, notes, this.lines, pageIndex, {
         x: contentX(origin),
         y: origin.y + this.pageSetup.contentTop() + pageH + 8,
         pageH,
       });
       draw.restore();
-    });
+    }
+  }
+
+  private linesByPage(pageHeight: number, pageCount: number): Line[][] {
+    const cached = this.pageLines;
+    if (cached?.source === this.lines && cached.pageHeight === pageHeight && cached.pageCount === pageCount) {
+      return cached.pages;
+    }
+    const pages: Line[][] = [];
+    for (const line of this.lines) {
+      const page = line.pageIndex ?? (pageHeight > 0 ? Math.floor(line.top / pageHeight) : 0);
+      const index = Math.max(0, Math.min(pageCount - 1, page));
+      (pages[index] ??= []).push(line);
+    }
+    this.pageLines = { source: this.lines, pageHeight, pageCount, pages };
+    return pages;
   }
 
   private paintBand(draw: Draw, origin: PageOrigin, label: PageLabel): void {
@@ -167,16 +203,28 @@ export class StoryEditor extends EditorBase {
       x: number;
       y: number;
     },
+    range: PageRange = { start: 0, end: origins.length },
   ): void {
     const pageH = this.pageSetup.contentHeight;
     for (const anchor of this.document?.anchors ?? []) {
       if (anchor.behind !== behind) {
         continue;
       }
-      const pageIndex = Math.min(origins.length - 1, Math.max(0, Math.floor(anchor.y / pageH)));
+      const pageIndex = this.slot === "body" ? anchor.pageOn(pageH) : 0;
+      if (pageIndex < range.start || pageIndex >= range.end) {
+        continue;
+      }
       const origin = origins[pageIndex];
+      if (!origin) {
+        continue;
+      }
       const at = locate(anchor, origin);
+      draw.save();
+      draw.beginPath();
+      draw.rect(origin.x, origin.y, this.pageSetup.width, this.pageSetup.height);
+      draw.clip();
       this.painter.paintDrawing(draw, anchor.drawing, at.x, at.y);
+      draw.restore();
     }
   }
 }

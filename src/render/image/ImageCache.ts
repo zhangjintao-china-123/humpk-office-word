@@ -42,6 +42,12 @@ export class ImageCache {
     return undefined;
   }
 
+  async decode(url: string): Promise<void> {
+    if (!this.ensure(url)) {
+      await this.images.get(url)?.decode?.().catch(() => undefined);
+    }
+  }
+
   prime(url: string, image: HTMLImageElement): void {
     this.images.set(url, image);
   }

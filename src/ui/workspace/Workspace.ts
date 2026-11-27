@@ -115,6 +115,7 @@ import { Viewport } from "../../render/canvas/Viewport";
 import { SelectionPane, selectionPaneLabel, type SelectionPaneItem } from "./SelectionPane";
 import { PagePainter } from "../../render/page/PagePainter";
 import { PageSetup } from "../../render/page/PageSetup";
+import { drawingRotationRadians } from "../../model/graphic/DrawingTransform";
 import { imageCache } from "../../render/image/ImageCache";
 import { CaretView } from "../../selection/CaretView";
 import { FindPainter } from "../../selection/FindPainter";
@@ -139,10 +140,11 @@ import { Mutator } from "../../edit/Mutator";
 import { Relayout } from "../../edit/Relayout";
 import type { StoryEditor } from "../../editor/StoryEditor";
 import { printImages } from "./PrintPages";
-import { stepZoom } from "./ZoomLevels";
-import { SIDE_PAD, TOP_PAD, pageOriginX, pageOrigins } from "./WorkspaceLayout";
+import { MAX_ZOOM, MIN_ZOOM, stepZoom } from "./ZoomLevels";
+import { SIDE_PAD, TOP_PAD, pageOriginX, pageOrigins, visiblePageRange } from "./WorkspaceLayout";
 
 const WORKSPACE_BG = "#c5c5c5";
+type StatusChange = "view" | "content";
 
 export class Workspace {
   readonly draw: Draw;
@@ -160,7 +162,8 @@ export class Workspace {
   private readonly selectionPane: SelectionPane;
   private readonly root: HTMLElement;
   private readonly sizer: HTMLElement;
-  private readonly canvas: HTMLCanvasElement;
+  private readonly overlay: Draw;
+  private scrollFrame: number | null = null;
   private readonly painter = new PagePainter();
   private readonly findPainter = new FindPainter();
   private readonly hit = new HitTester();
@@ -174,6 +177,8 @@ export class Workspace {
   private readonly tableResize: TableResizeController;
   private pictureFocus: PictureBox | null = null;
   private holdingPicture = false;
+  private pictureMovePreview: PictureBox | null = null;
+  private pictureMoveFrame: number | null = null;
   private readonly contextMenu: ContextMenuController;
   private readonly caret: CaretView;
   private readonly selectionText = new SelectionText();
@@ -181,6 +186,7 @@ export class Workspace {
   readonly relayout: Relayout;
   private readonly input: InputController;
   private readonly uiListeners: Array<() => void> = [];
+  private readonly statusListeners = new Set<(change: StatusChange) => void>();
   private findRequest?: (replace: boolean) => void;
   private readonly saveListeners: Array<() => void> = [];
   private readonly writer = new DocxWriter();
@@ -215,11 +221,15 @@ export class Workspace {
     this.sizer.className = "ho-word-sizer";
     scroll.appendChild(this.sizer);
 
-    this.canvas = document.createElement("canvas");
-    this.canvas.className = "ho-word-canvas";
+    const canvas = document.createElement("canvas");
+    canvas.className = "ho-word-canvas";
+    const overlay = document.createElement("canvas");
+    overlay.className = "ho-word-canvas";
+    overlay.setAttribute("aria-hidden", "true");
 
     stage.appendChild(scroll);
-    stage.appendChild(this.canvas);
+    stage.appendChild(canvas);
+    stage.appendChild(overlay);
     const textBoxHint = document.createElement("div");
     textBoxHint.className = "ho-word-textbox-hint";
     textBoxHint.setAttribute("role", "status");
@@ -240,9 +250,10 @@ export class Workspace {
     host.appendChild(stage);
     host.appendChild(this.selectionPane.el);
 
-    this.draw = new Draw(this.canvas);
+    this.draw = new Draw(canvas);
+    this.overlay = new Draw(overlay);
     this.stopImages = imageCache.onReady(() => this.paint());
-    this.root.addEventListener("scroll", () => this.syncScroll(), { passive: true });
+    this.root.addEventListener("scroll", this.onScroll, { passive: true });
     this.root.addEventListener("wheel", this.onWheel, { passive: false });
     window.visualViewport?.addEventListener("resize", this.onVisualViewport);
     window.visualViewport?.addEventListener("scroll", this.onVisualViewport);
@@ -255,7 +266,7 @@ export class Workspace {
       caret: () => this.caretWorld(),
       onChange: () => {
         textBoxHint.hidden = !this.textBoxDraw.direction;
-        this.paint();
+        this.paintSelection();
         for (const handler of this.uiListeners) {
           handler();
         }
@@ -363,6 +374,7 @@ export class Workspace {
   }
 
   load(document: Document): void {
+    this.pictureTransform.cancel();
     this.textBoxDraw.cancel();
     this.body?.dispose();
     this.disposeBands();
@@ -388,6 +400,7 @@ export class Workspace {
     this.input.clearPending();
     this.placeCaret();
     this.onSelectionChange();
+    this.notifyStatus("content");
   }
 
   bodyDocument(): Document | null {
@@ -1091,7 +1104,6 @@ export class Workspace {
     }
     this.selectionPane.setOpen(open);
     this.layout();
-    this.paint();
     this.notifyUi();
   }
 
@@ -1503,31 +1515,112 @@ export class Workspace {
   private previewPictureRotate(box: PictureBox, start: PictureSnap, angle: number): void {
     restorePicture(box.drawing, start);
     box.drawing.rotation = angle || undefined;
-    this.paint();
+    this.reflowPicture(box);
   }
 
   private previewPictureMove(box: PictureBox, start: PictureSnap, dx: number, dy: number): void {
     if (!canDragPicture(box.story, start.position)) {
       return;
     }
-    restorePicture(box.drawing, start);
-    if (box.drawing.position !== "anchor") {
-      applyPictureWrap(box.drawing, box.drawing.shape?.text ? "front" : "square", this.pictureOffset(box));
+    this.pictureMovePreview = { ...box, x: box.x + dx, y: box.y + dy };
+    if (this.pictureMoveFrame === null) {
+      this.pictureMoveFrame = window.requestAnimationFrame(() => {
+        this.pictureMoveFrame = null;
+        this.paintSelection();
+      });
     }
-    if (box.story.slot === "body" && box.drawing.shape?.text) {
-      const ctx = this.hitContext();
-      const from = this.hit.worldToStory(box.x, box.y, ctx);
-      const to = this.hit.worldToStory(box.x + dx, box.y + dy, ctx);
-      if (from && to) {
-        dx = to.x - from.x;
-        dy = to.y - from.y;
+  }
+
+  private cancelPictureMoveFrame(): void {
+    if (this.pictureMoveFrame !== null) {
+      window.cancelAnimationFrame(this.pictureMoveFrame);
+      this.pictureMoveFrame = null;
+    }
+  }
+
+  private clearPictureMovePreview(): PictureBox | null {
+    this.cancelPictureMoveFrame();
+    const preview = this.pictureMovePreview;
+    this.pictureMovePreview = null;
+    return preview;
+  }
+
+  private bodyPictureDrop(box: PictureBox, target: PictureBox) {
+    const origins = this.pageOrigins();
+    const setup = this.pageSetup;
+    const stride = setup.height + setup.pageGap;
+    const centerY = target.y + target.height / 2;
+    const index = Math.max(0, Math.min(origins.length - 1,
+      Math.floor((centerY - origins[0].y + setup.pageGap / 2) / stride),
+    ));
+    const page = origins[index];
+    const angle = drawingRotationRadians(target.drawing);
+    const halfHeight = (Math.abs(Math.sin(angle)) * target.width + Math.abs(Math.cos(angle)) * target.height) / 2;
+    // 先选整页，再把旋转后的实际图框移入纸张。
+    const inset = Math.min(halfHeight, setup.height / 2);
+    const center = Math.max(inset, Math.min(setup.height - inset, centerY - page.y));
+    const top = Math.max(0, center - target.height / 2);
+    let paragraph = box.paragraph;
+    const firstTop = paragraph.lines[0]?.top ?? 0;
+    const anchorPage = Math.floor(firstTop / setup.contentHeight);
+    const nearPageStart = box.drawing.position === "inline" && anchorPage === index && index > 0 &&
+      firstTop - index * setup.contentHeight < box.height;
+    if (anchorPage !== index || nearPageStart) {
+      // 页首的高内嵌图离开字流后，原段落可能回到前一页。
+      const referenceTop = nearPageStart ? Math.max(top, setup.contentTop() + box.height) : top;
+      let distance = Infinity;
+      for (const line of this.body?.lines ?? []) {
+        const candidate = line.paragraph;
+        if (line.type || !candidate || candidate.lines[0] !== line ||
+          (nearPageStart && candidate === box.paragraph) ||
+          (line.pageIndex ?? Math.floor(line.top / setup.contentHeight)) !== index) {
+          continue;
+        }
+        const lineY = setup.contentTop() + line.top - index * setup.contentHeight;
+        const delta = Math.abs(referenceTop - lineY);
+        if (delta < distance) {
+          distance = delta;
+          paragraph = candidate;
+        }
       }
     }
-    this.applyPictureOffset(box, snapPicture(box.drawing), dx, dy);
-    this.reflowPicture(box);
+    return { paragraph, page: { index, height: setup.height }, left: target.x - page.x, top, y: page.y + top };
   }
 
   private commitPicture(box: PictureBox, before: PictureSnap): void {
+    const preview = this.clearPictureMovePreview();
+    if (preview) {
+      const dx = preview.x - box.x;
+      if (Math.hypot(dx, preview.y - box.y) < 0.5) {
+        this.paintSelection();
+        return;
+      }
+      const landing = box.story.slot === "body" ? this.bodyPictureDrop(box, preview) : undefined;
+      const y = landing?.y ?? preview.y;
+      const dy = y - box.y;
+      const anchor = before.anchorSet;
+      const keepParagraphAnchor = landing && landing.paragraph === box.paragraph &&
+        before.position === "anchor" && anchor?.topFrom === "paragraph" && anchor.wrapType === "none" &&
+        landing.top >= this.pageSetup.contentTop() && landing.top < this.pageSetup.contentBottom() &&
+        Math.floor((box.paragraph.lines[0]?.top ?? 0) / this.pageSetup.contentHeight) === landing.page.index;
+      const drop = keepParagraphAnchor ? undefined : landing;
+      this.applyPictureOffset(box, before, dx, dy);
+      if (drop && box.drawing.anchorSet) {
+        Object.assign(box.drawing.anchorSet, { leftFrom: "page", topFrom: "page", left: drop.left, top: drop.top });
+      }
+      const after = snapPicture(box.drawing);
+      restorePicture(box.drawing, before);
+      const target = { ...preview, y, paragraph: drop?.paragraph ?? preview.paragraph, node: undefined };
+      this.holdingPicture = true;
+      this.pictureFocus = target;
+      try {
+        this.history.do(new PictureTransformCommand(this, box.drawing, box.story, box.paragraph, before, after, drop));
+      } finally {
+        this.holdingPicture = false;
+      }
+      this.refreshPictureFocus(target);
+      return;
+    }
     const after = snapPicture(box.drawing);
     if (samePicture(before, after)) {
       return;
@@ -1538,6 +1631,10 @@ export class Workspace {
   }
 
   private revertPicture(box: PictureBox, before: PictureSnap): void {
+    if (this.clearPictureMovePreview()) {
+      this.paintSelection();
+      return;
+    }
     restorePicture(box.drawing, before);
     this.reflowPicture(box);
     this.refreshPictureFocus(box);
@@ -1558,9 +1655,14 @@ export class Workspace {
 
   private applyPictureOffset(box: PictureBox, start: PictureSnap, dx: number, dy: number): void {
     const anchor = start.anchorSet;
+    if (anchor?.leftFrom === "page" && anchor.topFrom === "page" &&
+      !anchor.leftAlign && !anchor.topAlign && !anchor.simplePosition) {
+      box.drawing.anchorSet = { ...anchor, left: (anchor.left ?? 0) + dx, top: (anchor.top ?? 0) + dy };
+      return;
+    }
     const offset = this.pictureOffset(box);
-    const left = anchor?.leftFrom === "column" && !anchor.leftAlign ? anchor.left ?? offset.left : offset.left;
-    const top = anchor?.topFrom === "paragraph" && !anchor.topAlign ? anchor.top ?? offset.top : offset.top;
+    const left = anchor?.leftFrom === "column" && !anchor.leftAlign && !anchor.simplePosition ? anchor.left ?? offset.left : offset.left;
+    const top = anchor?.topFrom === "paragraph" && !anchor.topAlign && !anchor.simplePosition ? anchor.top ?? offset.top : offset.top;
     const wrapType = anchor?.wrapType ?? (box.drawing.shape?.text ? "none" : "square");
     const gap = wrapType === "none" ? 0 : PICTURE_WRAP_GAP;
     box.drawing.position = "anchor";
@@ -1578,10 +1680,14 @@ export class Workspace {
       top: top + dy,
       leftAlign: undefined,
       topAlign: undefined,
+      simplePosition: undefined,
     };
   }
 
   private pictureOffset(hit: PictureBox): { left: number; top: number } {
+    if (hit.anchorOffset) {
+      return hit.anchorOffset;
+    }
     const first = hit.paragraph.lines[0];
     const ctx = this.hitContext();
     if (hit.story.slot === "header" || hit.story.slot === "footer") {
@@ -1758,6 +1864,24 @@ export class Workspace {
     };
   }
 
+  onStatusChange(handler: (change: StatusChange) => void): () => void {
+    this.statusListeners.add(handler);
+    return () => this.statusListeners.delete(handler);
+  }
+
+  viewportPage(): number {
+    const center = this.viewport.cssToWorld(0, this.draw.cssHeight / 2).y;
+    const stride = this.pageSetup.height + this.pageSetup.pageGap;
+    const page = Math.floor((center - TOP_PAD + this.pageSetup.pageGap / 2) / stride) + 1;
+    return Math.max(1, Math.min(this.pageCount, page));
+  }
+
+  private notifyStatus(change: StatusChange): void {
+    for (const handler of this.statusListeners) {
+      handler(change);
+    }
+  }
+
   onSave(handler: () => void): () => void {
     this.saveListeners.push(handler);
     return () => {
@@ -1776,7 +1900,7 @@ export class Workspace {
 
   setZoom(zoom: number): void {
     this.zoomPinned = true;
-    const next = Math.min(2, Math.max(0.25, zoom || 1));
+    const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom || 1));
     const prev = this.viewport.zoom || 1;
     if (Math.abs(next - prev) < 0.001) {
       return;
@@ -1787,16 +1911,31 @@ export class Workspace {
     const anchor = this.viewport.cssToWorld(width / 2, height / 2);
     this.viewport.zoom = next;
     const originShift = this.pageOriginX() - oldOriginX;
-    this.layout();
+    this.layout(false);
     this.root.scrollLeft = Math.max(0, (anchor.x + originShift) * next - width / 2);
     this.root.scrollTop = Math.max(0, anchor.y * next - height / 2);
-    this.syncScroll();
+    this.paint();
     for (const handler of this.uiListeners) {
       handler();
     }
   }
 
-  print(): void {
+  async print(): Promise<void> {
+    const model = this.body?.document;
+    const urls = new Set<string>();
+    for (const { document } of collectStories(this.stories())) {
+      document.paragraphs.each(({ data: paragraph }) => {
+        for (const { drawing } of paragraph.blocks) {
+          if (drawing?.url && !drawing.hidden && !drawing.shape) {
+            urls.add(drawing.url);
+          }
+        }
+      });
+    }
+    await Promise.all([...urls].map((url) => imageCache.decode(url)));
+    if (this.body?.document !== model) {
+      return;
+    }
     printImages(this.renderPrintImages(), this.pageSetup.width, this.pageSetup.height);
   }
 
@@ -1812,7 +1951,7 @@ export class Workspace {
     const hits = this.ensureHits(query);
     if (!hits.length) {
       this.findIndex = -1;
-      this.paint();
+      this.paintSelection();
       return { index: 0, total: 0, replaced: 0 };
     }
     let index = this.findIndex;
@@ -1828,19 +1967,18 @@ export class Workspace {
     const hits = [...this.ensureHits(query)];
     if (!hits.length) {
       this.findIndex = -1;
-      this.paint();
+      this.paintSelection();
       return { index: 0, total: 0, replaced: 0 };
     }
     this.history.do(new ReplaceCommand(this, hits, replacement));
     const status = this.landAfterReplace(query, hits.length);
     this.findIndex = -1;
-    this.paint();
     return { ...status, index: 0 };
   }
 
   closeFind(): void {
     this.invalidateFind();
-    this.paint();
+    this.paintSelection();
   }
 
   async exportDocx(): Promise<ArrayBuffer> {
@@ -1867,7 +2005,8 @@ export class Workspace {
 
   private clientToWorld(clientX: number, clientY: number): { x: number; y: number } {
     const rect = this.root.getBoundingClientRect();
-    return this.viewport.cssToWorld(clientX - rect.left, clientY - rect.top);
+    const zoom = this.viewport.zoom || 1;
+    return { x: (clientX - rect.left + this.root.scrollLeft) / zoom, y: (clientY - rect.top + this.root.scrollTop) / zoom };
   }
 
   private reflowTable(story: StoryRef, paragraph: Paragraph): void {
@@ -1876,40 +2015,51 @@ export class Workspace {
   }
 
   paint(): void {
+    this.cancelScrollPaint();
+    this.syncScroll();
     const { draw, viewport, pageSetup } = this;
     draw.clear();
     draw.setFill(WORKSPACE_BG);
     draw.fillRect(0, 0, draw.cssWidth, draw.cssHeight);
 
-    draw.save();
-    draw.translate(-viewport.scrollX, -viewport.scrollY);
-    const zoom = viewport.zoom || 1;
-    if (zoom !== 1) {
-      draw.scale(zoom, zoom);
-    }
     const origins = this.pageOrigins();
-    for (let i = 0; i < origins.length; i += 1) {
+    const top = viewport.cssToWorld(0, 0).y;
+    const bottom = viewport.cssToWorld(0, draw.cssHeight).y;
+    const range = visiblePageRange(pageSetup, this.pageCount, top, bottom);
+    this.beginWorldPaint(draw);
+    for (let i = range.start; i < range.end; i += 1) {
       this.painter.paint(draw, pageSetup, origins[i].x, origins[i].y, i);
     }
-    this.body?.paintOnPages(origins, this.pageLabels);
-    for (let i = 0; i < origins.length; i += 1) {
+    this.body?.paintOnPages(origins, this.pageLabels, draw, range);
+    for (let i = range.start; i < range.end; i += 1) {
       const label = this.labelAt(i);
       const header = this.bandAt("header", i);
       const footer = this.bandAt("footer", i);
       this.headerBands[header.sectionIndex]?.paintPage(origins[i], header.type, label);
       this.footerBands[footer.sectionIndex]?.paintPage(origins[i], footer.type, label);
     }
+    draw.restore();
+    this.paintSelection(origins);
+    this.notifyStatus("view");
+  }
+
+  private paintSelection(origins = this.pageOrigins()): void {
+    this.cancelPictureMoveFrame();
+    const draw = this.overlay;
+    draw.clear();
+    this.beginWorldPaint(draw);
     const ctx = this.hitContext(origins);
     this.findPainter.paint(draw, this.findHits, ctx);
     this.selectionPainter.paint(draw, this.selection, ctx);
     this.selectionPainter.paintTableHandles(draw, ctx);
-    const picture = this.selectedPicture();
+    const picture = this.pictureMovePreview ?? this.selectedPicture();
     if (picture) {
       this.selectionPainter.paintPictureHandles(draw, picture);
       this.caret.el.hidden = true;
     }
     const preview = this.textBoxDraw.preview;
     if (preview) {
+      const zoom = this.viewport.zoom || 1;
       draw.setFill("rgba(76, 136, 200, 0.13)");
       draw.fillRect(preview.x, preview.y, preview.width, preview.height);
       draw.setStroke("#285f9b", 1 / zoom);
@@ -1921,6 +2071,15 @@ export class Workspace {
       this.caret.sync(this.selection, ctx, this.viewport);
     } else {
       this.caret.el.hidden = true;
+    }
+  }
+
+  private beginWorldPaint(draw: Draw): void {
+    const { scrollX, scrollY, zoom } = this.viewport;
+    draw.save();
+    draw.translate(-scrollX, -scrollY);
+    if (zoom !== 1) {
+      draw.scale(zoom, zoom);
     }
   }
 
@@ -2038,8 +2197,9 @@ export class Workspace {
     if (impact.dirty.length) {
       this.invalidateFind();
       this.body?.emit(EditorEvents.documentChange, impact);
+      this.notifyStatus("content");
     }
-    this.onSelectionChange();
+    this.onSelectionChange(true);
   }
 
   get hitTester(): HitTester {
@@ -2075,6 +2235,11 @@ export class Workspace {
   }
 
   dispose(): void {
+    this.cancelScrollPaint();
+    this.root.removeEventListener("scroll", this.onScroll);
+    this.root.removeEventListener("wheel", this.onWheel);
+    window.visualViewport?.removeEventListener("resize", this.onVisualViewport);
+    window.visualViewport?.removeEventListener("scroll", this.onVisualViewport);
     document.removeEventListener("keydown", this.onGlobalKeyDown);
     this.textBoxDraw.detach();
     this.pictureTransform.detach();
@@ -2086,6 +2251,7 @@ export class Workspace {
     this.stopImages();
     this.body?.dispose();
     this.disposeBands();
+    this.statusListeners.clear();
     const host = this.hostEl;
     host.replaceChildren();
     host.classList.remove("ho-word-workspace", "is-format-painter");
@@ -2116,7 +2282,7 @@ export class Workspace {
       draw.beginPath();
       draw.rect(origins[i].x, origins[i].y, this.pageSetup.width, this.pageSetup.height);
       draw.clip();
-      this.body?.paintOnPages(origins, this.pageLabels, draw);
+      this.body?.paintOnPages(origins, this.pageLabels, draw, { start: i, end: i + 1 });
       const label = this.labelAt(i);
       const header = this.bandAt("header", i);
       const footer = this.bandAt("footer", i);
@@ -2132,7 +2298,7 @@ export class Workspace {
     const hits = this.ensureHits(query);
     if (!hits.length) {
       this.findIndex = -1;
-      this.paint();
+      this.paintSelection();
       return { index: 0, total: 0 };
     }
     const stories = this.searchStories().map((item) => item.story);
@@ -2152,7 +2318,7 @@ export class Workspace {
     const hits = this.ensureHits(query);
     if (!hits.length) {
       this.findIndex = -1;
-      this.paint();
+      this.paintSelection();
       return { index: 0, total: 0, replaced };
     }
     const index = indexAtOrAfter(hits, this.selection.caret(), this.searchStories().map((item) => item.story));
@@ -2327,7 +2493,7 @@ export class Workspace {
     }
   }
 
-  private onSelectionChange(): void {
+  onSelectionChange(repaintDocument = false): void {
     if (!this.holdingPicture) {
       const focus = this.pictureFocus;
       const keepTextBox =
@@ -2335,8 +2501,13 @@ export class Workspace {
       this.pictureFocus = this.pictureFromRange() ?? (keepTextBox ? focus : null);
     }
     this.body?.emit(EditorEvents.selectionChange, this.selection);
-    this.ensureCaretVisible();
-    this.paint();
+    const scrollChanged = this.syncScroll();
+    const caretScrolled = this.ensureCaretVisible();
+    if (repaintDocument || scrollChanged || caretScrolled || this.scrollFrame !== null) {
+      this.paint();
+    } else {
+      this.paintSelection();
+    }
     this.input.sync();
     const active = document.activeElement;
     if (
@@ -2352,7 +2523,9 @@ export class Workspace {
   }
 
   private readonly onVisualViewport = (): void => {
-    this.ensureCaretVisible();
+    if (this.ensureCaretVisible()) {
+      this.paint();
+    }
   };
 
   /** 键盘盖住编辑区时，用视觉视口而不是整块画布高度来判断光标是否还看得见。 */
@@ -2372,10 +2545,13 @@ export class Workspace {
     };
   }
 
-  private ensureCaretVisible(): void {
+  private ensureCaretVisible(): boolean {
+    if (this.holdingPicture || this.pictureFocus) {
+      return false;
+    }
     const box = this.caretCss();
     if (!box) {
-      return;
+      return false;
     }
     const pad = 8;
     const view = this.visibleSize();
@@ -2394,12 +2570,11 @@ export class Workspace {
       dx = box.x - (viewW - pad);
     }
     if (!dx && !dy) {
-      return;
+      return false;
     }
     this.root.scrollLeft += dx;
     this.root.scrollTop += dy;
-    this.viewport.scrollX = this.root.scrollLeft;
-    this.viewport.scrollY = this.root.scrollTop;
+    return this.syncScroll();
   }
 
   private applyPageSetup(document: Document): void {
@@ -2515,7 +2690,7 @@ export class Workspace {
     return pageOrigins(this.pageSetup, this.pageCount, this.pageOriginX());
   }
 
-  private layout(): void {
+  private layout(repaint = true): void {
     const before = this.viewport.zoom || 1;
     if (!this.zoomPinned) {
       const fit = this.fitZoom();
@@ -2533,7 +2708,10 @@ export class Workspace {
     this.sizer.style.width = `${cssWidth}px`;
     this.sizer.style.height = `${this.contentHeight() * zoom}px`;
     this.draw.resize(width, height);
-    this.syncScroll();
+    this.overlay.resize(width, height);
+    if (repaint) {
+      this.paint();
+    }
     if (Math.abs((this.viewport.zoom || 1) - before) > 0.001) {
       for (const handler of this.uiListeners) {
         handler();
@@ -2551,7 +2729,7 @@ export class Workspace {
     if (room >= this.pageSetup.width) {
       return 1;
     }
-    return Math.max(0.25, room / this.pageSetup.width);
+    return Math.max(MIN_ZOOM, room / this.pageSetup.width);
   }
 
   private sidePad(): number {
@@ -2563,10 +2741,29 @@ export class Workspace {
     return 8 / zoom;
   }
 
-  private syncScroll(): void {
-    this.viewport.scrollX = this.root.scrollLeft;
-    this.viewport.scrollY = this.root.scrollTop;
-    this.paint();
+  private readonly onScroll = (): void => {
+    if (!this.syncScroll() || this.scrollFrame !== null) {
+      return;
+    }
+    this.scrollFrame = window.requestAnimationFrame(() => {
+      this.scrollFrame = null;
+      this.paint();
+    });
+  };
+
+  private cancelScrollPaint(): void {
+    if (this.scrollFrame !== null) {
+      window.cancelAnimationFrame(this.scrollFrame);
+      this.scrollFrame = null;
+    }
+  }
+
+  private syncScroll(): boolean {
+    const { scrollLeft, scrollTop } = this.root;
+    const changed = this.viewport.scrollX !== scrollLeft || this.viewport.scrollY !== scrollTop;
+    this.viewport.scrollX = scrollLeft;
+    this.viewport.scrollY = scrollTop;
+    return changed;
   }
 
   private pageOriginX(): number {

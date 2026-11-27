@@ -60,8 +60,12 @@ export class Relayout {
       if (!document) {
         break;
       }
-      const lines = this.layout.reflow(document, this.constraints(story), dirty);
       const editor = this.host.editorOf(story);
+      const previous = editor?.lines;
+      const lines = this.layout.reflow(document, this.constraints(story), dirty, previous, story === impact.story ? impact.textAnchor : undefined);
+      if (editor && lines === previous) {
+        break;
+      }
       if (editor) {
         editor.lines = lines;
       }

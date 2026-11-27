@@ -130,6 +130,18 @@ export class Draw implements IDraw {
     this.ctx.clip();
   }
 
+  /** 只限制当前坐标系的纵向范围，横向覆盖画布。 */
+  clipLineHeight(top: number, height: number): void {
+    const { a, c, e } = this.ctx.getTransform().inverse();
+    const across = a * this.el.width;
+    const down = c * this.el.height;
+    const left = e + Math.min(0, across) + Math.min(0, down);
+    const right = e + Math.max(0, across) + Math.max(0, down);
+    this.beginPath();
+    this.rect(left, top, right - left, height);
+    this.clip();
+  }
+
   drawImage(image: CanvasImageSource, x: number, y: number, width: number, height: number): void {
     this.ctx.drawImage(image, x, y, width, height);
   }

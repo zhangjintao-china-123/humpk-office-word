@@ -35,6 +35,11 @@ interface Drag {
   handle?: PictureControl;
   x: number;
   y: number;
+  clientX: number;
+  clientY: number;
+  lastX?: number;
+  lastY?: number;
+  lastShift?: boolean;
   pointerId: number;
   moved: boolean;
   dirty: boolean;
@@ -98,6 +103,8 @@ export class PictureTransformController {
       handle: handle ?? undefined,
       x: world.x,
       y: world.y,
+      clientX: event.clientX,
+      clientY: event.clientY,
       pointerId: event.pointerId,
       moved: false,
       dirty: false,
@@ -114,13 +121,22 @@ export class PictureTransformController {
       return;
     }
     event.stopImmediatePropagation();
-    const world = this.host.clientToWorld(event.clientX, event.clientY);
-    const drag = this.drag;
-    const dx = world.x - drag.x;
-    const dy = world.y - drag.y;
-    if (!drag.moved && Math.hypot(dx, dy) < MOVE_SLOP) {
+    this.update(this.drag, event);
+  };
+
+  private update(drag: Drag, event: PointerEvent): void {
+    if (!drag.moved && Math.hypot(event.clientX - drag.clientX, event.clientY - drag.clientY) < MOVE_SLOP) {
       return;
     }
+    const world = this.host.clientToWorld(event.clientX, event.clientY);
+    const dx = world.x - drag.x;
+    const dy = world.y - drag.y;
+    if (world.x === drag.lastX && world.y === drag.lastY && event.shiftKey === drag.lastShift) {
+      return;
+    }
+    drag.lastX = world.x;
+    drag.lastY = world.y;
+    drag.lastShift = event.shiftKey;
     drag.moved = true;
     if (drag.handle === "rotate") {
       const angle = rotatedAngleFromPointer(drag.box, world.x, world.y, event.shiftKey);
@@ -139,11 +155,12 @@ export class PictureTransformController {
     }
     this.host.previewMove(drag.box, drag.before, dx, dy);
     drag.dirty = true;
-  };
+  }
 
   private onUp = (event: PointerEvent): void => {
     if (this.drag?.pointerId === event.pointerId) {
       event.stopImmediatePropagation();
+      this.update(this.drag, event);
       this.finish();
     }
   };
@@ -179,7 +196,7 @@ export class PictureTransformController {
     this.host.commit(drag.box, drag.before);
   }
 
-  private cancel(): void {
+  cancel(): void {
     const drag = this.drag;
     this.drag = null;
     if (drag && this.element?.hasPointerCapture?.(drag.pointerId)) {

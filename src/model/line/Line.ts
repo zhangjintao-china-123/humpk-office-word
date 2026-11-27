@@ -10,11 +10,15 @@ export class Line {
   isLast = false;
   type: "" | "table" | "page" = "";
   top = 0;
+  /** 显式归属页。用于浮动表格从页边距开始的切片。 */
+  pageIndex?: number;
   width = 0;
   /** 排版时的内容区宽度，目录页码靠它右对齐。 */
   contentWidth = 0;
   height = 0;
   fullHeight = 0;
+  /** 行框高度，不含段间距，也不受页首裁掉段前距的影响。 */
+  boxHeight?: number;
   leftBlankWidth = 0;
   rightBlankWidth = 0;
   maxCharHeight = 0;

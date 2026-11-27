@@ -1,9 +1,14 @@
 import { EMPTY_INSETS, shapePreset, type GraphicShape, type ShapeInsets } from "../../../../model/graphic/Shape";
 import { Drawing, type WrapSide, type WrapType } from "../../../../model/inline/Drawing";
-import { ptToPx } from "../../../../shared/units";
+import { WORD_WRAP_EXTENT } from "../../../../model/graphic/DrawingOutline";
+import { parseNumber, ptToPx } from "../../../../shared/units";
 import { attr, children, first, descendants, matchesName, textOf } from "../../ooxml/XmlQuery";
 import type { ParseContext } from "../ParseContext";
 import { resolveImage } from "./RasterImage";
+
+function readBoolean(value: string | undefined): boolean | undefined {
+  return value === undefined ? undefined : value === "1" || value === "true";
+}
 
 export class DrawingParser {
   parse(drawingNode: Element, ctx: ParseContext): Drawing | undefined {
@@ -21,7 +26,7 @@ export class DrawingParser {
       const drawing = this.parseGraphic(anchor, ctx);
       if (drawing) {
         drawing.position = "anchor";
-        drawing.anchorSet = this.parseAnchor(anchor, ctx);
+        drawing.anchorSet = this.parseAnchor(anchor, drawing, ctx);
       }
       return drawing;
     }
@@ -190,16 +195,35 @@ export class DrawingParser {
     }
   }
 
-  private parseAnchor(anchor: Element, ctx: ParseContext) {
+  private parseAnchor(anchor: Element, drawing: Drawing, ctx: ParseContext) {
     const relHeight = Number(attr(anchor, "relativeHeight"));
+    const wrap = this.parseWrap(anchor);
+    const distance = (name: string) => ctx.units.emuToPx(attr(wrap.node, name) ?? attr(anchor, name)) ?? 0;
+    const effect = first(wrap.node, "wp:effectExtent") ?? first(anchor, "wp:effectExtent");
     const set: NonNullable<Drawing["anchorSet"]> = {
-      behind: attr(anchor, "behindDoc") === "1",
+      behind: readBoolean(attr(anchor, "behindDoc")) ?? false,
       zIndex: Number.isFinite(relHeight) && attr(anchor, "relativeHeight") ? relHeight : undefined,
-      distLeft: ctx.units.emuToPx(attr(anchor, "distL")) ?? 0,
-      distRight: ctx.units.emuToPx(attr(anchor, "distR")) ?? 0,
-      distTop: ctx.units.emuToPx(attr(anchor, "distT")) ?? 0,
-      distBottom: ctx.units.emuToPx(attr(anchor, "distB")) ?? 0,
+      distLeft: distance("distL"),
+      distRight: distance("distR"),
+      distTop: distance("distT"),
+      distBottom: distance("distB"),
+      layoutInCell: readBoolean(attr(anchor, "layoutInCell")),
+      allowOverlap: readBoolean(attr(anchor, "allowOverlap")),
+      wrapType: wrap.type,
+      wrapSide: this.wrapSide(attr(wrap.node, "wrapText")),
     };
+    if (effect) {
+      set.effectExtent = {
+        left: ctx.units.emuToPx(attr(effect, "l")) ?? 0,
+        right: ctx.units.emuToPx(attr(effect, "r")) ?? 0,
+        top: ctx.units.emuToPx(attr(effect, "t")) ?? 0,
+        bottom: ctx.units.emuToPx(attr(effect, "b")) ?? 0,
+      };
+    }
+    if (readBoolean(attr(anchor, "simplePos"))) {
+      const simple = first(anchor, "wp:simplePos");
+      set.simplePosition = { x: ctx.units.emuToPx(attr(simple, "x")) ?? 0, y: ctx.units.emuToPx(attr(simple, "y")) ?? 0 };
+    }
 
     const posH = first(anchor, "wp:positionH");
     if (posH) {
@@ -214,55 +238,52 @@ export class DrawingParser {
       set.topAlign = attr(first(posV, "wp:align"), "w:val") || textOf(first(posV, "wp:align")) || undefined;
     }
 
-    const wrap = this.parseWrap(anchor, ctx);
-    set.wrapType = wrap.type;
-    set.wrapSide = wrap.side;
-    set.polygon = wrap.polygon;
+    const polygon = this.parsePolygon(wrap.node, drawing, ctx);
+    if (polygon) {
+      set.polygon = polygon;
+      set.polygonExtent = { width: drawing.width, height: drawing.height };
+    }
     return set;
   }
 
-  private parseWrap(
-    anchor: Element,
-    ctx: ParseContext,
-  ): { type: WrapType; side?: WrapSide; polygon?: { x: number; y: number }[] } {
-    if (first(anchor, "wp:wrapTopAndBottom")) {
-      return { type: "nowrap" };
+  private parseWrap(anchor: Element): { type: WrapType; node: Element | null } {
+    const modes = [
+      ["wp:wrapTopAndBottom", "nowrap"], ["wp:wrapNone", "none"], ["wp:wrapSquare", "square"],
+      ["wp:wrapTight", "tight"], ["wp:wrapThrough", "through"],
+    ] as const;
+    for (const [tag, type] of modes) {
+      const node = first(anchor, tag);
+      if (node) {
+        return { type, node };
+      }
     }
-    if (first(anchor, "wp:wrapNone")) {
-      return { type: "none" };
-    }
-    const square = first(anchor, "wp:wrapSquare");
-    if (square) {
-      return { type: "square", side: this.wrapSide(attr(square, "wrapText")) };
-    }
-    const tight = first(anchor, "wp:wrapTight");
-    if (tight) {
-      return { type: "tight", side: this.wrapSide(attr(tight, "wrapText")), polygon: this.parsePolygon(tight, ctx) };
-    }
-    const through = first(anchor, "wp:wrapThrough");
-    if (through) {
-      return {
-        type: "through",
-        side: this.wrapSide(attr(through, "wrapText")),
-        polygon: this.parsePolygon(through, ctx),
-      };
-    }
-    return { type: "square" };
+    return { type: "square", node: null };
   }
 
-  private parsePolygon(wrap: Element, ctx: ParseContext): { x: number; y: number }[] | undefined {
+  private parsePolygon(wrap: Element | null, drawing: Drawing, ctx: ParseContext): { x: number; y: number }[] | undefined {
     const polygon = first(wrap, "wp:wrapPolygon");
     if (!polygon) {
       return undefined;
     }
     const start = first(polygon, "wp:start");
-    const points = [start, ...children(polygon, "wp:lineTo")]
+    const raw = [start, ...children(polygon, "wp:lineTo")]
       .filter((node): node is Element => node != null)
       .map((node) => ({
-        x: ctx.units.emuToPx(attr(node, "x")) ?? 0,
-        y: ctx.units.emuToPx(attr(node, "y")) ?? 0,
+        x: parseNumber(attr(node, "x")) ?? 0,
+        y: parseNumber(attr(node, "y")) ?? 0,
       }));
-    return points.length >= 3 ? points : undefined;
+    if (raw.length < 3 || drawing.width <= 0 || drawing.height <= 0) {
+      return undefined;
+    }
+    // 早期导出的轮廓用了 EMU。仅在数值远超相对坐标范围、且换算为 EMU 后贴合原图时兼容。
+    const area = raw.reduce((max, point) => Math.max(max, Math.abs(point.x), Math.abs(point.y)), 0);
+    const oldUnits = area > WORD_WRAP_EXTENT * 8 && raw.every((point) =>
+      Math.abs(ctx.units.emuToPx(String(point.x)) ?? 0) <= drawing.width * 2 &&
+      Math.abs(ctx.units.emuToPx(String(point.y)) ?? 0) <= drawing.height * 2,
+    );
+    return oldUnits
+      ? raw.map((point) => ({ x: ctx.units.emuToPx(String(point.x)) ?? 0, y: ctx.units.emuToPx(String(point.y)) ?? 0 }))
+      : raw.map((point) => ({ x: point.x * drawing.width / WORD_WRAP_EXTENT, y: point.y * drawing.height / WORD_WRAP_EXTENT }));
   }
 
   private wrapSide(value: string | undefined): WrapSide | undefined {

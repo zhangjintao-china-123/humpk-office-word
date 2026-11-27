@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Block } from "../../src/model/block/Block";
 import { Paragraph } from "../../src/model/block/Paragraph";
 import { Document } from "../../src/model/document/Document";
@@ -13,6 +13,7 @@ import type { StoryEditor } from "../../src/editor/StoryEditor";
 import { CaretPos } from "../../src/selection/CaretPos";
 import { HitTester, type HitContext } from "../../src/selection/HitTester";
 import { DEFAULT_CELL_INSETS } from "../../src/layout/table/TableMetrics";
+import { Paginator } from "../../src/layout/page/Paginator";
 
 function paragraph(text: string, id = 1): Paragraph {
   const p = new Paragraph(id);
@@ -111,6 +112,19 @@ describe("HitTester", () => {
     const inB = hit.hit(tableX + 50 + DEFAULT_CELL_INSETS.left + 3, tableY + DEFAULT_CELL_INSETS.top + 6, ctx);
     expect(inB?.story.slot === "cell" && inB.story.cell).toBe(table.rows[0].cells[1]);
     expect(inB?.node?.data.char).toBe("B");
+  });
+
+  it("悬停检查图片时不计算普通单元格文字行的坐标", () => {
+    const table = twoCells(story("第一格").document, story("第二格").document);
+    const ctx: HitContext = {
+      pageSetup: setup,
+      origins,
+      body: editor([tableLineOf(table)], hostDoc(table)),
+    };
+    const tester = new HitTester();
+    const locateCell = vi.spyOn(tester, "cellBoxes");
+    expect(tester.pictureAt(48, 28, ctx)).toBeNull();
+    expect(locateCell).not.toHaveBeenCalled();
   });
 
   it("跨格矩形选出包围盒内的格子", () => {
@@ -308,6 +322,26 @@ describe("HitTester", () => {
     line.height = 20;
     expect(hit.tableGuide(65, 40, ctx, 4)).toBeNull();
     expect(hit.tableGuide(90, 30, ctx, 4)?.kind).toBe("column");
+  });
+
+  it("跨页的整行字从重复表头下方开始，点击和光标都落在续页", () => {
+    const header = story("表");
+    const body = story("续");
+    body.line.top = 224;
+    const table = grid([[header.document], [body.document]]);
+    table.rows[0].header = true;
+    table.rowHeights = [25, 310];
+    const lines = new Paginator().paginate([tableLineOf(table)], setup.contentHeight);
+    const secondPage = setup.height + setup.pageGap;
+    const ctx: HitContext = { pageSetup: setup, origins: [...origins, { x: 0, y: secondPage }], body: editor(lines, hostDoc(table)) };
+    const x = setup.contentLeft() + DEFAULT_CELL_INSETS.left + 2;
+    const top = secondPage + setup.contentTop();
+    const resumed = lines.find((line) => line.top >= setup.contentHeight)!;
+    expect(resumed.tableClipTop).toBe(230);
+    expect(hit.hit(x, top + 8, ctx)?.node?.data.char).toBe("表");
+    const picked = hit.hit(x, top + 26, ctx);
+    expect(picked?.node?.data.char).toBe("续");
+    expect(hit.caretBox(picked!, ctx)?.y).toBe(top + 25);
   });
 
   it("单元格浮动图也能点中", () => {

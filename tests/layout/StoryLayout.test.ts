@@ -453,7 +453,7 @@ describe("StoryLayout", () => {
       { x: 8, y: 8 },
     ];
     const through = layout(
-      anchored("绕排文字绕排文字", {
+      anchored("绕排文字".repeat(10), {
         wrapType: "through",
         wrapSide: "both",
         left: 0,
@@ -467,9 +467,12 @@ describe("StoryLayout", () => {
       220,
       400,
     );
-    const throughWord = through.find((line) => line.type === "")?.getWord(0);
-    expect(throughWord?.left ?? 0).toBeGreaterThanOrEqual(8);
-    expect(throughWord?.left ?? 999).toBeLessThan(90);
+    expect(through[0].getWord(0)?.left).toBeGreaterThanOrEqual(100);
+    const inside = through.find((line) => {
+      const left = line.getWord(0)?.left ?? 0;
+      return left >= 8 && left < 90;
+    });
+    expect(inside?.top).toBeGreaterThanOrEqual(8);
 
     const tight = layout(
       anchored("绕排文字绕排文字", {

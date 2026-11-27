@@ -9,6 +9,7 @@ import { Table, TableCell, TableColumn, TableRow } from "../../src/model/table/T
 import { WordStreamBuilder } from "../../src/model/flatten/WordStreamBuilder";
 import { FallbackMeasurer } from "../../src/layout/measure/FallbackMeasurer";
 import { Paginator } from "../../src/layout/page/Paginator";
+import { paginateTableRows } from "../../src/layout/page/TablePagination";
 import { StoryLayout } from "../../src/layout/StoryLayout";
 import { TableLayouter } from "../../src/layout/table/TableLayouter";
 import { cellContentOrigin, cellDocumentHeight, cellInsets, DEFAULT_CELL_INSETS, resolveColumnWidths, tableOffset } from "../../src/layout/table/TableMetrics";
@@ -155,6 +156,25 @@ describe("表格标题行跨页", () => {
       [60, 100, 100],
       [160, 90, 200],
     ]);
+  });
+
+  it("跨页断点避开穿过网格行边界的合并单元格文字", () => {
+    const table = grid([100]);
+    table.rowHeights = [50, 50, 50];
+    table.rows.push(new TableRow(), new TableRow());
+    const cell = table.rows[0].cells[0];
+    cell.rowSpan = 3;
+    const line = new Line();
+    line.top = 87;
+    line.height = 20;
+    line.maxCharHeight = 20;
+    cell.document.paragraphs.head!.data.lines = [line];
+    const { slices, y } = paginateTableRows(table, 0, 100);
+    expect(slices).toMatchObject([
+      { from: 0, to: 2, clipTop: 0, height: 91, top: 0 },
+      { from: 1, to: 3, clipTop: 41, height: 59, top: 100 },
+    ]);
+    expect(y).toBe(159);
   });
 
   it("格子高度把浮动图算进去", () => {

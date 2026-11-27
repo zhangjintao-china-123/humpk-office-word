@@ -4,6 +4,7 @@ import type { Paragraph } from "../model/block/Paragraph";
 import { Line } from "../model/line/Line";
 import type { LinkedNode } from "../model/list/LinkedList";
 import type { Word } from "../model/inline/Word";
+import { paragraphStartWord } from "../model/flatten/WordStreamBuilder";
 import { twipToPx } from "../shared/units";
 import type { LayoutConstraints } from "./LayoutConstraints";
 import { LineBreaker } from "./line/LineBreaker";
@@ -16,7 +17,11 @@ import { TokenBuilder } from "./token/TokenBuilder";
 import { assignTocPages } from "../model/toc/Toc";
 import { AnchorLayout } from "./anchor/AnchorLayout";
 
+type LayoutGeometry = Pick<LayoutConstraints, "contentWidth" | "contentHeight" | "linePitchPx" | "paginate">;
+
 export class StoryLayout {
+  // 首次打开和文本编辑由不同的排版实例处理，复用条件跟随已经发布的行数组。
+  private static readonly unwrappedLayouts = new WeakMap<Line[], LayoutGeometry>();
   private readonly measure = new MeasurePass();
   private readonly mix = new MixSpacing();
   private readonly tokens = new TokenBuilder();
@@ -37,26 +42,40 @@ export class StoryLayout {
       }
     }
 
-    const lines = this.breaker.break(tokens, constraints.contentWidth);
-    this.applyTableHeights(lines, constraints.contentWidth);
-    const placed =
-      constraints.paginate === false
-        ? this.stack(lines)
-        : this.paginator.paginate(lines, constraints.contentHeight);
-    this.assignParagraphLines(document, placed);
-    this.layoutFloatingTables(document, constraints);
-    const flowed = this.anchors.finish(document, placed, constraints);
-    this.assignParagraphLines(document, flowed.lines);
-    document.anchors = flowed.anchors;
-    this.refreshToc(document, constraints);
-    this.layoutShapes(document, constraints);
-    return flowed.lines;
+    return this.place(document, this.breaker.break(tokens, constraints.contentWidth), constraints);
   }
 
-  reflow(document: Document, constraints: LayoutConstraints, dirty: Paragraph[]): Line[] {
+  reflow(
+    document: Document,
+    constraints: LayoutConstraints,
+    dirty: Paragraph[],
+    previous?: Line[],
+    textAnchor?: LinkedNode<Word>,
+  ): Line[] {
     this.breaker.setGridPitch(constraints.linePitchPx);
     this.breaker.setDefaultTab(twipToPx(document.defaultTabStopTwip ?? 720));
     const unique = [...new Set(dirty)];
+    const edited = unique.length === 1 && unique[0] === textAnchor?.data.paragraph ? unique[0] : undefined;
+    let updated: Line[] | undefined;
+    const geometry = previous && StoryLayout.unwrappedLayouts.get(previous);
+    if (edited && textAnchor && previous && geometry &&
+      geometry.contentWidth === constraints.contentWidth && geometry.contentHeight === constraints.contentHeight &&
+      geometry.linePitchPx === constraints.linePitchPx && geometry.paginate === constraints.paginate &&
+      !edited.isTable && !edited.toc &&
+      edited.blocks.every((block) => !block.drawing && !block.charType && !block.field && !block.footnoteId && !block.commentRef)
+    ) {
+      updated = this.breakParagraph(document, edited, constraints, textAnchor);
+      if (this.reusePositions(edited.lines, updated)) {
+        edited.changed = false;
+        return previous;
+      }
+    }
+
+    const hasWrap = document.anchors.some((anchor) => anchor.wrap !== "none" || (anchor.drawing.anchorSet?.wrapType ?? "none") !== "none");
+    if ((previous && !geometry) || hasWrap || document.paragraphs.each((node) => node.data.isTable && node.data.hasAnchor)) {
+      // 已绕排的片段不能当作普通段落行重新分页。每次从字流建立相同的定位基线。
+      return this.layout(document, constraints);
+    }
     const tables = this.tableLayouter(constraints);
     for (const paragraph of unique) {
       paragraph.changed = false;
@@ -66,18 +85,52 @@ export class StoryLayout {
         }
         continue;
       }
-      const nodes = this.nodesOf(document, paragraph);
-      const words = nodes.map((node) => node.data);
-      this.measure.runWords(words, constraints.measurer);
-      this.mix.applyWords(words);
-      const tokens = this.tokens.buildWhile(nodes[0] ?? null, (node) => node.data.paragraph === paragraph);
-      paragraph.lines = this.breaker.break(tokens, constraints.contentWidth);
+      paragraph.lines = paragraph === edited && updated
+        ? updated
+        : this.breakParagraph(document, paragraph, constraints, textAnchor);
     }
     const assembled = this.assemble(document);
+    for (const line of assembled) {
+      this.breaker.restoreSpacing(line);
+    }
     this.breaker.collapseAdjacent(assembled);
-    this.applyTableHeights(assembled, constraints.contentWidth);
+    return this.place(document, assembled, constraints);
+  }
+
+  private breakParagraph(document: Document, paragraph: Paragraph, constraints: LayoutConstraints, textAnchor?: LinkedNode<Word>): Line[] {
+    const first = textAnchor?.data.paragraph === paragraph
+      ? paragraphStartWord(textAnchor)
+      : this.firstWordOf(document, paragraph);
+    const words: Word[] = [];
+    for (let node = first; node?.data.paragraph === paragraph; node = node.next) {
+      words.push(node.data);
+    }
+    this.measure.runWords(words, constraints.measurer);
+    this.mix.applyWords(words);
+    const tokens = this.tokens.buildWhile(first, (node) => node.data.paragraph === paragraph);
+    return this.breaker.break(tokens, constraints.contentWidth);
+  }
+
+  private reusePositions(current: Line[], updated: Line[]): boolean {
+    if (!current.length || updated.length !== current.length || updated.some((line, index) =>
+      line.type || current[index].type || line.boxHeight !== current[index].boxHeight ||
+      line.isFirst !== current[index].isFirst || line.isLast !== current[index].isLast
+    )) {
+      return false;
+    }
+    for (const [index, line] of updated.entries()) {
+      const existing = current[index];
+      // 保留已分页的行对象和纵向坐标，让页索引与其他段落继续有效。
+      const { top, pageIndex, height, fullHeight, beforeHeight, afterHeight } = existing;
+      Object.assign(existing, line, { top, pageIndex, height, fullHeight, beforeHeight, afterHeight });
+    }
+    return true;
+  }
+
+  private place(document: Document, lines: Line[], constraints: LayoutConstraints): Line[] {
+    this.applyTableHeights(lines, constraints.contentWidth);
     const placed =
-      constraints.paginate === false ? this.stack(assembled) : this.paginator.paginate(assembled, constraints.contentHeight);
+      constraints.paginate === false ? this.stack(lines) : this.paginator.paginate(lines, constraints.contentHeight);
     this.assignParagraphLines(document, placed);
     this.layoutFloatingTables(document, constraints);
     const flowed = this.anchors.finish(document, placed, constraints);
@@ -85,6 +138,10 @@ export class StoryLayout {
     document.anchors = flowed.anchors;
     this.refreshToc(document, constraints);
     this.layoutShapes(document, constraints);
+    if (!flowed.wrapped) {
+      const { contentWidth, contentHeight, linePitchPx, paginate } = constraints;
+      StoryLayout.unwrappedLayouts.set(flowed.lines, { contentWidth, contentHeight, linePitchPx, paginate });
+    }
     return flowed.lines;
   }
 
@@ -188,6 +245,11 @@ export class StoryLayout {
         contentWidth: width,
         contentHeight: Number.POSITIVE_INFINITY,
         paginate: false,
+        leftMargin: 0,
+        topMargin: 0,
+        storyTop: 0,
+        pageWidth: width,
+        pageHeight: undefined,
         linePitchPx: constraints.adjustLineHeightInTable ? constraints.linePitchPx : undefined,
       }),
     );
@@ -204,6 +266,7 @@ export class StoryLayout {
     line.paragraph = paragraph;
     line.startNode = existing?.startNode ?? this.tableWordOf(document, paragraph);
     line.length = existing?.length ?? 1;
+    line.isFirst = line.isLast = true;
     line.tableRowFrom = 0;
     line.tableRowTo = table?.rows.length ?? existing?.tableRowTo ?? 0;
     const height = table?.rowHeights.reduce((sum, row) => sum + row, 0) ?? existing?.height ?? 0;
@@ -223,16 +286,15 @@ export class StoryLayout {
     return null;
   }
 
-  private nodesOf(document: Document, paragraph: Paragraph): LinkedNode<Word>[] {
-    const nodes: LinkedNode<Word>[] = [];
+  private firstWordOf(document: Document, paragraph: Paragraph): LinkedNode<Word> | null {
     let node = document.words.head;
     while (node) {
       if (node.data.paragraph === paragraph) {
-        nodes.push(node);
+        return node;
       }
       node = node.next;
     }
-    return nodes;
+    return null;
   }
 
   private assignParagraphLines(document: Document, lines: Line[]): void {

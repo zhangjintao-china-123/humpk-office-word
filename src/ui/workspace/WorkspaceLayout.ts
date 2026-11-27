@@ -1,4 +1,4 @@
-import type { PageOrigin } from "../../editor/StoryEditor";
+import type { PageOrigin, PageRange } from "../../editor/StoryEditor";
 import type { PageSetup } from "../../render/page/PageSetup";
 
 export const SIDE_PAD = 40;
@@ -20,4 +20,12 @@ export function pageOrigins(pageSetup: PageSetup, pageCount: number, originX: nu
     });
   }
   return origins;
+}
+
+export function visiblePageRange(setup: PageSetup, count: number, top: number, bottom: number): PageRange {
+  const stride = setup.height + setup.pageGap;
+  return {
+    start: Math.min(count, Math.max(0, Math.ceil((top - TOP_PAD - setup.height) / stride))),
+    end: Math.min(count, Math.max(0, Math.floor((bottom - TOP_PAD) / stride) + 1)),
+  };
 }

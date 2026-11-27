@@ -21,8 +21,22 @@ export function cellContentHeight(lines: Line[]): number {
 
 export function cellDocumentHeight(document: Document): number {
   const text = cellContentHeight(document.paragraphs.toArray().flatMap((paragraph) => paragraph.lines));
-  const float = document.anchors.reduce((max, anchor) => Math.max(max, anchor.y + anchor.height), 0);
+  const float = document.anchors.reduce((max, anchor) => anchor.drawing.hidden ? max : Math.max(max, anchor.y + anchor.height), 0);
   return Math.max(text, float);
+}
+
+/** 断页和命中使用同一段可见行内容，段前、段后的留白可以跨页。 */
+export function cellLineBand(line: Line): { top: number; bottom: number } {
+  if (line.type) {
+    return { top: line.top, bottom: line.top + line.height };
+  }
+  const contentTop = line.top + line.beforeHeight;
+  const contentBottom = line.top + line.height - line.afterHeight;
+  if (line.paragraph?.attrs.lineRule === "exact") {
+    return { top: contentTop, bottom: contentBottom };
+  }
+  const inkTop = contentTop + line.contentOffsetY;
+  return { top: inkTop, bottom: inkTop + Math.max(line.maxCharHeight, 14) };
 }
 
 /** 单元格内容区左上角。垂直对齐在上下边距之间挪动。 */

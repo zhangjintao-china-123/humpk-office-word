@@ -7,11 +7,14 @@ import type { Paragraph } from "../../model/block/Paragraph";
 import type { LayoutConstraints } from "../LayoutConstraints";
 import { LineMetrics } from "../line/LineMetrics";
 import { PlacedAnchor } from "../../model/inline/PlacedAnchor";
+import { drawingOutline, placeOutline, rectangleOutline } from "../../model/graphic/DrawingOutline";
+import { paginateTableRows } from "../page/TablePagination";
 import { FlowBox, WrapFlow } from "./WrapFlow";
 
 interface CharPoint {
   x: number;
   y: number;
+  height?: number;
 }
 
 interface PlacedTable {
@@ -19,37 +22,46 @@ interface PlacedTable {
   x: number;
   y: number;
   width: number;
-  height: number;
+  pageIndex: number;
+  lines: Line[];
 }
 
 export class AnchorLayout {
   private readonly flow = new WrapFlow();
 
-  finish(document: Document, lines: Line[], constraints: LayoutConstraints): { lines: Line[]; anchors: PlacedAnchor[] } {
-    let anchors = this.placeAll(document, constraints);
+  finish(document: Document, lines: Line[], constraints: LayoutConstraints): { lines: Line[]; anchors: PlacedAnchor[]; wrapped: boolean } {
+    const characterPositions = new Map<Drawing, CharPoint>();
+    const referencePages = new Map<Drawing, number>();
+    let anchors = this.placeAll(document, constraints, undefined, characterPositions, referencePages);
     let tables = this.placeTables(document, constraints);
     if (!this.affectsText(anchors, tables)) {
-      return { lines: this.merge(lines, tables), anchors };
+      return { lines: this.merge(lines, tables), anchors, wrapped: false };
     }
     let text = lines;
     for (let pass = 0; pass < 3; pass += 1) {
-      const flowed = this.flow.reflow(document, anchors, tables.map((table) => this.tableBox(table)), constraints);
+      const flowed = this.flow.reflow(document, anchors, tables.flatMap((table) => this.tableBoxes(table, constraints)), constraints);
       text = flowed.lines;
       this.assignLines(document, text);
-      const nextAnchors = this.placeAll(document, constraints, flowed.origins);
+      const nextAnchors = this.placeAll(document, constraints, flowed.origins, characterPositions, referencePages);
       const nextTables = this.placeTables(document, constraints);
       const changed = this.moved(anchors, nextAnchors) || this.tablesMoved(tables, nextTables);
-      anchors = nextAnchors;
-      tables = nextTables;
-      if (!changed) {
+      if (!changed || pass === 2) {
+        // 画布必须使用这次文字实际避开的同一组障碍。
+        anchors = anchors.map((anchor, index) => this.wraps(anchor) ? anchor : nextAnchors[index]);
         break;
       }
+      anchors = nextAnchors;
+      tables = nextTables;
     }
-    return { lines: this.merge(text, tables), anchors };
+    return { lines: this.merge(text, tables), anchors, wrapped: true };
   }
 
   private affectsText(anchors: PlacedAnchor[], tables: PlacedTable[]): boolean {
-    return tables.length > 0 || anchors.some((anchor) => anchor.wrap !== "none");
+    return tables.length > 0 || anchors.some((anchor) => this.wraps(anchor));
+  }
+
+  private wraps(anchor: PlacedAnchor): boolean {
+    return !anchor.drawing.hidden && anchor.wrap !== "none";
   }
 
   private moved(before: PlacedAnchor[], after: PlacedAnchor[]): boolean {
@@ -58,7 +70,7 @@ export class AnchorLayout {
     }
     return before.some((anchor, index) => {
       const next = after[index];
-      return Math.abs(anchor.x - next.x) > 0.5 || Math.abs(anchor.y - next.y) > 0.5;
+      return this.wraps(anchor) && (anchor.pageIndex !== next.pageIndex || Math.abs(anchor.x - next.x) > 0.01 || Math.abs(anchor.y - next.y) > 0.01);
     });
   }
 
@@ -68,7 +80,7 @@ export class AnchorLayout {
     }
     return before.some((table, index) => {
       const next = after[index];
-      return Math.abs(table.x - next.x) > 0.5 || Math.abs(table.y - next.y) > 0.5;
+      return table.pageIndex !== next.pageIndex || Math.abs(table.x - next.x) > 0.01 || Math.abs(table.y - next.y) > 0.01;
     });
   }
 
@@ -87,54 +99,69 @@ export class AnchorLayout {
   }
 
   private merge(lines: Line[], tables: PlacedTable[]): Line[] {
-    const tableLines = tables
-      .map((table) => this.tableLine(table))
-      .filter((line): line is Line => line != null);
+    const tableLines = tables.flatMap((table) => table.lines);
     return [...lines, ...tableLines].sort((a, b) => a.top - b.top || (a.type === "table" ? -1 : 1));
   }
 
-  private tableBox(table: PlacedTable): FlowBox {
-    return {
-      left: table.x,
-      right: table.x + table.width,
-      top: table.y,
-      bottom: table.y + table.height,
+  private tableBoxes(table: PlacedTable, constraints: LayoutConstraints): FlowBox[] {
+    const anchor = table.paragraph.table?.anchorSet;
+    const pageH = constraints.paginate === false ? Infinity : constraints.contentHeight;
+    return table.lines.map((line) => ({
+      left: table.x - (anchor?.distLeft ?? 0),
+      right: table.x + table.width + (anchor?.distRight ?? 0),
+      top: Number.isFinite(pageH) ? Math.max(line.pageIndex! * pageH, line.top - (anchor?.distTop ?? 0)) : line.top - (anchor?.distTop ?? 0),
+      bottom: Number.isFinite(pageH)
+        ? Math.min((line.pageIndex! + 1) * pageH, line.top + line.height + (anchor?.distBottom ?? 0))
+        : line.top + line.height + (anchor?.distBottom ?? 0),
       wrap: "square",
       side: "both",
-      originX: table.x,
-      originY: table.y,
       distLeft: 0,
       distRight: 0,
-    };
+      distTop: 0,
+      distBottom: 0,
+    }));
   }
 
-  private tableLine(table: PlacedTable): Line | null {
-    const data = table.paragraph.table;
-    if (!data) {
-      return null;
-    }
+  private tableLines(paragraph: Paragraph, x: number, y: number, height: number, pageH: number, pageIndex: number): Line[] {
+    const data = paragraph.table!;
     const word = new Word();
     word.kind = "table";
     word.table = data;
-    word.paragraph = table.paragraph;
-    const line = new Line();
-    line.type = "table";
-    line.paragraph = table.paragraph;
-    line.startNode = new LinkedNode(word);
-    line.length = 1;
-    line.top = table.y;
-    line.height = table.height;
-    line.fullHeight = table.height;
-    line.leftBlankWidth = table.x;
-    line.tableRowFrom = 0;
-    line.tableRowTo = data.rows.length;
-    line.isFirst = true;
-    line.isLast = true;
-    return line;
+    word.paragraph = paragraph;
+    const node = new LinkedNode(word);
+    const slices = Number.isFinite(pageH)
+      ? paginateTableRows(data, y, pageH, pageIndex).slices
+      : [{ from: 0, to: data.rows.length, clipTop: 0, headerRows: 0, height, top: y }];
+    return slices.map((slice, index) => {
+      const line = new Line();
+      line.type = "table";
+      line.paragraph = paragraph;
+      line.startNode = node;
+      line.length = 1;
+      line.top = slice.top;
+      line.pageIndex = Number.isFinite(pageH) ? Math.max(pageIndex, Math.floor(slice.top / pageH)) : undefined;
+      line.height = line.fullHeight = slice.height;
+      line.leftBlankWidth = x;
+      line.tableRowFrom = slice.from;
+      line.tableRowTo = slice.to;
+      line.tableHeaderRows = slice.headerRows;
+      line.tableClipTop = slice.clipTop;
+      line.isFirst = index === 0;
+      line.isLast = index === slices.length - 1;
+      return line;
+    });
   }
 
-  private placeAll(document: Document, constraints: LayoutConstraints, origins?: Map<Paragraph, number>): PlacedAnchor[] {
-    return this.collect(document).map(({ drawing, paragraph }) => this.place(drawing, paragraph, constraints, origins));
+  private placeAll(
+    document: Document,
+    constraints: LayoutConstraints,
+    origins: Map<Paragraph, number> | undefined,
+    characterPositions: Map<Drawing, CharPoint>,
+    referencePages: Map<Drawing, number>,
+  ): PlacedAnchor[] {
+    return this.collect(document).map(({ drawing, paragraph }) =>
+      this.place(drawing, paragraph, constraints, origins, characterPositions, referencePages),
+    );
   }
 
   private placeTables(document: Document, constraints: LayoutConstraints): PlacedTable[] {
@@ -149,18 +176,11 @@ export class AnchorLayout {
       const height = table.rowHeights.reduce((sum, row) => sum + row, 0);
       const host = this.hostLine(paragraph);
       const { pageH, pageStart } = this.pageMetrics(host, constraints);
-      const drawing = new Drawing();
-      drawing.width = width;
-      drawing.height = height;
-      drawing.anchorSet = {
-        leftFrom: table.anchorSet?.leftFrom,
-        left: table.anchorSet?.left,
-        topFrom: table.anchorSet?.topFrom,
-        top: table.anchorSet?.top,
-      };
-      const x = this.resolveX(drawing, paragraph, constraints, null);
-      const y = this.resolveY(drawing, host?.top ?? 0, pageStart, pageH, constraints.contentHeight, null);
-      placed.push({ paragraph, x, y, width, height });
+      const pageIndex = Number.isFinite(pageH) ? Math.max(0, Math.floor(pageStart / pageH)) : 0;
+      const positioned = { width, height, anchorSet: table.anchorSet };
+      const x = this.resolveX(positioned, paragraph, constraints, null, pageIndex);
+      const y = this.resolveY(positioned, host?.top ?? 0, pageStart, pageH, constraints.contentHeight, null, constraints);
+      placed.push({ paragraph, x, y, width, pageIndex, lines: this.tableLines(paragraph, x, y, height, pageH, pageIndex) });
     });
     return placed;
   }
@@ -220,20 +240,58 @@ export class AnchorLayout {
     paragraph: Paragraph,
     constraints: LayoutConstraints,
     origins?: Map<Paragraph, number>,
+    characterPositions?: Map<Drawing, CharPoint>,
+    referencePages?: Map<Drawing, number>,
   ): PlacedAnchor {
     const placed = new PlacedAnchor(drawing, paragraph);
     const host = this.hostLine(paragraph);
     const origin = origins?.get(paragraph);
-    const { pageH, pageStart } = this.pageMetrics(host, constraints, origin);
-    const atChar = this.locateChar(paragraph, this.charIndex(paragraph, drawing));
-    placed.x = this.resolveX(drawing, paragraph, constraints, atChar);
-    const baseTop = origin ?? host?.top ?? 0;
-    placed.y = this.resolveY(drawing, baseTop, pageStart, pageH, constraints.contentHeight, atChar, constraints);
     const set = drawing.anchorSet;
-    placed.wrapLeft = placed.x - (set?.distLeft ?? 0);
-    placed.wrapRight = placed.x + placed.width + (set?.distRight ?? 0);
-    placed.wrapTop = placed.y - (set?.distTop ?? 0);
-    placed.wrapBottom = placed.y + placed.height + (set?.distBottom ?? 0);
+    let atChar = characterPositions?.get(drawing) ?? this.locateChar(paragraph, this.charIndex(paragraph, drawing));
+    if (this.wraps(placed) && (set?.leftFrom === "character" || set?.topFrom === "line" || set?.topFrom === "character")) {
+      // 排除对象自身造成的位移，避免锚点跟着它刚刚推开的文字来回跳。
+      atChar ??= { x: 0, y: host?.top ?? 0 };
+      characterPositions?.set(drawing, atChar);
+    }
+    const referenceY = set?.topFrom === "line" || set?.topFrom === "character" ? atChar?.y : origin;
+    const { pageH, pageStart } = this.pageMetrics(host, constraints, referenceY);
+    const referencePage = Number.isFinite(pageH) ? Math.max(0, Math.floor(pageStart / pageH)) : 0;
+    const baseTop = origin ?? host?.top ?? 0;
+    placed.paragraphTop = baseTop;
+    placed.x = set?.simplePosition
+      ? set.simplePosition.x - (constraints.leftMargin ?? 0)
+      : this.resolveX(drawing, paragraph, constraints, atChar, referencePage);
+    placed.y = set?.simplePosition
+      ? pageStart + set.simplePosition.y - (constraints.storyTop ?? constraints.topMargin ?? 0)
+      : this.resolveY(drawing, baseTop, pageStart, pageH, constraints.contentHeight, atChar, constraints);
+    const paragraphOffset = !set?.simplePosition && (!set?.topFrom || set.topFrom === "paragraph" || set.topFrom === "text") && !set?.topAlign;
+    placed.pageIndex = paragraphOffset && placed.y >= pageStart && Number.isFinite(pageH)
+      ? Math.max(0, Math.floor(placed.y / pageH))
+      : referencePage;
+    const paperHeight = constraints.pageHeight;
+    if (Number.isFinite(pageH) && paperHeight && paperHeight > 0 &&
+      set?.leftFrom === "page" && set.topFrom === "page" && !set.topAlign && !set.leftAlign && !set.simplePosition
+    ) {
+      // 以环绕前的段落页为基准，避免图片一推开文字就把自己的参考页推走。
+      const basePage = referencePages?.get(drawing) ?? referencePage;
+      referencePages?.set(drawing, basePage);
+      const top = set.top ?? 0;
+      const pageOffset = drawing.dropPage == null ? Math.floor(top / paperHeight) : 0;
+      placed.referencePage = basePage;
+      placed.pageIndex = drawing.dropPage ?? Math.max(0, basePage + pageOffset);
+      placed.y = placed.pageIndex * pageH + top - pageOffset * paperHeight -
+        (constraints.storyTop ?? constraints.topMargin ?? 0);
+    }
+    const contour = placed.wrap === "tight" || placed.wrap === "through";
+    const outline = placeOutline(drawing, contour ? drawingOutline(drawing) : rectangleOutline(placed.width, placed.height), placed.x, placed.y);
+    if (contour && (set?.polygon || drawing.shape || drawing.rotation)) {
+      placed.wrapPolygon = outline;
+    }
+    const effects = contour ? undefined : set?.effectExtent;
+    placed.wrapLeft = Math.min(...outline.map((point) => point.x)) - (set?.distLeft ?? 0) - (effects?.left ?? 0);
+    placed.wrapRight = Math.max(...outline.map((point) => point.x)) + (set?.distRight ?? 0) + (effects?.right ?? 0);
+    placed.wrapTop = Math.min(...outline.map((point) => point.y)) - (set?.distTop ?? 0) - (effects?.top ?? 0);
+    placed.wrapBottom = Math.max(...outline.map((point) => point.y)) + (set?.distBottom ?? 0) + (effects?.bottom ?? 0);
     return placed;
   }
 
@@ -263,9 +321,9 @@ export class AnchorLayout {
         const word = node.data;
         if (word.kind === "text" && !word.isEnterChar()) {
           if (seen >= index) {
-            return { x: word.left, y: line.top };
+            return { x: word.left, y: line.top, height: line.height };
           }
-          fallback = { x: word.left + word.kernedWidth, y: line.top };
+          fallback = { x: word.left + word.kernedWidth, y: line.top, height: line.height };
           seen += 1;
         }
         node = node.next;
@@ -274,100 +332,106 @@ export class AnchorLayout {
     return fallback;
   }
 
-  private resolveX(drawing: Drawing, paragraph: Paragraph, constraints: LayoutConstraints, atChar: CharPoint | null): number {
+  private resolveX(
+    drawing: Pick<Drawing, "width" | "anchorSet">,
+    paragraph: Paragraph,
+    constraints: LayoutConstraints,
+    atChar: CharPoint | null,
+    pageIndex = 0,
+  ): number {
     const set = drawing.anchorSet;
-    const width = drawing.width;
-    const contentWidth = constraints.contentWidth;
-    const align = set?.leftAlign;
-    const from = set?.leftFrom;
-    if (align === "center" || align === "right" || align === "left") {
-      if (from === "page") {
-        const leftMargin = constraints.leftMargin ?? 0;
-        const pageWidth = constraints.pageWidth ?? contentWidth + leftMargin * 2;
-        if (align === "center") {
-          return (pageWidth - width) / 2 - leftMargin;
-        }
-        if (align === "right") {
-          return pageWidth - width - leftMargin;
-        }
-        return -leftMargin;
-      }
-      if (align === "center") {
-        return (contentWidth - width) / 2;
-      }
-      if (align === "right") {
-        return contentWidth - width;
-      }
-      return 0;
-    }
-    const offset = set?.left ?? 0;
-    if (from === "character") {
-      return (atChar?.x ?? 0) + offset;
-    }
-    if (from === "page" || from === "leftMargin") {
-      return offset - (constraints.leftMargin ?? 0);
-    }
-    if (from === "rightMargin") {
-      return contentWidth - width - offset;
-    }
-    if (from === "paragraph") {
-      const word = this.hostLine(paragraph)?.startNode?.data ?? null;
-      return new LineMetrics().leftBlank(paragraph, false, word) + offset;
-    }
+    const leftMargin = constraints.leftMargin ?? 0;
+    const pageWidth = constraints.pageWidth ?? constraints.contentWidth + leftMargin * 2;
+    const insideLeft = pageIndex % 2 === 0;
+    let from = set?.leftFrom;
+    let align = set?.leftAlign;
     if (from === "insideMargin" || from === "outsideMargin") {
-      const pageH = Math.max(1, constraints.contentHeight);
-      const host = this.hostLine(paragraph);
-      const pageIndex = host ? Math.floor(host.top / pageH) : 0;
-      const onLeft = from === "insideMargin" ? pageIndex % 2 === 0 : pageIndex % 2 === 1;
-      return onLeft ? offset : contentWidth - width - offset;
+      from = (from === "insideMargin") === insideLeft ? "leftMargin" : "rightMargin";
     }
-    return offset;
+    if (align === "inside" || align === "outside") {
+      align = (align === "inside") === insideLeft ? "left" : "right";
+    }
+    let start = 0;
+    let span = constraints.contentWidth;
+    switch (from) {
+      case "page":
+        start = -leftMargin;
+        span = pageWidth;
+        break;
+      case "leftMargin":
+        start = -leftMargin;
+        span = leftMargin;
+        break;
+      case "rightMargin":
+        start = constraints.contentWidth;
+        span = Math.max(0, pageWidth - leftMargin - constraints.contentWidth);
+        break;
+      case "character":
+        start = atChar?.x ?? 0;
+        span = 0;
+        break;
+      case "paragraph":
+        start = new LineMetrics().leftBlank(paragraph, false, this.hostLine(paragraph)?.startNode?.data ?? null);
+        span -= start;
+        break;
+    }
+    return start + alignOffset(align, span - drawing.width, "right", set?.left);
   }
 
   private resolveY(
-    drawing: Drawing,
+    drawing: Pick<Drawing, "height" | "anchorSet">,
     hostTop: number,
     pageStart: number,
     pageH: number,
     contentHeight: number,
     atChar: CharPoint | null,
-    constraints?: LayoutConstraints,
+    constraints: LayoutConstraints,
   ): number {
     const set = drawing.anchorSet;
-    const height = drawing.height;
-    const align = set?.topAlign;
-    const from = set?.topFrom;
-    if (align === "center" || align === "bottom" || align === "top") {
-      if (from === "page") {
-        const topMargin = constraints?.topMargin ?? 0;
-        const fullPageH =
-          constraints?.paginate === false || !Number.isFinite(contentHeight) ? pageH : (constraints?.pageHeight ?? pageH);
-        if (align === "center") {
-          return pageStart + (fullPageH - height) / 2 - topMargin;
-        }
-        if (align === "bottom") {
-          return pageStart + fullPageH - height - topMargin;
-        }
-        return pageStart - topMargin;
-      }
-      if (align === "center") {
-        return pageStart + (pageH - height) / 2;
-      }
-      if (align === "bottom") {
-        return pageStart + contentHeight - height;
-      }
-      return pageStart;
+    const content = Number.isFinite(contentHeight) ? contentHeight : drawing.height;
+    const marginTop = constraints.topMargin ?? 0;
+    const storyTop = constraints.storyTop ?? marginTop;
+    const paperHeight = constraints.pageHeight ?? (Number.isFinite(pageH) ? pageH + marginTop : content);
+    let start = hostTop;
+    let span = 0;
+    switch (set?.topFrom) {
+      case "page":
+        start = pageStart - storyTop;
+        span = paperHeight;
+        break;
+      case "topMargin":
+        start = pageStart - storyTop;
+        span = marginTop;
+        break;
+      case "bottomMargin":
+        start = pageStart + marginTop + content - storyTop;
+        span = Math.max(0, paperHeight - marginTop - content);
+        break;
+      case "margin":
+      case "insideMargin":
+      case "outsideMargin":
+        start = pageStart + marginTop - storyTop;
+        span = content;
+        break;
+      case "character":
+      case "line":
+        start = atChar?.y ?? hostTop;
+        span = atChar?.height ?? 0;
+        break;
     }
-    const offset = set?.top ?? 0;
-    if (from === "character" || from === "line") {
-      return (atChar?.y ?? hostTop) + offset;
-    }
-    if (from === "page" || from === "margin" || from === "topMargin") {
-      return pageStart + offset;
-    }
-    if (from === "bottomMargin") {
-      return pageStart + contentHeight - height - offset;
-    }
-    return hostTop + offset;
+    return start + alignOffset(set?.topAlign, span - drawing.height, "bottom", set?.top);
   }
+}
+
+function alignOffset(align: string | undefined, spare: number, end: string, offset: number | undefined): number {
+  if (align === "center") {
+    return spare / 2;
+  }
+  if (align === end) {
+    return spare;
+  }
+  if (align === "left" || align === "top") {
+    return 0;
+  }
+  return offset ?? 0;
 }

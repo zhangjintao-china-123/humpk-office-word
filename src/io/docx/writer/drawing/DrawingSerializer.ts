@@ -1,5 +1,6 @@
 import { DEFAULT_SHAPE_LINE_WIDTH, type GraphicShape } from "../../../../model/graphic/Shape";
-import type { Drawing, WrapSide, WrapType } from "../../../../model/inline/Drawing";
+import type { Drawing } from "../../../../model/inline/Drawing";
+import { drawingOutline, WORD_WRAP_EXTENT } from "../../../../model/graphic/DrawingOutline";
 import { pxToEmu } from "../../../../shared/units";
 import { escapeXml, hexColor } from "../../ooxml/XmlEscape";
 import type { PartAssets } from "../package/PartAssets";
@@ -24,14 +25,11 @@ export class DrawingSerializer {
       return undefined;
     }
     const xfrm = this.xfrmAttrs(drawing);
-    const graphic = xfrm
-      ? `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name=""/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm${xfrm}><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>`
-      : `<a:graphic><a:graphicData><a:blip r:embed="${relId}"/></a:graphicData></a:graphic>`;
-    const inlineDocPr = drawing.name || drawing.hidden ? this.docName(drawing) : "";
+    const graphic = `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name=""/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm${xfrm}><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>`;
     const body =
       drawing.position === "anchor"
         ? this.anchor(drawing, cx, cy, graphic)
-        : `<wp:inline><wp:extent cx="${cx}" cy="${cy}"/>${inlineDocPr}${graphic}</wp:inline>`;
+        : `<wp:inline><wp:extent cx="${cx}" cy="${cy}"/>${this.docName(drawing)}${graphic}</wp:inline>`;
     return `<w:r><w:drawing>${body}</w:drawing></w:r>`;
   }
 
@@ -95,18 +93,21 @@ export class DrawingSerializer {
     const behind = set?.behind ? "1" : "0";
     const relHeight = set?.zIndex != null && Number.isFinite(set.zIndex) ? Math.round(set.zIndex) : id;
     const dist = `distT="${pxToEmu(set?.distTop ?? 0)}" distB="${pxToEmu(set?.distBottom ?? 0)}" distL="${pxToEmu(set?.distLeft ?? 0)}" distR="${pxToEmu(set?.distRight ?? 0)}"`;
-    return `<wp:anchor behindDoc="${behind}" ${dist} simplePos="0" relativeHeight="${relHeight}" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>${this.axis("wp:positionH", set?.leftFrom ?? "column", set?.left, set?.leftAlign)}${this.axis("wp:positionV", set?.topFrom ?? "paragraph", set?.top, set?.topAlign)}<wp:extent cx="${cx}" cy="${cy}"/>${this.wrap(set?.wrapType, set?.wrapSide, set?.polygon)}${this.docName(drawing, id)}${graphic}</wp:anchor>`;
+    const simple = set?.simplePosition;
+    const effects = set?.effectExtent;
+    const effect = effects ? `<wp:effectExtent l="${pxToEmu(effects.left)}" t="${pxToEmu(effects.top)}" r="${pxToEmu(effects.right)}" b="${pxToEmu(effects.bottom)}"/>` : "";
+    return `<wp:anchor behindDoc="${behind}" ${dist} simplePos="${simple ? 1 : 0}" relativeHeight="${relHeight}" locked="0" layoutInCell="${set?.layoutInCell === false ? 0 : 1}" allowOverlap="${set?.allowOverlap === false ? 0 : 1}"><wp:simplePos x="${pxToEmu(simple?.x ?? 0)}" y="${pxToEmu(simple?.y ?? 0)}"/>${this.axis("wp:positionH", set?.leftFrom ?? "column", set?.left, set?.leftAlign)}${this.axis("wp:positionV", set?.topFrom === "character" ? "line" : set?.topFrom ?? "paragraph", set?.top, set?.topAlign)}<wp:extent cx="${cx}" cy="${cy}"/>${effect}${this.wrap(drawing)}${this.docName(drawing, id)}${graphic}</wp:anchor>`;
   }
 
   private axis(tag: string, from: string, offset: number | undefined, align: string | undefined): string {
     const body =
-      offset != null
-        ? `<wp:posOffset>${pxToEmu(offset)}</wp:posOffset>`
-        : `<wp:align>${align || "left"}</wp:align>`;
+      align ? `<wp:align>${align}</wp:align>` : `<wp:posOffset>${pxToEmu(offset ?? 0)}</wp:posOffset>`;
     return `<${tag} relativeFrom="${from}">${body}</${tag}>`;
   }
 
-  private wrap(type: WrapType | undefined, side: WrapSide | undefined, polygon: { x: number; y: number }[] | undefined): string {
+  private wrap(drawing: Drawing): string {
+    const type = drawing.anchorSet?.wrapType ?? "none";
+    const side = drawing.anchorSet?.wrapSide;
     if (type === "none") {
       return "<wp:wrapNone/>";
     }
@@ -116,19 +117,15 @@ export class DrawingSerializer {
     const wrapText = side === "left" || side === "right" || side === "largest" ? side : "bothSides";
     if (type === "tight" || type === "through") {
       const tag = type === "tight" ? "wp:wrapTight" : "wp:wrapThrough";
-      return `<${tag} wrapText="${wrapText}">${this.polygon(polygon)}</${tag}>`;
+      return `<${tag} wrapText="${wrapText}">${this.polygon(drawing)}</${tag}>`;
     }
     return `<wp:wrapSquare wrapText="${wrapText}"/>`;
   }
 
-  private polygon(points: { x: number; y: number }[] | undefined): string {
-    if (!points || points.length < 3) {
-      return "";
-    }
-    const [start, ...rest] = points;
-    const lines = rest
-      .map((point) => `<wp:lineTo x="${pxToEmu(point.x)}" y="${pxToEmu(point.y)}"/>`)
-      .join("");
-    return `<wp:wrapPolygon><wp:start x="${pxToEmu(start.x)}" y="${pxToEmu(start.y)}"/>${lines}</wp:wrapPolygon>`;
+  private polygon(drawing: Drawing): string {
+    const [start, ...rest] = drawingOutline(drawing);
+    const point = (tag: string, x: number, y: number) =>
+      `<wp:${tag} x="${Math.round(x * WORD_WRAP_EXTENT / (drawing.width || 1))}" y="${Math.round(y * WORD_WRAP_EXTENT / (drawing.height || 1))}"/>`;
+    return `<wp:wrapPolygon>${point("start", start.x, start.y)}${rest.map(({ x, y }) => point("lineTo", x, y)).join("")}</wp:wrapPolygon>`;
   }
 }

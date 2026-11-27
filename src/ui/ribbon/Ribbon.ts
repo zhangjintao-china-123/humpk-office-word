@@ -455,7 +455,7 @@ export class Ribbon {
         Math.abs(item - state.zoom) < Math.abs(best - state.zoom) ? item : best,
       );
       const fit = zoom.querySelector<HTMLOptionElement>("option[data-fit]");
-      if (Math.abs(nearest - state.zoom) < 0.011) {
+      if (Math.round(nearest * 100) === Math.round(state.zoom * 100)) {
         fit?.remove();
         zoom.value = String(nearest);
       } else {
