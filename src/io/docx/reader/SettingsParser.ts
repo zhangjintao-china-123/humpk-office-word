@@ -4,18 +4,20 @@ import { attr, descendants, parseXml } from "../ooxml/XmlQuery";
 export interface SettingsFlags {
   adjustLineHeightInTable: boolean;
   evenAndOddHeaders: boolean;
+  trackRevisions: boolean;
   defaultTabStopTwip?: number;
 }
 
 export class SettingsParser {
   parse(xml: string | undefined): SettingsFlags {
     if (!xml) {
-      return { adjustLineHeightInTable: false, evenAndOddHeaders: false };
+      return { adjustLineHeightInTable: false, evenAndOddHeaders: false, trackRevisions: false };
     }
     const doc = parseXml(xml);
     return {
       adjustLineHeightInTable: this.onOff(descendants(doc.documentElement, "w:adjustLineHeightInTable")[0]),
       evenAndOddHeaders: this.onOff(descendants(doc.documentElement, "w:evenAndOddHeaders")[0]),
+      trackRevisions: this.onOff(descendants(doc.documentElement, "w:trackRevisions")[0]),
       defaultTabStopTwip: parseNumber(attr(descendants(doc.documentElement, "w:defaultTabStop")[0], "w:val")),
     };
   }

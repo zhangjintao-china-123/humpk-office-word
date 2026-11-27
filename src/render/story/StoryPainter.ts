@@ -8,7 +8,7 @@ import { drawingRotationRadians } from "../../model/graphic/DrawingTransform";
 import { isEastAsiaWord } from "../../layout/classify/CharClass";
 import type { Block } from "../../model/block/Block";
 import type { Word } from "../../model/inline/Word";
-import { cellDocumentHeight, cellContentOrigin } from "../../layout/table/TableMetrics";
+import { cellDocumentHeight, cellFlowOrigin } from "../../layout/table/TableMetrics";
 import { asianBracketPair, splitAsianTwoLines } from "../../model/inline/AsianLayout";
 import { asianSubFontCss } from "../../layout/measure/AsianLayoutMetrics";
 import { enclosedInnerFontCss, enclosedInnerFontSize } from "../../layout/measure/EnclosedMetrics";
@@ -18,6 +18,7 @@ import type { MathView } from "../../model/math/MathExpr";
 import type { ParagraphBorder, ParagraphShading } from "../../model/style/ParagraphAttrs";
 import { ptToPx } from "../../shared/units";
 import { imageCache, type ImageCache } from "../image/ImageCache";
+import { pictureFilter, pictureVisibleFractions } from "../../model/graphic/PictureAppearance";
 import type { Table } from "../../model/table/Table";
 import { TableBorderPainter } from "../table/TableBorderPainter";
 import { cellVisibleRect, TableGeometry, type TableCellBox } from "../table/TableGeometry";
@@ -156,7 +157,7 @@ export class StoryPainter {
       draw.translate(-cx, -cy);
     }
     if (img && width > 0 && height > 0) {
-      draw.drawImage(img, x, y, width, height);
+      this.paintPicture(draw, drawing, img, x, y);
     } else {
       draw.setFill("#e6e6e6");
       draw.fillRect(x, y, fallbackW, fallbackH);
@@ -169,6 +170,72 @@ export class StoryPainter {
     }
     if (rot || scaleX !== 1 || scaleY !== 1) {
       draw.restore();
+    }
+  }
+
+  private paintPicture(draw: Draw, drawing: Drawing, img: HTMLImageElement, x: number, y: number): void {
+    const { width, height, pictureAppearance: format } = drawing;
+    if (!format) {
+      draw.drawImage(img, x, y, width, height);
+      return;
+    }
+    const ctx = draw.ctx;
+    const radius = format.rounded ? Math.min(width, height) * 0.12 : 0;
+    const path = () => {
+      ctx.beginPath();
+      if (radius) ctx.roundRect(x, y, width, height, radius);
+      else ctx.rect(x, y, width, height);
+    };
+    const shadow = format.shadow;
+    const setShadow = () => {
+      if (!shadow) return;
+      const { color, opacity, blur, x: offsetX, y: offsetY } = shadow;
+      ctx.shadowColor = `${color}${Math.round(opacity * 255).toString(16).padStart(2, "0")}`;
+      ctx.shadowBlur = blur;
+      ctx.shadowOffsetX = offsetX;
+      ctx.shadowOffsetY = offsetY;
+    };
+    if (radius && shadow) {
+      // 圆角裁剪只限制图片内容，阴影绘制在轮廓之外。
+      ctx.save();
+      const pad = Math.max(1, 4 * shadow.blur + Math.abs(shadow.x) + Math.abs(shadow.y));
+      ctx.beginPath();
+      ctx.rect(x - pad, y - pad, width + pad * 2, height + pad * 2);
+      ctx.roundRect(x, y, width, height, radius);
+      ctx.clip("evenodd");
+      setShadow();
+      ctx.globalAlpha *= format.opacity ?? 1;
+      ctx.fillStyle = shadow.color;
+      path();
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.save();
+    if (radius) {
+      path();
+      ctx.clip();
+    }
+    ctx.save();
+    ctx.globalAlpha *= format.opacity ?? 1;
+    ctx.filter = pictureFilter(format);
+    if (!radius) setShadow();
+    if (format.crop) {
+      const crop = format.crop;
+      const visible = pictureVisibleFractions(crop);
+      ctx.drawImage(img, img.naturalWidth * crop.left, img.naturalHeight * crop.top,
+        img.naturalWidth * visible.width, img.naturalHeight * visible.height, x, y, width, height);
+    } else {
+      draw.drawImage(img, x, y, width, height);
+    }
+    ctx.restore();
+    ctx.restore();
+    if (format.border) {
+      ctx.save();
+      path();
+      draw.setStroke(format.border.color, format.border.width);
+      draw.setLineDash([]);
+      ctx.stroke();
+      ctx.restore();
     }
   }
 
@@ -253,15 +320,18 @@ export class StoryPainter {
     const left = x + word.left;
     const boxTop = top + line.beforeHeight + line.contentOffsetY;
     const height = Math.max(line.maxCharHeight, 14);
-    const fill = style?.backgroundColor ?? style?.highlight;
+    const fill = style?.backgroundColor ?? style?.highlight ?? (word.block?.commentIds?.length ? "#FFF2CC" : undefined);
     if (fill) {
       draw.setFill(fill);
       draw.fillRect(left, boxTop, Math.max(word.kernedWidth, 1), height);
     }
     this.applyStyle(draw, word);
+    const revision = word.block?.revision?.kind;
+    const revisionInk = revision === "ins" ? "#2E75B6" : revision === "del" ? "#C00000" : undefined;
+    if (revisionInk) draw.setFill(revisionInk);
     const baseline = boxTop + height * 0.85;
     const align = style?.vertAlign;
-    if (word.block?.footnoteId || word.block?.commentRef) {
+    if (word.block?.footnoteId || word.block?.endnoteId || word.block?.commentRef) {
       const raised = { ...style, vertAlign: undefined, fontSizePx: Math.max(8, (style?.fontSizePx ?? 16) * 0.72) };
       draw.setFont(fontCss(raised, word.intChar));
       draw.fillText(word.char, left, baseline - height * 0.28);
@@ -303,15 +373,15 @@ export class StoryPainter {
     } else {
       draw.fillText(word.char, left, baseline);
     }
-    const ink = fillColorOf(style);
-    if (style?.underline && style.underline !== "none") {
+    const ink = revisionInk ?? fillColorOf(style);
+    if (revision === "ins" || (style?.underline && style.underline !== "none")) {
       draw.setStroke(ink, 1);
       draw.beginPath();
       draw.moveTo(left, baseline + 2);
       draw.lineTo(left + word.kernedWidth, baseline + 2);
       draw.stroke();
     }
-    if (style?.strike) {
+    if (revision === "del" || style?.strike) {
       draw.setStroke(ink, 1);
       draw.beginPath();
       draw.moveTo(left, boxTop + height * 0.5);
@@ -675,24 +745,30 @@ export class StoryPainter {
     pageNumber?: number,
     fields?: FieldView,
   ): void {
-    const origin = cellContentOrigin(table, box, cellDocumentHeight(box.cell.document));
+    const origin = cellFlowOrigin(table, box, cellDocumentHeight(box.cell.document));
     const vis = cellVisibleRect(box);
     draw.save();
     draw.beginPath();
     draw.rect(vis.x, vis.y, vis.width, vis.height);
     draw.clip();
+    if (origin.vertical) {
+      draw.translate(origin.x, origin.y);
+      draw.rotate(Math.PI / 2);
+    }
+    const x = origin.vertical ? 0 : origin.x;
+    const y = origin.vertical ? 0 : origin.y;
     const anchors = box.cell.document.anchors;
     for (const anchor of anchors) {
       if (anchor.behind) {
-        this.paintDrawing(draw, anchor.drawing, origin.x + anchor.x, origin.y + anchor.y);
+        this.paintDrawing(draw, anchor.drawing, x + anchor.x, y + anchor.y);
       }
     }
     for (const line of lines) {
-      this.paintLine(draw, line, origin.x, origin.y + line.top, pageNumber, fields);
+      this.paintLine(draw, line, x, y + line.top, pageNumber, fields, box.cell.textDirection === "tbRlV");
     }
     for (const anchor of anchors) {
       if (!anchor.behind) {
-        this.paintDrawing(draw, anchor.drawing, origin.x + anchor.x, origin.y + anchor.y);
+        this.paintDrawing(draw, anchor.drawing, x + anchor.x, y + anchor.y);
       }
     }
     draw.restore();

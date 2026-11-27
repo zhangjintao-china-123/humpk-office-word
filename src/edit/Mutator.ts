@@ -1,6 +1,7 @@
 import { Block } from "../model/block/Block";
 import { Paragraph } from "../model/block/Paragraph";
 import type { Document } from "../model/document/Document";
+import { isReferenceField } from "../model/document/PageLabel";
 import type { Drawing } from "../model/inline/Drawing";
 import type { AsianLayoutSpec } from "../model/inline/AsianLayout";
 import type { EnclosedSpec } from "../model/inline/EnclosedChar";
@@ -14,11 +15,14 @@ import type { StoryRef } from "../selection/StoryRef";
 import type { ParagraphAttrs } from "../model/style/ParagraphAttrs";
 import type { TextLink } from "../model/field/TextLink";
 import { mergeRunStyle, type RunStyle } from "../model/style/RunStyle";
+import type { RevisionMark } from "../model/review/Review";
 import { EditImpact, type EditStructure } from "./EditImpact";
-import type { CreatedParagraph, MutationPatch, RemovedParagraph, RemovedWord } from "./MutationPatch";
+import type { CreatedParagraph, MutationPatch, RemovedParagraph, RemovedWord, RunChange } from "./MutationPatch";
+
+type InlineMark = Pick<Block, "field" | "fieldInstr" | "startsField" | "commentRef" | "footnoteId" | "endnoteId" | "revision">;
 
 export class Mutator {
-  insert(document: Document, story: StoryRef, pos: CaretPos, text: string, runStyle?: RunStyle): MutationPatch {
+  insert(document: Document, story: StoryRef, pos: CaretPos, text: string, runStyle?: RunStyle, mark?: InlineMark): MutationPatch {
     const original = pos;
     const caret = this.prepare(document, story, pos);
     if (!caret.node || caret.node.data.kind === "table" || caret.node.data.paragraph?.isTable) {
@@ -31,7 +35,7 @@ export class Mutator {
     let structure: EditStructure = "none";
     let current = caret;
 
-    for (const char of text) {
+    for (const char of isInlineField(mark) ? [text] : text) {
       if (char === "\n") {
         const split = this.insertEnter(document, story, current);
         inserted.push(...split.inserted);
@@ -43,7 +47,7 @@ export class Mutator {
         current = split.caret;
         continue;
       }
-      const node = this.insertChar(document, current, char, runStyle);
+      const node = this.insertChar(document, current, char, runStyle, mark);
       if (!node) {
         continue;
       }
@@ -68,27 +72,30 @@ export class Mutator {
     };
   }
 
-  deleteRange(document: Document, story: StoryRef, range: SelRange): MutationPatch {
+  deleteRange(document: Document, story: StoryRef, range: SelRange, revision?: RevisionMark): MutationPatch {
     const normalized = range.normalized();
     if (normalized.collapsed()) {
       return this.emptyPatch(story, normalized.end);
     }
     const nodes = this.nodesIn(normalized);
-    return this.removeNodes(document, story, normalized.start, nodes);
+    return this.deleteNodes(document, story, normalized.start, nodes, revision);
   }
 
-  deleteBackward(document: Document, story: StoryRef, pos: CaretPos): MutationPatch {
-    const target = pos.after ? pos.node : pos.node?.pre ?? null;
+  deleteBackward(document: Document, story: StoryRef, pos: CaretPos, revision?: RevisionMark): MutationPatch {
+    let target = pos.after ? pos.node : pos.node?.pre ?? null;
+    while (revision && target && !target.data.isEnterChar() && target.data.block?.revision?.kind === "del") {
+      target = target.pre;
+    }
     if (!target) {
       return this.emptyPatch(story, pos);
     }
     if (target.data.isEnterChar() && !this.nextParagraph(target.data.paragraph)) {
       return this.emptyPatch(story, pos);
     }
-    return this.removeNodes(document, story, pos, [target]);
+    return this.deleteNodes(document, story, pos, [target], revision, "backward");
   }
 
-  deleteForward(document: Document, story: StoryRef, pos: CaretPos): MutationPatch {
+  deleteForward(document: Document, story: StoryRef, pos: CaretPos, revision?: RevisionMark): MutationPatch {
     let target: LinkedNode<Word> | null = null;
     if (pos.node && !pos.after && !pos.node.data.isEnterChar()) {
       target = pos.node;
@@ -97,13 +104,16 @@ export class Mutator {
     } else if (pos.node?.data.isEnterChar()) {
       target = pos.node;
     }
+    while (revision && target && !target.data.isEnterChar() && target.data.block?.revision?.kind === "del") {
+      target = target.next;
+    }
     if (!target) {
       return this.emptyPatch(story, pos);
     }
     if (target.data.isEnterChar() && !this.nextParagraph(target.data.paragraph)) {
       return this.emptyPatch(story, pos);
     }
-    return this.removeNodes(document, story, pos, [target]);
+    return this.deleteNodes(document, story, pos, [target], revision, "forward");
   }
 
   invert(document: Document, patch: MutationPatch): EditImpact {
@@ -132,6 +142,7 @@ export class Mutator {
     }
 
     const dirty = new Set(patch.impact.dirty);
+    this.restoreRunChanges(patch.runChanges, "before", dirty);
     this.syncAll(document, dirty, patch.impact.textAnchor);
     return this.impact(patch.story, dirty, "none", patch.impact.textAnchor);
   }
@@ -178,8 +189,65 @@ export class Mutator {
       }
     }
     const dirty = new Set(patch.impact.dirty);
+    this.restoreRunChanges(patch.runChanges, "after", dirty);
     this.syncAll(document, dirty, patch.impact.textAnchor);
     return patch.impact;
+  }
+
+  private deleteNodes(
+    document: Document,
+    story: StoryRef,
+    original: CaretPos,
+    nodes: LinkedNode<Word>[],
+    revision?: RevisionMark,
+    mode: "range" | "forward" | "backward" = "range",
+  ): MutationPatch {
+    if (!revision || !nodes.length) return this.removeNodes(document, story, original, nodes);
+
+    const remove: LinkedNode<Word>[] = [];
+    const runChanges: RunChange[] = [];
+    const revised = new Map<Block, Block>();
+    let retained: LinkedNode<Word> | undefined;
+    const next = nodes.at(-1)?.next;
+    for (const node of nodes) {
+      const word = node.data;
+      const before = word.block;
+      if (!before || word.kind !== "text" || word.isEnterChar() || before.field || before.commentRef || before.footnoteId || before.endnoteId) {
+        // 文字选区的修订保留段落边界和对象，整段接受或拒绝时仍能恢复原来的结构。
+        if (mode === "range") retained ??= node;
+        else remove.push(node);
+        continue;
+      }
+      if (before.revision?.kind === "ins") {
+        remove.push(node);
+        continue;
+      }
+      retained ??= node;
+      if (before.revision?.kind === "del") continue;
+      let after = revised.get(before);
+      if (!after) {
+        after = Object.assign(new Block(), before, { revision });
+        revised.set(before, after);
+      }
+      runChanges.push({ node, before, after });
+    }
+
+    const patch = this.removeNodes(document, story, original, remove, runChanges);
+    if (!retained) return patch;
+    const boundary = mode === "forward" ? next : retained;
+    const caret = boundary ? new CaretPos(story, boundary) : new CaretPos(story, retained, true);
+    return { ...patch, caret };
+  }
+
+  private restoreRunChanges(
+    changes: RunChange[] | undefined,
+    side: "before" | "after",
+    dirty: Set<Paragraph>,
+  ): void {
+    for (const { node, [side]: block } of changes ?? []) {
+      node.data.block = block;
+      if (node.data.paragraph) dirty.add(node.data.paragraph);
+    }
   }
 
   private removeNodes(
@@ -187,10 +255,12 @@ export class Mutator {
     story: StoryRef,
     original: CaretPos,
     nodes: LinkedNode<Word>[],
+    runChanges?: RunChange[],
   ): MutationPatch {
     const removed: RemovedWord[] = [];
     const removedParas: RemovedParagraph[] = [];
     const dirty = new Set<Paragraph>();
+    this.restoreRunChanges(runChanges, "after", dirty);
     let structure: EditStructure = "none";
     let caret = original;
 
@@ -245,16 +315,19 @@ export class Mutator {
       caret = new CaretPos(story, enterNode, false);
     }
 
-    this.syncAll(document, dirty);
+    const textAnchor = structure === "none" && dirty.size === 1 ? runChanges?.[0]?.node : undefined;
+    this.syncAll(document, dirty, textAnchor);
+    for (const change of runChanges ?? []) change.after = change.node.data.block ?? change.after;
     return {
       story,
-      impact: this.impact(story, dirty, structure),
+      impact: this.impact(story, dirty, structure, textAnchor),
       caret,
       originalCaret: original,
       inserted,
       removed,
       createdParagraphs: created,
       removedParagraphs: removedParas,
+      runChanges,
     };
   }
 
@@ -329,26 +402,21 @@ export class Mutator {
     const nodes = this.nodesIn(range.normalized());
     const dirty = new Set<Paragraph>();
     const snapshots: { node: LinkedNode<Word>; block: Block | null }[] = [];
-    let lastKey = "";
+    let lastSource: Block | null = null;
+    let lastParagraph: Paragraph | null = null;
     let lastBlock: Block | null = null;
     for (const node of nodes) {
-      if (node.data.kind !== "text" || node.data.isEnterChar()) {
+      const { block, paragraph } = node.data;
+      if (node.data.isEnterChar() || node.data.kind === "table" || node.data.kind === "page" || block?.commentRef) {
+        lastBlock = null;
         continue;
       }
-      snapshots.push({ node, block: node.data.block });
-      const ids = [...(node.data.block?.commentIds ?? [])];
-      if (!ids.includes(id)) {
-        ids.push(id);
-      }
-      const style = { ...node.data.block?.style };
-      if (!style.backgroundColor) {
-        style.backgroundColor = "#FFF2CC";
-      }
-      const key = `${ids.join(",")}|${JSON.stringify(style)}|${reviewKey(node.data.block)}`;
-      if (key !== lastKey || !lastBlock) {
-        lastBlock = copyRun(node.data.block, style);
-        lastBlock.commentIds = ids;
-        lastKey = key;
+      snapshots.push({ node, block });
+      if (!lastBlock || block !== lastSource || paragraph !== lastParagraph) {
+        const ids = [...new Set([...(block?.commentIds ?? []), id])];
+        lastBlock = Object.assign(new Block(), block, { commentIds: ids });
+        lastSource = block;
+        lastParagraph = paragraph;
       }
       node.data.block = lastBlock;
       if (node.data.paragraph) {
@@ -362,12 +430,12 @@ export class Mutator {
   applyParagraphAttrs(
     document: Document,
     range: SelRange,
-    patch: Partial<ParagraphAttrs> | ((attrs: ParagraphAttrs) => Partial<ParagraphAttrs>),
+    patch: Partial<ParagraphAttrs> | ((attrs: ParagraphAttrs, paragraph: Paragraph) => Partial<ParagraphAttrs>),
   ): { paragraph: Paragraph; attrs: Paragraph["attrs"] }[] {
     const paragraphs = this.paragraphsIn(range);
     const snapshots = paragraphs.map((paragraph) => ({ paragraph, attrs: { ...paragraph.attrs } }));
     for (const paragraph of paragraphs) {
-      const next = typeof patch === "function" ? patch(paragraph.attrs) : patch;
+      const next = typeof patch === "function" ? patch(paragraph.attrs, paragraph) : patch;
       paragraph.attrs = { ...paragraph.attrs, ...next };
       paragraph.changed = true;
     }
@@ -409,13 +477,18 @@ export class Mutator {
     return [...dirty];
   }
 
-  private insertChar(document: Document, pos: CaretPos, char: string, runStyle?: RunStyle): LinkedNode<Word> | null {
+  private insertChar(document: Document, pos: CaretPos, char: string, runStyle?: RunStyle, mark?: InlineMark): LinkedNode<Word> | null {
     const paragraph = pos.node?.data.paragraph;
     if (!paragraph || paragraph.isTable) {
       return null;
     }
     const inherited = this.inheritBlock(pos, paragraph);
-    const block = this.blockWithStyle(inherited, runStyle);
+    let block = isInlineField(mark)
+      ? Object.assign(new Block(), mark, { style: mergeRunStyle(inherited.style, runStyle) })
+      : this.blockWithStyle(inherited, runStyle);
+    if (block.revision !== mark?.revision) {
+      block = Object.assign(new Block(), block, { revision: mark?.revision });
+    }
     const word = this.createText(char, block, paragraph);
     paragraph.changed = true;
     if (pos.after && pos.node) {
@@ -731,6 +804,7 @@ export class Mutator {
     text: string,
     runStyle: RunStyle | undefined,
     enclosed: EnclosedSpec,
+    revision?: RevisionMark,
   ): MutationPatch {
     const original = pos;
     const caret = this.prepare(document, story, pos);
@@ -739,8 +813,11 @@ export class Mutator {
       return this.emptyPatch(story, original);
     }
     const inherited = this.inheritBlock(caret, paragraph);
-    const block = this.blockWithStyle(isAtomicBlock(inherited) ? this.seedBlock(caret, paragraph) : inherited, runStyle);
-    block.enclosed = { ...enclosed };
+    const block = Object.assign(new Block(), {
+      style: mergeRunStyle(inherited.style, runStyle),
+      enclosed: { ...enclosed },
+      revision,
+    });
     block.text = text;
     const word = new Word();
     word.kind = "text";
@@ -780,6 +857,7 @@ export class Mutator {
     text: string,
     runStyle: RunStyle | undefined,
     asianLayout: AsianLayoutSpec,
+    revision?: RevisionMark,
   ): MutationPatch {
     const original = pos;
     const caret = this.prepare(document, story, pos);
@@ -788,8 +866,11 @@ export class Mutator {
       return this.emptyPatch(story, original);
     }
     const inherited = this.inheritBlock(caret, paragraph);
-    const block = this.blockWithStyle(isAtomicBlock(inherited) ? this.seedBlock(caret, paragraph) : inherited, runStyle);
-    block.asianLayout = { ...asianLayout };
+    const block = Object.assign(new Block(), {
+      style: mergeRunStyle(inherited.style, runStyle),
+      asianLayout: { ...asianLayout },
+      revision,
+    });
     block.text = text;
     const word = new Word();
     word.kind = "text";
@@ -899,10 +980,7 @@ export class Mutator {
       }
       let clone = clones.get(block);
       if (!clone) {
-        clone = new Block();
-        clone.style = { ...block.style };
-        clone.drawing = block.drawing;
-        clone.charType = block.charType;
+        clone = Object.assign(new Block(), block, { style: { ...block.style } });
         clones.set(block, clone);
       }
       node.data.block = clone;
@@ -1117,8 +1195,15 @@ function isAtomicBlock(block: Block): boolean {
     block.math != null ||
     block.mathXml != null ||
     block.enclosed != null ||
-    block.asianLayout != null
+    block.asianLayout != null ||
+    block.field === "FORMULA" ||
+    isReferenceField(block.field) ||
+    block.commentRef != null || block.footnoteId != null || block.endnoteId != null
   );
+}
+
+function isInlineField(mark: InlineMark | undefined): boolean {
+  return !!(mark?.field || mark?.commentRef || mark?.footnoteId || mark?.endnoteId);
 }
 
 function copyRun(source: Block | null | undefined, style: RunStyle): Block {
@@ -1127,11 +1212,13 @@ function copyRun(source: Block | null | undefined, style: RunStyle): Block {
   block.charType = source?.charType;
   block.field = source?.field;
   block.fieldInstr = source?.fieldInstr;
+  block.startsField = source?.startsField;
   block.link = source?.link ? { ...source.link } : undefined;
   block.revision = source?.revision ? { ...source.revision } : undefined;
   block.commentIds = source?.commentIds?.slice();
   block.commentRef = source?.commentRef;
   block.footnoteId = source?.footnoteId;
+  block.endnoteId = source?.endnoteId;
   block.enclosed = source?.enclosed ? { ...source.enclosed } : undefined;
   block.asianLayout = source?.asianLayout ? { ...source.asianLayout } : undefined;
   return block;

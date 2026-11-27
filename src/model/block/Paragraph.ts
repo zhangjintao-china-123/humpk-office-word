@@ -25,6 +25,7 @@ export class Paragraph {
   sectionBreak?: SectionBreak;
   toc?: TocMark;
   tocHint?: TocHint;
+  bibliography?: { start: boolean; end: boolean };
 
   constructor(public id: number) {}
 

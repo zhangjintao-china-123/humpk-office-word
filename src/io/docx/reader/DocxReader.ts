@@ -1,6 +1,7 @@
 import { Document } from "../../../model/document/Document";
 import { HeaderFooterResolver } from "../../../layout/page/HeaderFooterResolver";
 import { DocxPackage } from "../ooxml/DocxPackage";
+import { readCitationParts } from "../ooxml/CitationParts";
 import { CorePropsParser } from "./CorePropsParser";
 import { DocumentParser } from "./DocumentParser";
 import { HeaderFooterParser } from "./header-footer/HeaderFooterParser";
@@ -42,11 +43,16 @@ export class DocxReader {
     const settings = this.settings.parse(pack.xml("word/settings.xml"));
     document.adjustLineHeightInTable = settings.adjustLineHeightInTable;
     document.evenAndOddHeaders = settings.evenAndOddHeaders;
+    document.trackRevisions = settings.trackRevisions;
     document.defaultTabStopTwip = settings.defaultTabStopTwip;
     document.props = new CorePropsParser().parse(pack.xml("docProps/core.xml"));
+    const citations = readCitationParts(pack);
+    document.citationStyle = citations.style;
+    document.citationSources = citations.sources;
     const review = new ReviewParser();
     document.comments = review.comments(pack.xml("word/comments.xml"));
-    document.footnotes = review.footnotes(pack.xml("word/footnotes.xml"));
+    document.footnotes = review.notes(pack.xml("word/footnotes.xml"), "footnote");
+    document.endnotes = review.notes(pack.xml("word/endnotes.xml"), "endnote");
     numberNotes(document);
     HeaderFooterResolver.inherit(document);
     return document;

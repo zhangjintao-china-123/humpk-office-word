@@ -52,7 +52,7 @@ export function paragraphPropertiesXml(attrs: ParagraphAttrs, omitStyleId = fals
   pushFlag(parts, "w:autoSpaceDE", attrs.autoSpaceDE, false);
   pushFlag(parts, "w:autoSpaceDN", attrs.autoSpaceDN, false);
   pushFlag(parts, "w:wordWrap", attrs.wordWrap, false);
-  if (attrs.outlineLevel != null && attrs.outlineLevel >= 1 && attrs.outlineLevel <= 9) {
+  if (attrs.outlineLevel != null && attrs.outlineLevel >= 1 && attrs.outlineLevel <= 10) {
     parts.push(`<w:outlineLvl w:val="${attrs.outlineLevel - 1}"/>`);
   }
   if (attrs.tabs?.length) {

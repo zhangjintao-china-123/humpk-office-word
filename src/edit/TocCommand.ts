@@ -19,6 +19,8 @@ export class TocCommand implements EditCommand {
   private after: Paragraph[] | null = null;
   private beforeMarks: MarkSnap[] | null = null;
   private afterMarks: MarkSnap[] | null = null;
+  private beforeWords: LinkedNode<Word>[] = [];
+  private afterWords: LinkedNode<Word>[] = [];
   private caretParagraph: Paragraph | null = null;
 
   constructor(private readonly ctx: EditContext) {}
@@ -31,15 +33,20 @@ export class TocCommand implements EditCommand {
     if (this.after && this.afterMarks) {
       replaceParagraphs(document, this.after);
       applyMarks(this.afterMarks);
+      replaceWords(document, this.afterWords);
     } else {
       this.before = document.paragraphs.toArray();
       this.beforeMarks = snapMarks(this.before);
+      this.beforeWords = wordsOf(document);
       this.caretParagraph = this.ctx.selection.caret()?.node?.data.paragraph ?? null;
       const hasToc = this.before.some((item) => item.toc?.role === "start");
-      const anchor = hasToc ? null : (this.caretParagraph ?? document.paragraphs.head?.data ?? null);
+      const anchor = hasToc ? null : this.caretParagraph && this.before.includes(this.caretParagraph)
+        ? this.caretParagraph : document.paragraphs.head?.data ?? null;
       syncToc(document, anchor);
       this.after = document.paragraphs.toArray();
       this.afterMarks = snapMarks(this.after);
+      this.rebuildWords(document);
+      this.afterWords = wordsOf(document);
     }
     this.finish(document, this.tocStart(document) ?? this.caretParagraph);
   }
@@ -51,6 +58,7 @@ export class TocCommand implements EditCommand {
     }
     replaceParagraphs(document, this.before);
     applyMarks(this.beforeMarks);
+    replaceWords(document, this.beforeWords);
     this.finish(document, this.caretParagraph);
   }
 
@@ -59,13 +67,30 @@ export class TocCommand implements EditCommand {
   }
 
   private finish(document: Document, focus: Paragraph | null): void {
-    new WordStreamBuilder().buildStoryOnly(document);
     this.ctx.relayout.layoutStory({ slot: "body" });
     const word = (focus && firstWord(document, focus)) || document.words.head;
     if (word) {
       this.ctx.selection.collapse(new CaretPos({ slot: "body" }, word, false));
     }
     this.ctx.afterEdit(new EditImpact({ slot: "body" }, document.paragraphs.toArray()));
+  }
+
+  private rebuildWords(document: Document): void {
+    const saved = new Map<Paragraph, LinkedNode<Word>[]>();
+    for (const word of this.beforeWords) {
+      const paragraph = word.data.paragraph;
+      if (!paragraph) continue;
+      const words = saved.get(paragraph) ?? [];
+      words.push(word);
+      saved.set(paragraph, words);
+    }
+    const builder = new WordStreamBuilder();
+    document.words.clear();
+    document.paragraphs.each(({ data }) => {
+      const words = saved.get(data);
+      if (words) for (const word of words) document.words.appendNode(word);
+      else builder.appendParagraph(document, data);
+    });
   }
 }
 
@@ -80,10 +105,22 @@ function applyMarks(marks: MarkSnap[]): void {
 }
 
 function replaceParagraphs(document: Document, paragraphs: Paragraph[]): void {
+  document.paragraphs.each(({ data }) => { data.node = null; });
   document.paragraphs.clear();
   for (const paragraph of paragraphs) {
     document.addParagraph(paragraph);
   }
+}
+
+function wordsOf(document: Document): LinkedNode<Word>[] {
+  const words: LinkedNode<Word>[] = [];
+  document.words.each((node) => { words.push(node); });
+  return words;
+}
+
+function replaceWords(document: Document, words: LinkedNode<Word>[]): void {
+  document.words.clear();
+  for (const word of words) document.words.appendNode(word);
 }
 
 function firstWord(document: Document, paragraph: Paragraph): LinkedNode<Word> | null {

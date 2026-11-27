@@ -1,5 +1,6 @@
 import type { Paragraph } from "../model/block/Paragraph";
-import { TableColumn, type Table, type TableCell, type TableLength, type TableRow } from "../model/table/Table";
+import type { ParagraphAttrs } from "../model/style/ParagraphAttrs";
+import { TableColumn, type Table, type TableCell, type TableInsets, type TableLength, type TableRow } from "../model/table/Table";
 import { MIN_ROW_HEIGHT } from "../layout/LayoutConstants";
 import type { StoryRef } from "../selection/StoryRef";
 import type { EditCommand } from "./EditCommand";
@@ -13,9 +14,17 @@ export interface TableMetricSnap {
   width?: TableLength;
   indent?: TableLength;
   align?: string;
+  layout?: Table["layout"];
   columns: number[];
   cells: { cell: TableCell; width?: TableLength }[];
   rows: { row: TableRow; height: number; heightRule?: TableRow["heightRule"] }[];
+  alignment?: {
+    cells: { cell: TableCell; vAlign: TableCell["vAlign"] }[];
+    paragraphs: { paragraph: Paragraph; attrs: ParagraphAttrs }[];
+  };
+  margins?: { table?: TableInsets; cells: { cell: TableCell; margin?: TableInsets }[] };
+  headers?: boolean[];
+  directions?: { cell: TableCell; textDirection: TableCell["textDirection"] }[];
 }
 
 export type ColumnResizeMode = "move" | "pair" | "share" | "left";
@@ -28,21 +37,38 @@ export function sameWidths(a: number[], b: number[]): boolean {
   return a.length === b.length && a.every((width, index) => nearlyEqual(width, b[index] ?? 0));
 }
 
-export function snapTableMetrics(table: Table): TableMetricSnap {
-  return {
+export function snapTableMetrics(table: Table, option?: "align" | "margins" | "repeat-header" | "direction"): TableMetricSnap {
+  const snap: TableMetricSnap = {
     width: copyLength(table.width),
     indent: copyLength(table.indent),
     align: table.align,
+    layout: table.layout,
     columns: table.columns.map((column) => column.width),
     cells: table.rows.flatMap((row) => row.cells.map((cell) => ({ cell, width: copyLength(cell.width) }))),
     rows: table.rows.map((row) => ({ row, height: row.height, heightRule: row.heightRule })),
   };
+  if (option === "align") {
+    snap.alignment = {
+      cells: snap.cells.map(({ cell }) => ({ cell, vAlign: cell.vAlign })),
+      paragraphs: snap.cells.flatMap(({ cell }) => cell.document.paragraphs.toArray()
+        .filter((paragraph) => !paragraph.isTable)
+        .map((paragraph) => ({ paragraph, attrs: paragraph.attrs }))),
+    };
+  } else if (option === "margins") {
+    snap.margins = { table: table.cellMargin, cells: snap.cells.map(({ cell }) => ({ cell, margin: cell.margin })) };
+  } else if (option === "repeat-header") {
+    snap.headers = table.rows.map((row) => row.header);
+  } else if (option === "direction") {
+    snap.directions = snap.cells.map(({ cell }) => ({ cell, textDirection: cell.textDirection }));
+  }
+  return snap;
 }
 
 export function restoreTableMetrics(table: Table, snap: TableMetricSnap): void {
   table.width = copyLength(snap.width);
   table.indent = copyLength(snap.indent);
   table.align = snap.align;
+  table.layout = snap.layout;
   table.columns = snap.columns.map((width) => {
     const column = new TableColumn();
     column.width = width;
@@ -55,6 +81,19 @@ export function restoreTableMetrics(table: Table, snap: TableMetricSnap): void {
     item.row.height = item.height;
     item.row.heightRule = item.heightRule;
   }
+  for (const { cell, vAlign } of snap.alignment?.cells ?? []) cell.vAlign = vAlign;
+  for (const { paragraph, attrs } of snap.alignment?.paragraphs ?? []) {
+    if (paragraph.attrs !== attrs) {
+      paragraph.attrs = attrs;
+      paragraph.changed = true;
+    }
+  }
+  if (snap.margins) {
+    table.cellMargin = snap.margins.table;
+    for (const { cell, margin } of snap.margins.cells) cell.margin = margin;
+  }
+  snap.headers?.forEach((header, i) => { table.rows[i].header = header; });
+  for (const { cell, textDirection } of snap.directions ?? []) cell.textDirection = textDirection;
 }
 
 /**

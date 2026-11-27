@@ -2,7 +2,10 @@ import { DocxReader } from "./io/docx/reader/DocxReader";
 import { Ribbon } from "./ui/ribbon/Ribbon";
 import { StatusBar } from "./ui/statusbar/StatusBar";
 import { Workspace } from "./ui/workspace/Workspace";
+import { documentStats } from "./edit/DocumentStats";
+import type { Drawing } from "./model/inline/Drawing";
 import "./styles/workspace.css";
+import "./styles/navigation.css";
 import "./styles/ribbon.css";
 import "./styles/contextmenu.css";
 import "./styles/statusbar.css";
@@ -19,6 +22,7 @@ app.innerHTML = `
   <div id="ribbon"></div>
   <input id="file" type="file" accept=".docx" hidden />
   <input id="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml" hidden />
+  <input id="replace-image" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml" hidden />
   <div id="workspace"></div>
   <footer id="statusbar" aria-label="文档状态"></footer>
 `;
@@ -26,17 +30,21 @@ app.innerHTML = `
 const ribbonHost = app.querySelector<HTMLElement>("#ribbon");
 const fileInput = app.querySelector<HTMLInputElement>("#file");
 const imageInput = app.querySelector<HTMLInputElement>("#image");
+const replaceImageInput = app.querySelector<HTMLInputElement>("#replace-image");
 const workspaceHost = app.querySelector<HTMLElement>("#workspace");
 const statusHost = app.querySelector<HTMLElement>("#statusbar");
-if (!ribbonHost || !fileInput || !imageInput || !workspaceHost || !statusHost) {
+if (!ribbonHost || !fileInput || !imageInput || !replaceImageInput || !workspaceHost || !statusHost) {
   throw new Error("app chrome missing");
 }
 
 const workspace = new Workspace(workspaceHost);
+let replaceImageTarget: Drawing | undefined;
 new StatusBar(statusHost, workspace);
 let caption = "未命名文档";
 
 const ribbon = new Ribbon(ribbonHost, {
+  references: workspace,
+  view: workspace,
   applyFormat: (action) => workspace.applyFormat(action),
   applyCase: (mode) => workspace.applyCase(mode),
   applyEnclosed: (action) => workspace.applyEnclosed(action),
@@ -74,6 +82,12 @@ const ribbon = new Ribbon(ribbonHost, {
   applyPictureWrap: (wrap) => workspace.applyPictureWrap(wrap),
   applyPicturePlace: (place) => workspace.applyPicturePlace(place),
   applyPictureSize: (width, height, lock) => workspace.applyPictureSize(width, height, lock),
+  applyPictureAppearance: (action) => workspace.applyPictureAppearance(action),
+  applyPicturePixels: (action) => workspace.applyPicturePixels(action),
+  replacePicture: () => {
+    replaceImageTarget = workspace.selectedPicture()?.drawing;
+    if (replaceImageTarget) replaceImageInput.click();
+  },
   applyTextBoxFormat: (change) => workspace.applyTextBoxFormat(change),
   applyLayerOrder: (action) => workspace.applyLayerOrder(action),
   applyAlign: (action, reference) => workspace.applyAlign(action, reference),
@@ -88,13 +102,23 @@ const ribbon = new Ribbon(ribbonHost, {
   deleteTableColumn: () => workspace.deleteTableColumn(),
   mergeTableCells: () => workspace.mergeTableCells(),
   splitTableCell: () => workspace.splitTableCell(),
+  applyTableLayout: (action) => workspace.applyTableLayout(action),
   insertToc: () => workspace.insertToc(),
   insertPageNumber: () => workspace.insertPageNumber(),
   applyLink: (raw) => workspace.applyLink(raw),
   clearLink: () => workspace.clearLink(),
-  addComment: (text) => workspace.addComment(text),
+  beginComment: () => workspace.beginComment(),
+  reviewState: () => workspace.reviewState(),
+  reviewStats: () => {
+    const document = workspace.bodyDocument();
+    return document ? { ...documentStats(document), pages: workspace.pageCount } : undefined;
+  },
+  navigateComment: (direction) => workspace.navigateComment(direction),
+  deleteComment: () => workspace.deleteComment(),
+  toggleComments: () => workspace.toggleComments(),
+  navigateRevision: (direction) => workspace.navigateRevision(direction),
+  toggleTrackRevisions: () => workspace.toggleTrackRevisions(),
   addFootnote: (text) => workspace.addFootnote(text),
-  showComment: (id) => workspace.showComment(id),
   showNote: (id) => workspace.showNote(id),
   acceptRevision: () => workspace.acceptRevision(),
   rejectRevision: () => workspace.rejectRevision(),
@@ -122,7 +146,7 @@ const ribbon = new Ribbon(ribbonHost, {
   closeFind: () => workspace.closeFind(),
   formatState: () => workspace.formatState(caption),
 });
-workspace.onUi(() => ribbon.sync());
+workspace.onUi((revealTableLayout) => ribbon.sync(revealTableLayout));
 workspace.onFindRequest((replace) => ribbon.openFind(replace));
 workspace.onSave(() => {
   void downloadDocx();
@@ -179,7 +203,7 @@ async function downloadDocx(): Promise<void> {
 }
 
 window.addEventListener("resize", () => {
-  workspace.setPageCount(workspace.pageCount);
+  workspace.resizeViewport();
 });
 
 window.addEventListener("keydown", (event) => {
@@ -223,6 +247,16 @@ imageInput.addEventListener("change", async () => {
     await workspace.insertPictureFile(file);
   } finally {
     imageInput.value = "";
+  }
+});
+
+replaceImageInput.addEventListener("change", async () => {
+  const file = replaceImageInput.files?.[0];
+  const target = replaceImageTarget;
+  replaceImageTarget = undefined;
+  replaceImageInput.value = "";
+  if (file && !await workspace.replacePictureFile(file, target)) {
+    ribbon.showPictureFeedback("无法更改图片，请确认原图片仍处于选中状态。");
   }
 });
 

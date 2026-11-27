@@ -5,12 +5,13 @@ import type { NumberingLevel } from "../../../model/style/Numbering";
 import type { StyleSheet } from "../../../model/style/StyleSheet";
 import { pxToTwip } from "../../../shared/units";
 import { DocxPackage } from "../ooxml/DocxPackage";
+import { CITATION_PROPS_OVERRIDE, CITATION_REL, writeCitationParts } from "../ooxml/CitationParts";
 import { escapeXml } from "../ooxml/XmlEscape";
 import { paragraphIndentXml, paragraphPropertiesXml } from "./paragraph/ParagraphPropertiesWriter";
 import { PartAssets, type WrittenImage, type WrittenRel } from "./package/PartAssets";
 import { rootRelsXml, stylesXml, wrapDocumentXml, wrapStoryXml } from "./package/DefaultParts";
 import { RunSerializer } from "./run/RunSerializer";
-import { commentsXml, footnotesXml } from "./review/ReviewSerializer";
+import { commentsXml, notesXml } from "./review/ReviewSerializer";
 import { StorySerializer } from "./story/StorySerializer";
 import { tableBordersXml, tableInsetsXml } from "./table/TableSerializer";
 
@@ -22,8 +23,10 @@ const HEADER_CT = "application/vnd.openxmlformats-officedocument.wordprocessingm
 const FOOTER_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml";
 const COMMENTS_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
 const FOOTNOTES_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes";
+const ENDNOTES_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes";
 const COMMENTS_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml";
 const FOOTNOTES_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml";
+const ENDNOTES_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml";
 
 interface StoryPart {
   sectionIndex: number;
@@ -46,9 +49,12 @@ export class DocxWriter {
     const numberingId = numbering.length ? nextId(relSeq) : undefined;
     const customTab = document.defaultTabStopTwip != null && document.defaultTabStopTwip !== 720;
     const settingsId =
-      document.evenAndOddHeaders || document.adjustLineHeightInTable || customTab ? nextId(relSeq) : undefined;
+      document.evenAndOddHeaders || document.adjustLineHeightInTable || document.trackRevisions || customTab
+        ? nextId(relSeq) : undefined;
     const commentsId = document.comments.length ? nextId(relSeq) : undefined;
     const footnotesId = document.footnotes.length ? nextId(relSeq) : undefined;
+    const endnotesId = document.endnotes.length ? nextId(relSeq) : undefined;
+    const citationsId = document.citationSources.length || document.citationStyle !== "APA" ? nextId(relSeq) : undefined;
 
     const bands = this.collectBands(document, imageSeq);
     const relByPath = new Map<string, string>();
@@ -76,7 +82,7 @@ export class DocxWriter {
     const pack = new DocxPackage();
     pack.setXml(
       "[Content_Types].xml",
-      this.contentTypes(bands, bodyAssets.images, !!numberingId, !!settingsId, !!commentsId, !!footnotesId),
+      this.contentTypes(bands, bodyAssets.images, !!numberingId, !!settingsId, !!commentsId, !!footnotesId, !!endnotesId, !!citationsId),
     );
     pack.setXml("_rels/.rels", rootRelsXml());
     pack.setXml("word/document.xml", wrapDocumentXml(body, this.sectPr(document.lastSection(), tail)));
@@ -87,22 +93,27 @@ export class DocxWriter {
     if (footnotesId) {
       extra.push({ id: footnotesId, type: FOOTNOTES_TYPE, target: "footnotes.xml" });
     }
+    if (endnotesId) {
+      extra.push({ id: endnotesId, type: ENDNOTES_TYPE, target: "endnotes.xml" });
+      pack.setXml("word/endnotes.xml", notesXml(document.endnotes, "endnote"));
+    }
+    if (citationsId) {
+      extra.push({ id: citationsId, ...CITATION_REL });
+      writeCitationParts(pack, document.citationStyle, document.citationSources);
+    }
     pack.setXml("word/_rels/document.xml.rels", this.documentRels(stylesId, numberingId, settingsId, bands, extra));
     pack.setXml("word/styles.xml", this.styles(document.styles));
     if (numberingId) {
       pack.setXml("word/numbering.xml", this.numberingXml(numbering));
     }
     if (settingsId) {
-      pack.setXml(
-        "word/settings.xml",
-        this.settingsXml(document.evenAndOddHeaders, document.adjustLineHeightInTable, document.defaultTabStopTwip),
-      );
+      pack.setXml("word/settings.xml", this.settingsXml(document));
     }
     if (commentsId) {
       pack.setXml("word/comments.xml", commentsXml(document.comments));
     }
     if (footnotesId) {
-      pack.setXml("word/footnotes.xml", footnotesXml(document.footnotes));
+      pack.setXml("word/footnotes.xml", notesXml(document.footnotes, "footnote"));
     }
     const written = new Set<string>();
     for (const part of bands) {
@@ -233,6 +244,8 @@ export class DocxWriter {
     settings: boolean,
     comments: boolean,
     footnotes: boolean,
+    endnotes: boolean,
+    citations: boolean,
   ): string {
     const defaults = new Map<string, string>([
       ["rels", "application/vnd.openxmlformats-package.relationships+xml"],
@@ -269,6 +282,8 @@ export class DocxWriter {
     if (footnotes) {
       overrides.push(`<Override PartName="/word/footnotes.xml" ContentType="${FOOTNOTES_CT}"/>`);
     }
+    if (endnotes) overrides.push(`<Override PartName="/word/endnotes.xml" ContentType="${ENDNOTES_CT}"/>`);
+    if (citations) overrides.push(CITATION_PROPS_OVERRIDE);
     const seen = new Set<string>();
     for (const part of bands) {
       if (seen.has(part.path)) {
@@ -365,15 +380,17 @@ export class DocxWriter {
 <w:numbering xmlns:w="${W_NS}">${abstracts.join("")}${nums.join("")}</w:numbering>`;
   }
 
-  private settingsXml(evenAndOdd: boolean, adjustTable: boolean, defaultTabStopTwip?: number): string {
+  private settingsXml(document: Document): string {
+    const { evenAndOddHeaders, adjustLineHeightInTable, trackRevisions, defaultTabStopTwip } = document;
     const tab =
       defaultTabStopTwip != null && defaultTabStopTwip !== 720
         ? `<w:defaultTabStop w:val="${Math.round(defaultTabStopTwip)}"/>`
         : "";
     const flags = [
-      evenAndOdd ? "<w:evenAndOddHeaders/>" : "",
-      adjustTable ? "<w:adjustLineHeightInTable/>" : "",
+      trackRevisions ? "<w:trackRevisions/>" : "",
       tab,
+      evenAndOddHeaders ? "<w:evenAndOddHeaders/>" : "",
+      adjustLineHeightInTable ? "<w:adjustLineHeightInTable/>" : "",
     ].join("");
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="${W_NS}">${flags}</w:settings>`;
   }

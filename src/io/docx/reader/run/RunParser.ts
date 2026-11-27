@@ -33,6 +33,8 @@ export class RunParser {
     if (footnote) {
       block.footnoteId = attr(footnote, "w:id");
     }
+    const endnote = first(rNode, "w:endnoteReference");
+    if (endnote) block.endnoteId = attr(endnote, "w:id");
     const comment = first(rNode, "w:commentReference");
     if (comment) {
       block.commentRef = attr(comment, "w:id");

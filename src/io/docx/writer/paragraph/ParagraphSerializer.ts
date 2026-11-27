@@ -7,6 +7,7 @@ import type { TocMark } from "../../../../model/toc/Toc";
 import { pxToPt } from "../../../../shared/units";
 import { escapeXml } from "../../ooxml/XmlEscape";
 import type { PartAssets } from "../package/PartAssets";
+import type { commentBoundaries } from "../review/ReviewSerializer";
 import { RunSerializer } from "../run/RunSerializer";
 import { TableSerializer } from "../table/TableSerializer";
 import { paragraphPropertiesXml } from "./ParagraphPropertiesWriter";
@@ -15,7 +16,7 @@ export class ParagraphSerializer {
   private readonly runs = new RunSerializer();
   private tables: TableSerializer | null = null;
 
-  constructor(private readonly assets?: PartAssets) {}
+  constructor(private readonly comments: ReturnType<typeof commentBoundaries>, private readonly assets?: PartAssets) {}
 
   serialize(paragraph: Paragraph, sectPr = ""): string {
     if (paragraph.isTable) {
@@ -24,14 +25,15 @@ export class ParagraphSerializer {
     const pPr = withSectPr(paragraphPropertiesXml(paragraph.attrs), sectPr);
     const marks = bookmarkXml(paragraph);
     const runs = paragraph.toc ? this.tocRuns(paragraph, paragraph.toc) : this.bodyRuns(paragraph);
-    return `<w:p>${pPr}${marks.start}${runs}${marks.end}</w:p>`;
+    const start = paragraph.bibliography?.start ? fieldChar("begin") + instrText(" BIBLIOGRAPHY ") + fieldChar("separate") : "";
+    const end = paragraph.bibliography?.end ? fieldChar("end") : "";
+    return `<w:p>${pPr}${marks.start}${start}${runs}${end}${marks.end}</w:p>`;
   }
 
   private bodyRuns(paragraph: Paragraph): string {
     const blocks = paragraph.blocks;
     let xml = "";
     let index = 0;
-    let openComments: string[] = [];
     let openRevision: RevisionMark | undefined;
     const closeRevision = (): void => {
       if (!openRevision) {
@@ -40,19 +42,15 @@ export class ParagraphSerializer {
       xml += `</w:${openRevision.kind}>`;
       openRevision = undefined;
     };
-    const syncComments = (next: string[]): void => {
-      if (sameIds(openComments, next)) {
-        return;
-      }
+    const markComments = (at: number, edge: "start" | "end"): void => {
+      const ids = this.comments[edge].get(blocks[at]);
+      if (!ids?.length) return;
       closeRevision();
-      while (openComments.length) {
-        xml += `<w:commentRangeEnd w:id="${escapeXml(openComments.pop() ?? "")}"/>`;
-      }
-      for (const id of next) {
-        xml += `<w:commentRangeStart w:id="${escapeXml(id)}"/>`;
-      }
-      openComments = next.slice();
+      const tag = edge === "start" ? "commentRangeStart" : "commentRangeEnd";
+      for (const id of ids) xml += `<w:${tag} w:id="${escapeXml(id)}"/>`;
     };
+    const canJoin = (next: number): boolean => next === index ||
+      (!this.comments.start.has(blocks[next]) && !this.comments.end.has(blocks[next - 1]));
     const syncRevision = (next: RevisionMark | undefined): void => {
       if (sameRevision(openRevision, next) || (!openRevision && !next)) {
         return;
@@ -65,8 +63,9 @@ export class ParagraphSerializer {
     };
     while (index < blocks.length) {
       const block = blocks[index];
-      syncComments(block.commentIds ?? []);
-      if (block.commentRef || block.footnoteId) {
+      markComments(index - 1, "end");
+      markComments(index, "start");
+      if (block.commentRef || block.footnoteId || block.endnoteId) {
         closeRevision();
         xml += this.runs.serialize(block, this.assets);
         index += 1;
@@ -78,9 +77,11 @@ export class ParagraphSerializer {
         let next = index;
         while (
           next < blocks.length &&
+          canJoin(next) &&
           sameLink(blocks[next].link, block.link) &&
           !blocks[next].field &&
           !blocks[next].footnoteId &&
+          !blocks[next].endnoteId &&
           !blocks[next].commentRef &&
           sameIds(blocks[next].commentIds, block.commentIds) &&
           revisionEqual(blocks[next].revision, block.revision)
@@ -102,10 +103,13 @@ export class ParagraphSerializer {
         let next = index;
         while (
           next < blocks.length &&
+          canJoin(next) &&
+          (next === index || !blocks[next].startsField) &&
           blocks[next].field === block.field &&
           blocks[next].fieldInstr === block.fieldInstr &&
           !blocks[next].link &&
           !blocks[next].footnoteId &&
+          !blocks[next].endnoteId &&
           !blocks[next].commentRef &&
           sameIds(blocks[next].commentIds, block.commentIds) &&
           revisionEqual(blocks[next].revision, block.revision)
@@ -130,7 +134,7 @@ export class ParagraphSerializer {
       xml += this.runs.serialize(block, this.assets);
       index += 1;
     }
-    syncComments([]);
+    markComments(index - 1, "end");
     closeRevision();
     return xml;
   }

@@ -23,7 +23,8 @@ export class TableSerializer {
     const total = widths.reduce((sum, width) => sum + width, 0);
     const style = table.styleId ? `<w:tblStyle w:val="${escapeXml(table.styleId)}"/>` : "";
     const borders = tableBordersXml(table.borders, "w:tblBorders");
-    const tblPr = `<w:tblPr>${style}${this.anchorXml(table)}${this.widthXml("w:tblW", table.width, total)}${this.alignXml(table)}${this.indentXml(table)}${tableInsetsXml("w:tblCellMar", table.cellMargin)}${borders}</w:tblPr>`;
+    const layout = table.layout ? `<w:tblLayout w:type="${table.layout}"/>` : "";
+    const tblPr = `<w:tblPr>${style}${this.anchorXml(table)}${this.widthXml("w:tblW", table.width, total)}${this.alignXml(table)}${this.indentXml(table)}${borders}${layout}${tableInsetsXml("w:tblCellMar", table.cellMargin)}</w:tblPr>`;
     const grid = widths.map((width) => `<w:gridCol w:w="${width}"/>`).join("");
     const rows = table.rows.map((_, index) => this.rowXml(table, index, widths)).join("");
     return `<w:tbl>${tblPr}<w:tblGrid>${grid}</w:tblGrid>${rows}</w:tbl>`;
@@ -102,6 +103,7 @@ export class TableSerializer {
     if (!continued && fill) {
       parts.push(`<w:shd w:val="clear" w:color="auto" w:fill="${fill}"/>`);
     }
+    if (cell.textDirection) parts.push(`<w:textDirection w:val="${cell.textDirection}"/>`);
     if (cell.vAlign && cell.vAlign !== "top") {
       parts.push(`<w:vAlign w:val="${escapeXml(cell.vAlign)}"/>`);
     }

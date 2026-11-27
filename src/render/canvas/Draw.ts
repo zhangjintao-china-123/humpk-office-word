@@ -4,6 +4,7 @@ export class Draw implements IDraw {
   readonly ctx: CanvasRenderingContext2D;
   cssWidth = 0;
   cssHeight = 0;
+  showTableGridlines = false;
 
   constructor(readonly el: HTMLCanvasElement) {
     const ctx = el.getContext("2d");

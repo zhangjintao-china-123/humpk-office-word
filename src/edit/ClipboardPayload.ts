@@ -3,7 +3,8 @@ import type { AsianLayoutSpec } from "../model/inline/AsianLayout";
 import type { EnclosedSpec } from "../model/inline/EnclosedChar";
 import type { ParagraphAttrs } from "../model/style/ParagraphAttrs";
 import type { RunStyle } from "../model/style/RunStyle";
-import type { TableBorders } from "../model/table/Table";
+import type { TableBorders, TableCell } from "../model/table/Table";
+import { copyPictureAppearance, type PictureAppearance } from "../model/graphic/PictureAppearance";
 
 export interface ClipboardDrawing {
   url?: string;
@@ -11,6 +12,8 @@ export interface ClipboardDrawing {
   width: number;
   height: number;
   lockAspect?: boolean;
+  description?: string;
+  appearance?: PictureAppearance;
 }
 
 export interface ClipboardRun {
@@ -30,6 +33,7 @@ export interface ClipboardParagraph {
 export interface ClipboardTableCell {
   colSpan: number;
   rowSpan: number;
+  textDirection?: TableCell["textDirection"];
   borders?: TableBorders;
   paragraphs: ClipboardParagraph[];
 }
@@ -85,6 +89,8 @@ export function snapshotDrawing(drawing: Drawing): ClipboardDrawing {
     width: drawing.width,
     height: drawing.height,
     lockAspect: drawing.lockAspect !== false,
+    description: drawing.description,
+    appearance: copyPictureAppearance(drawing.pictureAppearance),
   };
 }
 
@@ -96,5 +102,7 @@ export function drawingFromSnapshot(snap: ClipboardDrawing): Drawing {
   drawing.height = snap.height;
   drawing.position = "inline";
   drawing.lockAspect = snap.lockAspect !== false;
+  drawing.description = snap.description;
+  drawing.pictureAppearance = copyPictureAppearance(snap.appearance);
   return drawing;
 }

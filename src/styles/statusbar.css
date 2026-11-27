@@ -18,6 +18,11 @@
   border-left: 1px solid #d5dce4;
 }
 
+.ho-word-statusbar-tracking {
+  color: #285f9b;
+  font-weight: 600;
+}
+
 .ho-word-statusbar-zoom {
   display: flex;
   align-items: center;

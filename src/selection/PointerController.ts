@@ -9,7 +9,7 @@ export interface PointerHost {
   hitClient(clientX: number, clientY: number): CaretPos | null;
   cellsInRect(from: TableCell, to: TableCell): TableCell[];
   sameFlow?(from: CaretPos, to: CaretPos): boolean;
-  onChange(): void;
+  onChange(selectedWholeTable?: boolean): void;
   onPointerUp?(event: PointerEvent): void;
   followLink?(pos: CaretPos): boolean;
 }
@@ -50,7 +50,9 @@ export class PointerController {
     if (!pos) {
       return;
     }
+    if (event.pointerType === "mouse") event.preventDefault();
     if (!event.shiftKey && !event.metaKey && !event.ctrlKey && this.host.followLink?.(pos)) {
+      event.preventDefault();
       this.host.onChange();
       return;
     }
@@ -62,6 +64,8 @@ export class PointerController {
     } else if (pos.node?.data.kind === "table" && pos.node) {
       this.anchor = new CaretPos(pos.story, pos.node, false);
       this.host.selection.setFlow(this.anchor, new CaretPos(pos.story, pos.node, true));
+      this.host.onChange(true);
+      return;
     } else if (event.shiftKey && this.anchor && this.selectCellRect(this.anchor, pos)) {
       this.host.onChange();
       return;

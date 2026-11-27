@@ -35,7 +35,8 @@ export class DeleteCommand implements EditCommand {
       return;
     }
     this.played = true;
-    const consumed = consumeFlow(this.ctx);
+    const revision = this.ctx.recordRevision?.("del");
+    const consumed = consumeFlow(this.ctx, revision);
     if (consumed) {
       this.patches = consumed;
       return;
@@ -49,9 +50,9 @@ export class DeleteCommand implements EditCommand {
       }
       const patch = range.collapsed()
         ? this.direction === "backward"
-          ? this.ctx.mutator.deleteBackward(document, range.story, range.start)
-          : this.ctx.mutator.deleteForward(document, range.story, range.start)
-        : this.ctx.mutator.deleteRange(document, range.story, range);
+          ? this.ctx.mutator.deleteBackward(document, range.story, range.start, revision)
+          : this.ctx.mutator.deleteForward(document, range.story, range.start, revision)
+        : this.ctx.mutator.deleteRange(document, range.story, range, revision);
       this.patches.push(patch);
       refreshNumbering(document, patch);
       this.ctx.relayout.apply(patch.impact);

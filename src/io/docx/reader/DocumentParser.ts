@@ -1,5 +1,6 @@
 import { assignSections } from "../../../model/document/PageLabel";
 import { Document } from "../../../model/document/Document";
+import { bindBibliography } from "../../../model/reference/References";
 import { first, parseXml } from "../ooxml/XmlQuery";
 import { HeaderFooterParser } from "./header-footer/HeaderFooterParser";
 import type { ParseContext } from "./ParseContext";
@@ -19,6 +20,7 @@ export class DocumentParser {
       this.headerFooter.attach(body, ctx, document);
     }
     assignSections(document);
+    bindBibliography(document);
     return document;
   }
 }

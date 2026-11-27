@@ -34,6 +34,8 @@ export class TableCellParser {
     if (vAlign === "top" || vAlign === "center" || vAlign === "bottom") {
       cell.vAlign = vAlign;
     }
+    const direction = attr(first(tcPr, "w:textDirection"), "w:val");
+    if (direction === "tbRl" || direction === "tbRlV") cell.textDirection = direction;
     cell.margin = readInsets(first(tcPr, "w:tcMar"));
     cell.width = readLength(first(tcPr, "w:tcW"));
     return cell;

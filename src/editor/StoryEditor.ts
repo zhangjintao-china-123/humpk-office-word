@@ -65,13 +65,14 @@ export class StoryEditor extends EditorBase {
     labels?: PageLabel[],
     target?: Draw,
     range: PageRange = { start: 0, end: origins.length },
+    fieldText?: Map<Block, string>,
   ): void {
     const draw = target ?? (this.draw instanceof Draw ? this.draw : null);
     if (!draw || range.start >= range.end) {
       return;
     }
     if (this.slot === "body") {
-      this.paintBody(draw, origins, range, labels);
+      this.paintBody(draw, origins, range, labels, fieldText);
       return;
     }
     for (let index = range.start; index < range.end; index += 1) {
@@ -112,7 +113,7 @@ export class StoryEditor extends EditorBase {
 
   protected override onRender(): void {}
 
-  private paintBody(draw: Draw, origins: PageOrigin[], range: PageRange, labels?: PageLabel[]): void {
+  private paintBody(draw: Draw, origins: PageOrigin[], range: PageRange, labels?: PageLabel[], fieldText?: Map<Block, string>): void {
     const pageH = this.pageSetup.contentHeight;
     const contentX = (origin: PageOrigin) => origin.x + this.pageSetup.contentLeft();
     const contentY = (origin: PageOrigin, storyY: number, pageIndex: number) =>
@@ -121,7 +122,7 @@ export class StoryEditor extends EditorBase {
       x: contentX(origin) + anchor.x,
       y: contentY(origin, anchor.y, anchor.pageOn(pageH)),
     }), range);
-    const text = this.fieldText(labels, origins.length);
+    const text = fieldText ?? this.fieldText(labels, origins.length);
     const pages = this.linesByPage(pageH, origins.length);
     for (let pageIndex = range.start; pageIndex < range.end; pageIndex += 1) {
       const origin = origins[pageIndex];

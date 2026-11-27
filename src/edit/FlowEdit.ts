@@ -1,12 +1,15 @@
 import { CaretPos } from "../selection/CaretPos";
-import { coverFlow } from "../selection/MainWalk";
+import { cellsInReadingOrder, coverFlow } from "../selection/MainWalk";
 import { SelRange } from "../selection/SelRange";
+import { SelectionText } from "../selection/SelectionText";
+import type { Table } from "../model/table/Table";
 import type { EditContext } from "./EditContext";
 import type { MutationPatch } from "./MutationPatch";
 import { refreshNumbering } from "./OutlineNumbering";
+import type { RevisionMark } from "../model/review/Review";
 
 /** 删掉阅读顺序上的这次选择，并停在起点。没有这种选择时返回 null。 */
-export function consumeFlow(ctx: EditContext): MutationPatch[] | null {
+export function consumeFlow(ctx: EditContext, revision?: RevisionMark): MutationPatch[] | null {
   const flow = ctx.selection.flow;
   if (!flow || flow.anchor.equals(flow.focus)) {
     return null;
@@ -19,22 +22,28 @@ export function consumeFlow(ctx: EditContext): MutationPatch[] | null {
   if (!pieces.length) {
     return null;
   }
+  const selectionText = new SelectionText();
+  const tableRanges = (table: Table): SelRange[] => cellsInReadingOrder(table).flatMap((cell) => [
+    selectionText.cellContentRange(cell),
+    ...cell.document.paragraphs.toArray().flatMap((paragraph) => paragraph.table ? tableRanges(paragraph.table) : []),
+  ]);
+  const ranges = pieces.flatMap((piece) => {
+    if (piece.type === "text") return [piece.range];
+    if (revision && piece.node.data.table) return tableRanges(piece.node.data.table);
+    return [new SelRange(piece.story, new CaretPos(piece.story, piece.node), new CaretPos(piece.story, piece.node, true))];
+  });
   const patches: MutationPatch[] = [];
   let caret = flow.anchor;
-  for (const piece of [...pieces].reverse()) {
-    const story = piece.type === "text" ? piece.range.story : piece.story;
+  for (const range of ranges.reverse()) {
+    const story = range.story;
     const document = ctx.documentOf(story);
     if (!document) {
       continue;
     }
-    const range =
-      piece.type === "text"
-        ? piece.range
-        : new SelRange(story, new CaretPos(story, piece.node, false), new CaretPos(story, piece.node, true));
     if (range.collapsed()) {
       continue;
     }
-    const patch = ctx.mutator.deleteRange(document, story, range);
+    const patch = ctx.mutator.deleteRange(document, story, range, revision);
     patches.push(patch);
     refreshNumbering(document, patch);
     ctx.relayout.apply(patch.impact);

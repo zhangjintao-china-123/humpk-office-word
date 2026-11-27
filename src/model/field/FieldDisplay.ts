@@ -15,6 +15,7 @@ export interface FieldView {
 export function buildFieldView(document: Document, lines: Line[], labels: PageLabel[], pageHeight: number, now = new Date()): FieldView {
   const values = labels[0] ? fieldValues(labels[0]) : { PAGE: "1", NUMPAGES: "1", SECTIONPAGES: "1" };
   const paragraphs = collectParagraphs(document);
+  const seq = sequenceNumbers(paragraphs);
   const bookmarkText = new Map<string, string>();
   const bookmarkPage = new Map<string, string>();
   for (const paragraph of paragraphs) {
@@ -23,13 +24,12 @@ export function buildFieldView(document: Document, lines: Line[], labels: PageLa
     }
     const page = pageOf(paragraph, lines, labels, pageHeight);
     for (const name of paragraph.bookmarks) {
-      bookmarkText.set(name, paragraph.getFullText());
+      bookmarkText.set(name, paragraph.blocks.map((block) => seq.get(block) ?? block.text).join(""));
       if (page) {
         bookmarkPage.set(name, page);
       }
     }
   }
-  const seq = sequenceNumbers(paragraphs);
   const styleRef = styleReferences(paragraphs, document.styles);
   const text = new Map<Block, string>();
   for (const paragraph of paragraphs) {
@@ -150,7 +150,8 @@ function sequenceNumbers(paragraphs: Paragraph[]): Map<Block, string> {
       if (block.field !== "SEQ") {
         continue;
       }
-      const name = fieldArgs(block.fieldInstr ?? "").args[0] ?? "";
+      const token = fieldArgs(block.fieldInstr ?? "").args[0]?.toLowerCase() ?? "";
+      const name = token === "图" ? "figure" : token === "表" ? "table" : token;
       const next = (counts.get(name) ?? 0) + 1;
       counts.set(name, next);
       result.set(block, String(next));
@@ -193,7 +194,7 @@ function pageOf(paragraph: Paragraph, lines: Line[], labels: PageLabel[], pageHe
   if (!line || pageHeight <= 0) {
     return undefined;
   }
-  const index = Math.min(labels.length - 1, Math.max(0, Math.floor(line.top / pageHeight)));
+  const index = Math.min(labels.length - 1, Math.max(0, line.pageIndex ?? Math.floor(line.top / pageHeight)));
   const label = labels[index];
   return label ? formatPageNumber(label.pageNumber, label.fmt) : undefined;
 }

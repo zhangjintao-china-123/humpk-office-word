@@ -20,6 +20,8 @@ export type FieldKind =
   | "STYLEREF"
   | "SEQ"
   | "HYPERLINK"
+  | "FORMULA"
+  | "CITATION"
   | "OTHER";
 export type SectionBreak = "nextPage" | "continuous" | "evenPage" | "oddPage";
 
@@ -54,14 +56,20 @@ const NAMED_FIELDS: Record<string, FieldKind> = {
   STYLEREF: "STYLEREF",
   SEQ: "SEQ",
   HYPERLINK: "HYPERLINK",
+  CITATION: "CITATION",
 };
 
 export function fieldKind(instr: string): FieldKind | undefined {
+  if (instr.trimStart().startsWith("=")) return "FORMULA";
   const token = instr.trim().split(/\s+/)[0]?.toUpperCase();
-  if (!token || token === "TOC") {
+  if (!token || token === "TOC" || token === "BIBLIOGRAPHY") {
     return undefined;
   }
   return NAMED_FIELDS[token] ?? (/^[A-Z][A-Z0-9]*$/.test(token) ? "OTHER" : undefined);
+}
+
+export function isReferenceField(kind: FieldKind | undefined): boolean {
+  return kind === "CITATION" || kind === "REF" || kind === "PAGEREF" || kind === "SEQ";
 }
 
 export function formatPageNumber(value: number, fmt?: string): string {

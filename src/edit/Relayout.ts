@@ -56,6 +56,14 @@ export class Relayout {
     let bubbled = false;
 
     while (dirty.length) {
+      if (story.slot === "cell" && story.cell.textDirection) {
+        const host = this.findCellHost(story.cell);
+        if (!host) break;
+        story = host.parent;
+        dirty = [host.paragraph];
+        bubbled = true;
+        continue;
+      }
       const document = this.host.documentOf(story);
       if (!document) {
         break;
@@ -170,7 +178,7 @@ export class Relayout {
     return sum;
   }
 
-  private constraints(story: StoryRef) {
+  constraints(story: StoryRef) {
     const measurer = this.measurer();
     if (story.slot === "textbox") {
       const drawing = story.block.drawing;

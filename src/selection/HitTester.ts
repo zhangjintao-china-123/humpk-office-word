@@ -13,9 +13,9 @@ import type { StoryEditor } from "../editor/StoryEditor";
 import type { PageOrigin } from "../editor/StoryEditor";
 import type { PageSetup } from "../render/page/PageSetup";
 import { cellVisibleRect, clipCellBox, TableGeometry, type TableCellBox } from "../render/table/TableGeometry";
-import { cellContentOrigin, cellDocumentHeight, cellLineBand } from "../layout/table/TableMetrics";
+import { cellContentOrigin, cellDocumentHeight, cellFlowOrigin, cellLineBand } from "../layout/table/TableMetrics";
 import { CaretPos } from "./CaretPos";
-import { isVerticalTextBox, storyKind, storySection, type StoryRef } from "./StoryRef";
+import { isVerticalTextStory, storyKind, storySection, type StoryRef } from "./StoryRef";
 import { guidesFromBoxes, pickGuide, type TableGuide, type TableGuideKind } from "./TableGuides";
 
 export interface HitContext {
@@ -467,7 +467,7 @@ export class HitTester {
     const word = located.node.data;
     const width = Math.max(word.kernedWidth, 2);
     const height = Math.max(located.line.height, 14);
-    if (isVerticalTextBox(pos.story)) {
+    if (isVerticalTextStory(pos.story)) {
       return { x: located.originX - height, y: located.originY + word.left, width: height, height: width };
     }
     return {
@@ -487,7 +487,7 @@ export class HitTester {
     const word = node.data;
     const advance = word.left + (pos.after ? word.kernedWidth : 0);
     const span = caretSpan(line, word);
-    if (isVerticalTextBox(pos.story)) {
+    if (isVerticalTextStory(pos.story)) {
       return { x: originX - span.top - span.height, y: originY + advance, width: span.height, height: 1 };
     }
     return { x: originX + advance, y: originY + span.top, height: span.height };
@@ -515,7 +515,7 @@ export class HitTester {
     return this.hitWords(line, localX, story);
   }
 
-  lineOrigin(line: Line, story: StoryRef, ctx: HitContext): { x: number; y: number } | null {
+  lineOrigin(line: Line, story: StoryRef, ctx: HitContext, advance?: number): { x: number; y: number } | null {
     if (story.slot === "textbox") {
       const frame = this.textboxFrames(ctx).find((item) => item.block === story.block);
       if (!frame) {
@@ -527,12 +527,11 @@ export class HitTester {
       const boxes = this.cellBoxes(story.cell, ctx);
       const table = this.findTable(story.cell, ctx);
       const contentH = cellDocumentHeight(story.cell.document);
-      const box = boxes.find((item) => this.lineHitsSlice(item, line, table, contentH)) ?? boxes[0];
+      const box = boxes.find((item) => this.lineHitsSlice(item, line, table, contentH, advance)) ?? boxes[0];
       if (!box) {
         return null;
       }
-      const origin = cellContentOrigin(table, box, contentH);
-      return { x: origin.x, y: origin.y + line.top };
+      return textBoxPoint(cellFlowOrigin(table, box, contentH), 0, line.top);
     }
     if (!ctx.origins.length) {
       return null;
@@ -565,10 +564,17 @@ export class HitTester {
     return { x: left, y: top + line.top };
   }
 
-  private lineHitsSlice(box: TableCellBox, line: Line, table: Table | undefined, contentH: number): boolean {
-    const origin = cellContentOrigin(table, box, contentH);
-    const band = cellLineBand(line);
+  private lineHitsSlice(box: TableCellBox, line: Line, table: Table | undefined, contentH: number, advance?: number): boolean {
+    const origin = cellFlowOrigin(table, box, contentH);
     const visible = cellVisibleRect(box);
+    if (origin.vertical && advance !== undefined) {
+      const y = origin.y + advance;
+      return y >= visible.y - 0.01 && y <= visible.y + visible.height + 0.01;
+    }
+    const last = origin.vertical ? line.getLastNode()?.data : undefined;
+    const band = origin.vertical
+      ? { top: line.startNode?.data.left ?? 0, bottom: last ? last.left + last.kernedWidth : line.totalCharWidth }
+      : cellLineBand(line);
     return origin.y + band.bottom > visible.y + 0.01 && origin.y + band.top < visible.y + visible.height - 0.01;
   }
 
@@ -773,13 +779,12 @@ export class HitTester {
         const inner = this.storyLines(story, ctx);
         const table = placed.line.startNode?.data.table;
         const contentHeight = cellDocumentHeight(box.cell.document);
-        const origin = cellContentOrigin(table, box, contentHeight);
-        const nested = this.hitTableLines(inner, ctx, false, origin.x, origin.y, worldX, worldY);
+        const origin = cellFlowOrigin(table, box, contentHeight);
+        const nested = origin.vertical ? null : this.hitTableLines(inner, ctx, false, origin.x, origin.y, worldX, worldY);
         if (nested) {
           return nested;
         }
-        const localX = worldX - origin.x;
-        const localY = worldY - origin.y;
+        const { x: localX, y: localY } = textBoxLocal(origin, worldX, worldY);
         const visibleLines = inner.filter((line) => this.lineHitsSlice(box, line, table, contentHeight));
         const candidates = visibleLines.length ? visibleLines : inner;
         return this.hitLines(candidates, localX, localY, story) ?? this.fallbackLine(candidates, localY, story);
@@ -1078,7 +1083,8 @@ export class HitTester {
     if (!line) {
       return null;
     }
-    const origin = this.lineOrigin(line, pos.story, ctx);
+    const advance = pos.node.data.left + (pos.after ? pos.node.data.kernedWidth : 0);
+    const origin = this.lineOrigin(line, pos.story, ctx, advance);
     if (!origin) {
       return null;
     }

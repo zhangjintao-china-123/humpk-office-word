@@ -53,6 +53,7 @@ export function borderFrame(
 
 export class TableBorderPainter {
   private readonly resolve = new TableBorderResolve();
+  private readonly gridline: TableBorder = { type: "dotted", size: "6", color: "#a4b8cb" };
 
   paintFill(draw: Draw, box: TableCellBox): void {
     if (!box.cell.fill) {
@@ -65,10 +66,14 @@ export class TableBorderPainter {
 
   paintEdges(draw: Draw, box: TableCellBox, table: Table): void {
     const { cell } = box;
-    const top = this.resolve.cellEdge(table, cell, "top");
-    const right = this.resolve.cellEdge(table, cell, "right");
-    const bottom = this.resolve.cellEdge(table, cell, "bottom");
-    const left = this.resolve.cellEdge(table, cell, "left");
+    const edge = (side: "top" | "right" | "bottom" | "left") => {
+      const border = this.resolve.cellEdge(table, cell, side);
+      return draw.showTableGridlines && this.resolve.widthPx(border) === 0 ? this.gridline : border;
+    };
+    const top = edge("top");
+    const right = edge("right");
+    const bottom = edge("bottom");
+    const left = edge("left");
     const half = (border: TableBorder | undefined) => this.resolve.widthPx(border) / 2;
     const frame = borderFrame(box, this.resolve.widthPx(top), this.resolve.widthPx(bottom), {
       top: this.resolve.isOuter(table, cell, "top") ? half(top) : 0,

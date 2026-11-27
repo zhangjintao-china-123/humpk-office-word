@@ -6,11 +6,11 @@ import { Section } from "../../src/model/document/Section";
 import { Line } from "../../src/model/line/Line";
 
 describe("页码与分节", () => {
-  it("识别 PAGE、NUMPAGES、SECTIONPAGES，不把 PAGEREF 当成 PAGE", () => {
+  it("区分当前页字段和书签交叉引用页码", () => {
     expect(fieldKind(" PAGE ")).toBe("PAGE");
     expect(fieldKind("NUMPAGES")).toBe("NUMPAGES");
     expect(fieldKind(" SECTIONPAGES ")).toBe("SECTIONPAGES");
-    expect(fieldKind(" PAGEREF _Toc1 \\h ")).toBeUndefined();
+    expect(fieldKind(" PAGEREF _Toc1 \\h ")).toBe("PAGEREF");
   });
 
   it("带 sectPr 的段落留在本节，后面的段落进入下一节", () => {

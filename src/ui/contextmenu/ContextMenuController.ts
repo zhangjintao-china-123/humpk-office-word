@@ -69,7 +69,7 @@ export interface ContextMenuHost {
   applyOutline?(action: OutlineAction): void;
   applyLink?(raw: string): void;
   clearLink?(): void;
-  addComment?(text: string): void;
+  beginComment?(): void;
   openFind?(replace: boolean): void;
 }
 
@@ -218,11 +218,7 @@ export class ContextMenuController {
       return;
     }
     if (action === "comment") {
-      const value = await this.menu.ask("新建批注", { placeholder: "批注内容", multiline: true });
-      if (!value?.trim()) {
-        return;
-      }
-      this.host.addComment?.(value);
+      this.host.beginComment?.();
       return;
     }
     if (action === "find" || action === "replace") {

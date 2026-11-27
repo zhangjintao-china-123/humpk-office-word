@@ -69,6 +69,7 @@ export class TextBoxDrawController {
     if (!this.direction || event.button !== 0 || this.drag) {
       return;
     }
+    if (event.target instanceof Element && event.target.closest(".ho-word-comment-margin")) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     const start = this.host.toWorld(event.clientX, event.clientY);

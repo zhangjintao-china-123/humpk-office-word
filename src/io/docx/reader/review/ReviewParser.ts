@@ -1,4 +1,4 @@
-import type { DocComment, DocNote } from "../../../../model/review/Review";
+import type { DocComment, DocNote, NoteKind } from "../../../../model/review/Review";
 import { attr, children, descendants, parseXml, textOf } from "../../ooxml/XmlQuery";
 
 export class ReviewParser {
@@ -11,15 +11,15 @@ export class ReviewParser {
       author: attr(node, "w:author") ?? "",
       date: attr(node, "w:date"),
       initials: attr(node, "w:initials"),
-      text: paragraphText(node),
+      text: paragraphText(node, true),
     })).filter((comment) => comment.id);
   }
 
-  footnotes(xml: string | undefined): DocNote[] {
+  notes(xml: string | undefined, kind: NoteKind): DocNote[] {
     if (!xml) {
       return [];
     }
-    return children(parseXml(xml).documentElement, "w:footnote")
+    return children(parseXml(xml).documentElement, `w:${kind}`)
       .filter((node) => !attr(node, "w:type"))
       .map((node) => ({
         id: attr(node, "w:id") ?? "",
@@ -29,12 +29,12 @@ export class ReviewParser {
   }
 }
 
-function paragraphText(root: Element): string {
+function paragraphText(root: Element, keepEmptyLines = false): string {
   const paragraphs = children(root, "w:p");
   const source = paragraphs.length ? paragraphs : [root];
   return source
     .map((paragraph) => descendants(paragraph, "w:t").map((node) => textOf(node)).join(""))
-    .filter((text) => text.length > 0)
+    .filter((text) => keepEmptyLines || text.length > 0)
     .join("\n")
     .trim();
 }

@@ -15,6 +15,8 @@ export class Block {
   field?: FieldKind;
   /** 域指令原文，写回时用。 */
   fieldInstr?: string;
+  /** 这个结果段是一个独立域的起点，和相邻相同指令的域分开写回。 */
+  startsField?: boolean;
   link?: TextLink;
   revision?: RevisionMark;
   /** 这段文字被哪些批注包住，按出现顺序。 */
@@ -23,6 +25,7 @@ export class Block {
   commentRef?: string;
   /** 脚注引用上标，对应 footnotes.xml 的 id。 */
   footnoteId?: string;
+  endnoteId?: string;
   /** 带圈字符属性（圈号形状与大小模式）。 */
   enclosed?: EnclosedSpec;
   /** 中文版式属性（纵横混排 / 合并字符 / 双行合一 / 调整宽度）。 */

@@ -59,6 +59,7 @@ export function outlineLevelOf(paragraph: Paragraph, styles: StyleSheet): number
     return undefined;
   }
   const level = paragraph.attrs.outlineLevel;
+  if (level === 10) return undefined;
   if (level != null && level >= 1 && level <= 9) {
     return level;
   }

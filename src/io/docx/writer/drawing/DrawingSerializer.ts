@@ -3,6 +3,7 @@ import type { Drawing } from "../../../../model/inline/Drawing";
 import { drawingOutline, WORD_WRAP_EXTENT } from "../../../../model/graphic/DrawingOutline";
 import { pxToEmu } from "../../../../shared/units";
 import { escapeXml, hexColor } from "../../ooxml/XmlEscape";
+import { pictureFormatXml } from "../../ooxml/PictureFormatXml";
 import type { PartAssets } from "../package/PartAssets";
 import { StorySerializer } from "../story/StorySerializer";
 
@@ -25,7 +26,9 @@ export class DrawingSerializer {
       return undefined;
     }
     const xfrm = this.xfrmAttrs(drawing);
-    const graphic = `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name=""/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm${xfrm}><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>`;
+    const format = pictureFormatXml(drawing.pictureAppearance);
+    const locks = `<a:picLocks noChangeAspect="${drawing.lockAspect ? 1 : 0}"/>`;
+    const graphic = `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name=""/><pic:cNvPicPr>${locks}</pic:cNvPicPr></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relId}">${format.blip}</a:blip>${format.crop}<a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm${xfrm}><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>${format.geometry}${format.properties}</pic:spPr></pic:pic></a:graphicData></a:graphic>`;
     const body =
       drawing.position === "anchor"
         ? this.anchor(drawing, cx, cy, graphic)
@@ -78,7 +81,8 @@ export class DrawingSerializer {
     const fallback = drawing.shape?.text ? `Text Box ${id}` : drawing.shape ? `Shape ${id}` : `Picture ${id}`;
     const name = escapeXml(drawing.name || fallback);
     const hidden = drawing.hidden ? ' hidden="1"' : "";
-    return `<wp:docPr id="${id}" name="${name}"${hidden}/>`;
+    const description = drawing.description ? ` descr="${escapeXml(drawing.description)}"` : "";
+    return `<wp:docPr id="${id}" name="${name}"${hidden}${description}/>`;
   }
 
   private nextId(): number {

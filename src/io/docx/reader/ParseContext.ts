@@ -12,6 +12,7 @@ export class ParseContext {
   numbering = new Numbering();
   units = new OoxmlUnits();
   titleSerial = new Map<string, number>();
+  openCommentIds: string[] = [];
   nextParagraphId = 1;
   storyParser?: StoryParser;
   /** 正文段落套用 docDefaults 和默认段落样式。样式表自身的 pPr 不套。 */

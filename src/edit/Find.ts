@@ -55,15 +55,15 @@ export function collectStories(roots: StorySource[]): StorySource[] {
   return items;
 }
 
-export function findInStories(stories: StorySource[], query: FindQuery): FindHit[] {
+export function findInStories(stories: StorySource[], query: FindQuery, skipDeleted = false): FindHit[] {
   const hits: FindHit[] = [];
   for (const entry of stories) {
-    hits.push(...findInStory(entry.document, entry.story, query));
+    hits.push(...findInStory(entry.document, entry.story, query, skipDeleted));
   }
   return hits;
 }
 
-export function findInStory(document: Document, story: StoryRef, query: FindQuery): FindHit[] {
+export function findInStory(document: Document, story: StoryRef, query: FindQuery, skipDeleted = false): FindHit[] {
   const needle = [...query.text];
   if (!needle.length) {
     return [];
@@ -79,7 +79,8 @@ export function findInStory(document: Document, story: StoryRef, query: FindQuer
   let node = document.words.head;
   while (node) {
     const word = node.data;
-    if (word.kind === "text" && !word.isEnterChar() && word.char) {
+    if (word.kind === "text" && !word.isEnterChar() && word.char &&
+      (!skipDeleted || word.block?.revision?.kind !== "del")) {
       run.push(node);
     } else {
       flush();

@@ -50,13 +50,16 @@ export class ParagraphParser {
 
     for (const source of runNodes) {
       if (source.math) {
-        paragraph.addBlock(mathBlock(source.node));
+        const block = mathBlock(source.node);
+        if (source.commentIds?.length) block.commentIds = source.commentIds;
+        paragraph.addBlock(block);
         continue;
       }
       if (source.enclosed) {
         const block = this.runs.parse(source.node, ctx, paragraph.inheritedRunStyle);
         block.text = source.enclosed.text;
         block.enclosed = source.enclosed.spec;
+        block.revision = source.revision;
         if (source.enclosed.baseStyle) {
           block.style = mergeRunStyle(block.style, source.enclosed.baseStyle);
         }
@@ -70,6 +73,7 @@ export class ParagraphParser {
       if (source.field) {
         block.field = source.field;
         block.fieldInstr = source.instr;
+        block.startsField = source.startsField;
       }
       if (source.link) {
         block.link = source.link;
@@ -82,13 +86,6 @@ export class ParagraphParser {
       }
       if (source.revision) {
         block.revision = source.revision;
-        if (source.revision.kind === "ins") {
-          block.style.color = block.style.color ?? "#2E75B6";
-          block.style.underline = block.style.underline && block.style.underline !== "none" ? block.style.underline : "single";
-        } else {
-          block.style.color = block.style.color ?? "#C00000";
-          block.style.strike = block.style.strike ?? "single";
-        }
       }
       if (source.commentIds?.length) {
         block.commentIds = source.commentIds;
@@ -103,7 +100,7 @@ export class ParagraphParser {
 
   private collectRuns(pNode: Element, ctx: ParseContext): RunSource[] {
     const runs: RunSource[] = [];
-    const openComments: string[] = [];
+    const openComments = ctx.openCommentIds;
     let instruction = "";
     let instrRuns: { node: Element; text: string }[] = [];
     let active: FieldKind | undefined;
@@ -111,7 +108,7 @@ export class ParagraphParser {
     let sawResult = false;
     for (const child of Array.from(pNode.children)) {
       if (matchesName(child, "m:oMath") || matchesName(child, "m:oMathPara")) {
-        runs.push({ node: child, math: true });
+        runs.push({ node: child, math: true, commentIds: openComments.slice() });
         continue;
       }
       if (matchesName(child, "w:commentRangeStart")) {
@@ -130,7 +127,8 @@ export class ParagraphParser {
         continue;
       }
       if (matchesName(child, "w:ins") || matchesName(child, "w:del")) {
-        runs.push(...revisionRuns(child, openComments.slice()));
+        const revision = revisionOf(child);
+        for (const run of this.collectRuns(child, ctx)) runs.push({ ...run, revision: run.revision ?? revision });
         continue;
       }
       if (matchesName(child, "w:r")) {
@@ -173,22 +171,23 @@ export class ParagraphParser {
           instrRuns = [];
           continue;
         }
+        const startsField = inResult && !sawResult;
         if (inResult) {
           sawResult = true;
         }
-        runs.push({ node: child, commentIds: openComments.slice(), ...markedRun(inResult, active, instruction) });
+        runs.push({ node: child, startsField, commentIds: openComments.slice(), ...markedRun(inResult, active, instruction) });
         continue;
       }
       if (matchesName(child, "mc:AlternateContent")) {
         const branch = first(child, "mc:Choice") ?? first(child, "mc:Fallback");
         for (const run of descendants(branch, "w:r")) {
-          runs.push({ node: run });
+          runs.push({ node: run, commentIds: openComments.slice() });
         }
         continue;
       }
       if (matchesName(child, "w:hyperlink")) {
         const link = linkFromElement(child, ctx);
-        runs.push(...this.nestedRuns(child).map((node) => ({ node, link })));
+        runs.push(...this.nestedRuns(child).map((node) => ({ node, link, commentIds: openComments.slice() })));
         continue;
       }
       if (matchesName(child, "w:sdt")) {
@@ -204,8 +203,8 @@ export class ParagraphParser {
           continue;
         }
         const marked = markedRun(true, fieldKind(instr), instr);
-        for (const run of nested) {
-          runs.push({ node: run, ...marked });
+        for (const [index, run] of nested.entries()) {
+          runs.push({ node: run, startsField: index === 0, commentIds: openComments.slice(), ...marked });
         }
       }
     }
@@ -293,6 +292,7 @@ interface RunSource {
   node: Element;
   field?: FieldKind;
   instr?: string;
+  startsField?: boolean;
   link?: TextLink;
   revision?: RevisionMark;
   commentIds?: string[];
@@ -309,21 +309,6 @@ function mathBlock(node: Element): Block {
   drawing.height = 18;
   block.drawing = drawing;
   return block;
-}
-
-function revisionRuns(node: Element, commentIds: string[]): RunSource[] {
-  const revision = revisionOf(node);
-  const found: RunSource[] = [];
-  for (const child of Array.from(node.children)) {
-    if (matchesName(child, "w:r")) {
-      found.push({ node: child, revision, commentIds });
-      continue;
-    }
-    if (matchesName(child, "w:ins") || matchesName(child, "w:del")) {
-      found.push(...revisionRuns(child, commentIds));
-    }
-  }
-  return found;
 }
 
 function revisionOf(node: Element): RevisionMark {

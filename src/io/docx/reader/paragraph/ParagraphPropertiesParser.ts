@@ -185,7 +185,7 @@ function readDirect(pPr: Element | null): { props: ParagraphAttrs; hasInd: boole
   const outline = first(pPr, "w:outlineLvl");
   if (outline) {
     const raw = Number(attr(outline, "w:val"));
-    if (Number.isFinite(raw) && raw >= 0 && raw <= 8) {
+    if (Number.isFinite(raw) && raw >= 0 && raw <= 9) {
       props.outlineLevel = raw + 1;
     }
   }

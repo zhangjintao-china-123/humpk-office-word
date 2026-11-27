@@ -32,6 +32,7 @@ export class TableSnapshot {
         captured.push({
           colSpan: Math.min(cell.colSpan, right - cell.colIndex + 1),
           rowSpan: Math.min(cell.rowSpan, bottom - cell.rowIndex + 1),
+          textDirection: cell.textDirection,
           borders: cloneBorders(cell.borders),
           paragraphs: selected.has(cell) ? contentOf(cell) : [],
         });
@@ -66,6 +67,7 @@ export class TableSnapshot {
         cell.colIndex = colIndex;
         cell.colSpan = item.colSpan;
         cell.rowSpan = item.rowSpan;
+        cell.textDirection = item.textDirection;
         cell.borders = cloneBorders(item.borders);
         row.cells.push(cell);
         colIndex += item.colSpan;

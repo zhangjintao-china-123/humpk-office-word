@@ -12,16 +12,16 @@ describe("批注、修订和脚注", () => {
     const first = document.paragraphs.toArray()[0].blocks;
     expect(first.map((block) => block.text)).toEqual(["前文", "插入", "删除"]);
     expect(first[1].revision).toMatchObject({ kind: "ins", id: "1", author: "张三" });
-    expect(first[1].style.color).toBe("#2E75B6");
-    expect(first[1].style.underline).toBe("single");
+    expect(first[1].style.color).toBeUndefined();
+    expect(first[1].style.underline).toBeUndefined();
     expect(first[2].revision).toMatchObject({ kind: "del", id: "2" });
-    expect(first[2].style.color).toBe("#C00000");
-    expect(first[2].style.strike).toBe("single");
+    expect(first[2].style.color).toBeUndefined();
+    expect(first[2].style.strike).toBeUndefined();
 
     const second = document.paragraphs.toArray()[1].blocks;
     expect(second[0].text).toBe("批注文字");
     expect(second[0].commentIds).toEqual(["0"]);
-    expect(second[0].style.backgroundColor).toBe("#FFF2CC");
+    expect(second[0].style.backgroundColor).toBeUndefined();
     expect(second.find((block) => block.commentRef === "0")?.text).toBe("1");
     expect(second.find((block) => block.footnoteId === "1")?.text).toBe("1");
     expect(document.comments).toEqual([
@@ -50,6 +50,24 @@ describe("批注、修订和脚注", () => {
     expect(xml).toContain("<w:delText");
     expect(xml).toContain("commentRangeStart");
     expect(xml).toContain("footnoteReference");
+  });
+
+  it("跨段批注只写入一对锚点，并保留正文之外的批注换行", async () => {
+    const model = read(`
+      <w:p><w:r><w:t>前</w:t></w:r><w:commentRangeStart w:id="0"/><w:r><w:t>第一段</w:t></w:r></w:p>
+      <w:p><w:hyperlink w:anchor="位置"><w:r><w:t>第二段</w:t></w:r></w:hyperlink><w:commentRangeEnd w:id="0"/>
+      <w:r><w:commentReference w:id="0"/></w:r><w:r><w:t>后</w:t></w:r></w:p>`);
+    model.comments[0].text = "第一行\n\n第二行";
+    const pack = await DocxPackage.open(await new DocxWriter().write(model));
+    const xml = pack.xml("word/document.xml") ?? "";
+    expect(xml.match(/<w:commentRangeStart\b/g)).toHaveLength(1);
+    expect(xml.match(/<w:commentRangeEnd\b/g)).toHaveLength(1);
+    const reopened = new DocxReader().readPackage(pack);
+    expect(reopened.comments[0].text).toBe("第一行\n\n第二行");
+    const annotated = reopened.paragraphs.toArray().flatMap((paragraph) => paragraph.blocks)
+      .filter((item) => item.commentIds?.includes("0"));
+    expect(annotated.map((item) => item.text)).toEqual(["第一段", "第二段"]);
+    expect(annotated[1].link?.anchor).toBe("位置");
   });
 });
 

@@ -16,8 +16,9 @@ export class RunSerializer {
     if (block.drawing) {
       return this.drawings.serialize(block.drawing, assets) ?? "";
     }
-    if (block.footnoteId) {
-      return `<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="${escapeXml(block.footnoteId)}"/></w:r>`;
+    if (block.footnoteId || block.endnoteId) {
+      const kind = block.footnoteId ? "footnote" : "endnote";
+      return `<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:${kind}Reference w:id="${escapeXml((block.footnoteId ?? block.endnoteId)!)}"/></w:r>`;
     }
     if (block.commentRef) {
       return `<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:commentReference w:id="${escapeXml(block.commentRef)}"/></w:r>`;

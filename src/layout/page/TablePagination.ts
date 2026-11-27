@@ -1,5 +1,5 @@
 import type { Table } from "../../model/table/Table";
-import { cellContentOrigin, cellDocumentHeight, cellLineBand, headerRowCount } from "../table/TableMetrics";
+import { cellContentOrigin, cellDocumentHeight, cellInsets, cellLineBand, headerRowCount } from "../table/TableMetrics";
 
 export interface TablePageSlice {
   from: number;
@@ -115,6 +115,18 @@ function collectBands(table: Table, offsets: number[], tableTop: number, visible
       const cellBottom = Math.min(y + height, visible.bottom);
       for (const paragraph of cell.document.paragraphs.toArray()) {
         for (const line of paragraph.lines) {
+          if (cell.textDirection) {
+            const start = y + cellInsets(table, cell).top;
+            let node = line.startNode;
+            for (let i = 0; node && i < line.length; i += 1, node = node.next) {
+              const word = node.data;
+              if (word.isEnterChar()) continue;
+              const top = Math.max(start + word.left, cellTop);
+              const bottom = Math.min(start + word.left + word.kernedWidth, cellBottom);
+              if (bottom > top + EPS) found.push({ top, bottom });
+            }
+            continue;
+          }
           const nested = line.type === "table" ? line.startNode?.data.table : undefined;
           if (nested) {
             collectBands(nested, rowOffsets(nested.rowHeights), origin.y + line.top, { top: cellTop, bottom: cellBottom }, found);

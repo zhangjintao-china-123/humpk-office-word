@@ -6,6 +6,7 @@ import type { Document } from "../model/document/Document";
 import type { Paragraph } from "../model/block/Paragraph";
 import type { Drawing } from "../model/inline/Drawing";
 import type { RunStyle } from "../model/style/RunStyle";
+import type { RevisionMark } from "../model/review/Review";
 import { consumeFlow } from "./FlowEdit";
 import { ClipboardPayload, drawingFromSnapshot, type ClipboardParagraph } from "./ClipboardPayload";
 import { TableSnapshot } from "./TableSnapshot";
@@ -46,16 +47,17 @@ export class InsertCommand implements EditCommand {
       return;
     }
     this.played = true;
-    const consumed = consumeFlow(this.ctx);
+    const deletion = this.ctx.selection.isCollapsed() ? undefined : this.ctx.recordRevision?.("del");
+    const consumed = consumeFlow(this.ctx, deletion);
     if (consumed) {
       this.patches.push(...consumed);
     }
     if (this.payload.blocks?.length) {
-      this.pasteBlocks();
+      this.pasteBlocks(deletion);
       return;
     }
     if (this.payload.table) {
-      this.pasteTable();
+      this.pasteTable(deletion);
       return;
     }
     const ranges = this.targets();
@@ -66,9 +68,10 @@ export class InsertCommand implements EditCommand {
       }
       let pos = range.start;
       if (!range.collapsed()) {
-        const deleted = this.ctx.mutator.deleteRange(document, range.story, range);
+        const deleted = this.ctx.mutator.deleteRange(document, range.story, range, deletion);
         this.patches.push(deleted);
         pos = deleted.caret;
+        refreshNumbering(document, deleted);
         this.ctx.relayout.apply(deleted.impact);
       }
       this.insertPayload(document, range.story, pos);
@@ -89,7 +92,7 @@ export class InsertCommand implements EditCommand {
     }
   }
 
-  private pasteBlocks(): void {
+  private pasteBlocks(deletion?: RevisionMark): void {
     const blocks = this.payload.blocks;
     if (!blocks?.length) {
       return;
@@ -102,9 +105,10 @@ export class InsertCommand implements EditCommand {
     const story = range.story;
     let pos = range.start;
     if (!range.collapsed()) {
-      const deleted = this.ctx.mutator.deleteRange(document, story, range);
+      const deleted = this.ctx.mutator.deleteRange(document, story, range, deletion);
       this.patches.push(deleted);
       pos = deleted.caret;
+      refreshNumbering(document, deleted);
       this.ctx.relayout.apply(deleted.impact);
     }
 
@@ -166,15 +170,16 @@ export class InsertCommand implements EditCommand {
     }
   }
 
-  private pasteTable(): void {
+  private pasteTable(deletion?: RevisionMark): void {
     const dest = this.tableDestination();
     if (!dest || !this.payload.table) {
       return;
     }
     if (!dest.range.collapsed() && dest.range.mode !== "cell") {
-      const deleted = this.ctx.mutator.deleteRange(dest.document, dest.story, dest.range);
+      const deleted = this.ctx.mutator.deleteRange(dest.document, dest.story, dest.range, deletion);
       this.patches.push(deleted);
       dest.pos = deleted.caret;
+      refreshNumbering(dest.document, deleted);
       this.ctx.relayout.apply(deleted.impact);
     }
     const table = new TableSnapshot().materialize(this.payload.table);
@@ -303,7 +308,7 @@ export class InsertCommand implements EditCommand {
     style: RunStyle | undefined,
     enclosed: NonNullable<ClipboardPayload["paragraphs"][number]["runs"][number]["enclosed"]>,
   ): CaretPos {
-    const patch = this.ctx.mutator.insertEnclosed(document, story, pos, text, style, enclosed);
+    const patch = this.ctx.mutator.insertEnclosed(document, story, pos, text, style, enclosed, this.ctx.recordRevision?.("ins", pos));
     if (!patch.inserted.length) {
       return pos;
     }
@@ -322,7 +327,7 @@ export class InsertCommand implements EditCommand {
     style: RunStyle | undefined,
     asianLayout: NonNullable<ClipboardPayload["paragraphs"][number]["runs"][number]["asianLayout"]>,
   ): CaretPos {
-    const patch = this.ctx.mutator.insertAsianLayout(document, story, pos, text, style, asianLayout);
+    const patch = this.ctx.mutator.insertAsianLayout(document, story, pos, text, style, asianLayout, this.ctx.recordRevision?.("ins", pos));
     if (!patch.inserted.length) {
       return pos;
     }
@@ -343,7 +348,8 @@ export class InsertCommand implements EditCommand {
     if (!text) {
       return pos;
     }
-    const patch = this.ctx.mutator.insert(document, story, pos, text, style);
+    const revision = text === "\n" ? undefined : this.ctx.recordRevision?.("ins", pos);
+    const patch = this.ctx.mutator.insert(document, story, pos, text, style, revision ? { revision } : undefined);
     this.patches.push(patch);
     refreshNumbering(document, patch);
     this.ctx.relayout.apply(patch.impact);

@@ -2,6 +2,7 @@ import type { Block } from "../model/block/Block";
 import type { Paragraph } from "../model/block/Paragraph";
 import type { Document } from "../model/document/Document";
 import { normalizeRotation, rotateVector, unrotatePoint } from "../model/graphic/DrawingTransform";
+import { copyPictureAppearance, type PictureAppearance } from "../model/graphic/PictureAppearance";
 import type { Drawing, DrawingAnchor } from "../model/inline/Drawing";
 import { Word } from "../model/inline/Word";
 import { LinkedNode } from "../model/list/LinkedList";
@@ -45,6 +46,10 @@ export interface PictureSnap {
   flipV?: boolean;
   name?: string;
   hidden?: boolean;
+  url?: string;
+  sourceUrl?: string;
+  description?: string;
+  appearance?: PictureAppearance;
 }
 
 export function snapPicture(drawing: Drawing): PictureSnap {
@@ -59,6 +64,10 @@ export function snapPicture(drawing: Drawing): PictureSnap {
     flipV: drawing.flipV,
     name: drawing.name,
     hidden: drawing.hidden,
+    url: drawing.url,
+    sourceUrl: drawing.sourceUrl,
+    description: drawing.description,
+    appearance: copyPictureAppearance(drawing.pictureAppearance),
   };
 }
 
@@ -73,6 +82,10 @@ export function restorePicture(drawing: Drawing, snap: PictureSnap): void {
   drawing.flipV = snap.flipV;
   drawing.name = snap.name;
   drawing.hidden = snap.hidden;
+  drawing.url = snap.url;
+  drawing.sourceUrl = snap.sourceUrl;
+  drawing.description = snap.description;
+  drawing.pictureAppearance = copyPictureAppearance(snap.appearance);
 }
 
 export function pictureWrapOf(drawing: Drawing): PictureWrap {
@@ -419,14 +432,22 @@ export function pictureWrapOffset(
 
 export function samePicture(a: PictureSnap, b: PictureSnap): boolean {
   return (
+    samePictureGeometry(a, b) &&
+    a.lockAspect === b.lockAspect &&
+    (a.name ?? "") === (b.name ?? "") &&
+    a.url === b.url && a.sourceUrl === b.sourceUrl && a.description === b.description &&
+    JSON.stringify(a.appearance) === JSON.stringify(b.appearance)
+  );
+}
+
+function samePictureGeometry(a: PictureSnap, b: PictureSnap): boolean {
+  return (
     Math.abs(a.width - b.width) < 0.5 &&
     Math.abs(a.height - b.height) < 0.5 &&
     a.position === b.position &&
-    a.lockAspect === b.lockAspect &&
     normalizeRotation(a.rotation) === normalizeRotation(b.rotation) &&
     !!a.flipH === !!b.flipH &&
     !!a.flipV === !!b.flipV &&
-    (a.name ?? "") === (b.name ?? "") &&
     !!a.hidden === !!b.hidden &&
     sameAnchor(a.anchorSet, b.anchorSet)
   );
@@ -528,11 +549,15 @@ export class PictureTransformCommand implements EditCommand {
       }
     }
     restorePicture(this.drawing, snap);
+    const impact = new EditImpact(this.story, origin === target ? [target] : [origin, target]);
+    if (!this.drop && samePictureGeometry(this.before, this.after)) {
+      this.ctx.afterEdit(impact);
+      return;
+    }
     const document = this.ctx.documentOf(this.story);
     if (document) {
       this.inlineNode = syncPictureStream(document, target, this.drawing, this.inlineNode) ?? this.inlineNode;
     }
-    const impact = new EditImpact(this.story, origin === target ? [target] : [origin, target]);
     this.drawing.dropPage = page?.index;
     try {
       this.ctx.relayout.apply(impact);

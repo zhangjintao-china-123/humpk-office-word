@@ -27,6 +27,8 @@ export class TableParser {
         ? { ...styleDef?.tableBorders, ...ownBorders }
         : undefined;
     table.width = readLength(first(tblPr, "w:tblW"));
+    const layout = attr(first(tblPr, "w:tblLayout"), "w:type");
+    if (layout === "fixed" || layout === "autofit") table.layout = layout;
     table.align = attr(first(tblPr, "w:jc"), "w:val") || undefined;
     table.indent = readLength(first(tblPr, "w:tblInd"));
     table.cellMargin = readInsets(first(tblPr, "w:tblCellMar")) ?? styleDef?.tableCellMargin;

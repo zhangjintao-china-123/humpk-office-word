@@ -14,6 +14,27 @@ export class PagePainter {
     draw.restore();
   }
 
+  paintGrid(draw: Draw, setup: PageSetup, x: number, y: number): void {
+    const left = x + setup.contentLeft();
+    const right = x + setup.contentRight();
+    const top = y + setup.contentTop();
+    const bottom = y + setup.contentBottom();
+    const step = 20;
+    draw.save();
+    draw.setStroke("#e5eaf0", 0.7);
+    draw.beginPath();
+    for (let column = left; column <= right; column += step) {
+      draw.moveTo(column, top);
+      draw.lineTo(column, bottom);
+    }
+    for (let row = top; row <= bottom; row += step) {
+      draw.moveTo(left, row);
+      draw.lineTo(right, row);
+    }
+    draw.stroke();
+    draw.restore();
+  }
+
   private paintCorners(draw: Draw, setup: PageSetup): void {
     const left = setup.contentLeft();
     const right = setup.contentRight();

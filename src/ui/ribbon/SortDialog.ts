@@ -86,16 +86,17 @@ export class SortDialog {
   open(info: SortTargetInfo, onSubmit: (options: SortOptions) => void): void {
     this.onSubmit = onSubmit;
     this.order = "asc";
-    this.hasHeader = false;
+    this.hasHeader = !!info.headerRows;
     this.kindSelect.value = "text";
     this.root.querySelectorAll<HTMLInputElement>('input[name="ho-word-sort-order"]').forEach((el) => {
       el.checked = el.value === "asc";
     });
     this.root.querySelectorAll<HTMLInputElement>('input[name="ho-word-sort-header"]').forEach((el) => {
-      el.checked = el.value === "no";
+      el.checked = el.value === (this.hasHeader ? "yes" : "no");
+      el.disabled = this.hasHeader;
     });
     if (info.mode === "table") {
-      this.hintEl.textContent = `当前表格共 ${info.count} 行`;
+      this.hintEl.textContent = `当前表格共 ${info.count} 行${info.headerRows ? `，保留前 ${info.headerRows} 行重复标题` : ""}`;
       this.columnSelect.innerHTML = Array.from({ length: info.columnCount }, (_, idx) => {
         return `<option value="${idx}">列 ${idx + 1}</option>`;
       }).join("");

@@ -77,15 +77,18 @@ export class ReplaceCommand implements EditCommand {
       new CaretPos(hit.story, hit.start, false),
       new CaretPos(hit.story, hit.end, true),
     );
-    const deleted = this.ctx.mutator.deleteRange(document, hit.story, range);
-    if (!deleted.removed.length && !deleted.inserted.length) {
+    const deleted = this.ctx.mutator.deleteRange(document, hit.story, range, this.ctx.recordRevision?.("del"));
+    if (!deleted.removed.length && !deleted.inserted.length && !deleted.runChanges?.length) {
       return undefined;
     }
     this.apply(document, deleted);
     if (!this.replacement) {
       return deleted;
     }
-    const inserted = this.ctx.mutator.insert(document, hit.story, deleted.caret, this.replacement, copyStyle(style));
+    const revision = this.ctx.recordRevision?.("ins", deleted.caret);
+    const inserted = this.ctx.mutator.insert(
+      document, hit.story, deleted.caret, this.replacement, copyStyle(style), revision ? { revision } : undefined,
+    );
     this.apply(document, inserted);
     return inserted;
   }

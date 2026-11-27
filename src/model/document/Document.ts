@@ -6,6 +6,7 @@ import { Numbering } from "../style/Numbering";
 import type { DocumentKind, HeaderFooterType } from "./DocumentKind";
 import type { PlacedAnchor } from "../inline/PlacedAnchor";
 import type { DocComment, DocNote } from "../review/Review";
+import type { CitationSource, CitationStyle } from "../reference/Citation";
 import { Section } from "./Section";
 
 export interface DocProps {
@@ -26,12 +27,16 @@ export class Document {
   anchors: PlacedAnchor[] = [];
   adjustLineHeightInTable = false;
   evenAndOddHeaders = false;
+  trackRevisions = false;
   /** settings.xml 的 w:defaultTabStop，单位 twip。缺省按 Word 的 720。 */
   defaultTabStopTwip?: number;
   props: DocProps = {};
   fileName?: string;
   comments: DocComment[] = [];
   footnotes: DocNote[] = [];
+  endnotes: DocNote[] = [];
+  citationStyle: CitationStyle = "APA";
+  citationSources: CitationSource[] = [];
 
   addParagraph(paragraph: Paragraph): void {
     paragraph.node = this.paragraphs.append(paragraph);

@@ -14,6 +14,7 @@ export type InsertObjectAction =
   | { type: "table"; rows: number; cols: number }
   | { type: "pageBreak" }
   | { type: "blankPage" }
+  | { type: "formula"; instruction: string; result: string }
   | { type: "picture"; drawing: Drawing };
 
 /** 在光标处插入表格、分页符、空白页或图片。 */
@@ -83,7 +84,11 @@ export class InsertObjectCommand implements EditCommand {
         ? this.ctx.mutator.insertPageBreak(document, range.story, pos)
         : this.action.type === "picture"
           ? this.ctx.mutator.insertDrawing(document, range.story, pos, this.action.drawing)
-          : this.ctx.mutator.insertTable(document, range.story, pos, blankTable(this.action.rows, this.action.cols));
+          : this.action.type === "formula"
+            ? this.ctx.mutator.insert(document, range.story, pos, this.action.result, this.ctx.pendingRunStyle?.(), {
+              field: "FORMULA", fieldInstr: this.action.instruction,
+            })
+            : this.ctx.mutator.insertTable(document, range.story, pos, blankTable(this.action.rows, this.action.cols));
     if (!patch.inserted.length) {
       return;
     }

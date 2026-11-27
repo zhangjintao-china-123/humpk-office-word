@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { InsertCommand } from "../../src/edit/InsertCommand";
+import { drawingFromSize } from "../../src/edit/PictureFile";
+import { removeSolidBackground } from "../../src/edit/PicturePixels";
 import { DocxReader } from "../../src/io/docx/reader/DocxReader";
 import { Block } from "../../src/model/block/Block";
 import { Paragraph } from "../../src/model/block/Paragraph";
@@ -82,6 +84,7 @@ function mountApp() {
     applyPictureWrap: (w) => workspace.applyPictureWrap(w),
     applyPicturePlace: (place) => workspace.applyPicturePlace(place),
     applyPictureSize: (w, h, l) => workspace.applyPictureSize(w, h, l),
+    applyPictureAppearance: (action) => workspace.applyPictureAppearance(action),
     applyTextBoxFormat: (c) => workspace.applyTextBoxFormat(c),
     applyLayerOrder: (a) => workspace.applyLayerOrder(a),
     applyAlign: (a, r) => workspace.applyAlign(a, r),
@@ -100,9 +103,8 @@ function mountApp() {
     insertPageNumber: () => workspace.insertPageNumber(),
     applyLink: (r) => workspace.applyLink(r),
     clearLink: () => workspace.clearLink(),
-    addComment: (t) => workspace.addComment(t),
+    beginComment: () => workspace.beginComment(),
     addFootnote: (t) => workspace.addFootnote(t),
-    showComment: () => undefined,
     showNote: () => undefined,
     acceptRevision: () => workspace.acceptRevision(),
     rejectRevision: () => workspace.rejectRevision(),
@@ -165,6 +167,68 @@ function mountApp() {
     },
   };
 }
+
+describe("图片工具", () => {
+  it("应用比例裁剪、透明度、图片样式和替代文字，并保留 DOCX 往返", async () => {
+    const app = mountApp();
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
+    const drawing = drawingFromSize(png, 160, 100, 160, 100);
+    app.workspace.insertPicture(drawing);
+    const button = (action: string) => app.ribbonHost.querySelector<HTMLButtonElement>(`[data-picture-format="${action}"]`)!;
+    const open = (action: string) => {
+      button(action).closest(".ho-picture-drop")?.querySelector<HTMLButtonElement>("[data-drop-toggle]")!.click();
+    };
+    try {
+      expect(app.ribbonHost.querySelector("[data-page=picture]")?.hasAttribute("hidden")).toBe(false);
+      expect(button("style:black").querySelector("img")?.getAttribute("src")).toBe(png);
+      button("style:black").click();
+      expect(button("style:black").getAttribute("aria-pressed")).toBe("true");
+
+      open("ratio:1");
+      button("ratio:1").click();
+      expect(drawing.width).toBeCloseTo(100);
+      expect(drawing.height).toBeCloseTo(100);
+      expect(drawing.pictureAppearance?.crop?.left).toBeCloseTo(0.1875);
+      app.workspace.history.undo();
+      expect(drawing.width).toBe(160);
+      expect(drawing.pictureAppearance?.crop).toBeUndefined();
+      app.workspace.history.redo();
+      expect(drawing.width).toBeCloseTo(100);
+
+      open("opacity:30");
+      button("opacity:30").click();
+      expect(drawing.pictureAppearance?.opacity).toBeCloseTo(0.7);
+      open("color:gray");
+      button("color:gray").click();
+      open("description");
+      const text = app.ribbonHost.querySelector<HTMLTextAreaElement>('[data-picture-form="description"] textarea')!;
+      text.value = "测试图片";
+      button("description").click();
+      expect(drawing.description).toBe("测试图片");
+
+      const reopened = await new DocxReader().read(await app.workspace.exportDocx());
+      const restored = reopened.paragraphs.toArray().flatMap((p) => p.blocks).find((block) => block.drawing)?.drawing;
+      expect(restored?.width).toBeCloseTo(100);
+      expect(restored?.description).toBe("测试图片");
+      expect(restored?.pictureAppearance).toMatchObject({
+        crop: { left: 0.1875, right: 0.1875 }, opacity: 0.7, color: "gray", border: { color: "#26394e", width: 2 },
+      });
+    } finally {
+      app.dispose();
+    }
+  });
+
+  it("删除纯色背景时保留被前景围住的同色区域", () => {
+    const width = 5;
+    const data = new Uint8ClampedArray(width * width * 4).fill(255);
+    for (const pixel of [6, 7, 8, 11, 13, 16, 17, 18]) data.fill(0, pixel * 4, pixel * 4 + 3);
+    const image = { width, height: width, data } as ImageData;
+    expect(removeSolidBackground(image)).toBe(true);
+    expect(data[3]).toBe(0);
+    expect(data[6 * 4 + 3]).toBe(255);
+    expect(data[12 * 4 + 3]).toBe(255);
+  });
+});
 
 describe("文本框二期：样式库、更改形状、旋转翻转、层级、对齐分布与选择窗格", () => {
   it("支持更改形状、形状样式库、旋转翻转并保留 DOCX 往返", { timeout: 15000 }, async () => {

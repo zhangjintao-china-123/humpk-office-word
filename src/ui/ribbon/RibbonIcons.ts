@@ -278,6 +278,32 @@ export const RibbonIcons = {
     `<path d="M4.5 3.8h11a1.8 1.8 0 0 1 1.8 1.8v6a1.8 1.8 0 0 1-1.8 1.8H9l-4.15 3.2v-3.2H4.5a1.8 1.8 0 0 1-1.8-1.8v-6a1.8 1.8 0 0 1 1.8-1.8Z" fill="${PAGE_FILL}"/>
      <path d="M6 7.1h8M6 10h5.5" stroke="${ACCENT}" stroke-width="1.4"/>`,
   ),
+  newComment: ribbonIcon(
+    `<path d="M9 4H4a1.5 1.5 0 0 0-1.5 1.5v8A1.5 1.5 0 0 0 4 15h1v3l4-3h6.5a1.5 1.5 0 0 0 1.5-1.5V11" fill="${PAGE_FILL}"/>
+     <path d="M14.5 2v6m-3-3h6" stroke="#278257"/>`,
+  ),
+  deleteComment: ribbonIcon(
+    `<path d="M9 4H4a1.5 1.5 0 0 0-1.5 1.5v8A1.5 1.5 0 0 0 4 15h1v3l4-3h6.5a1.5 1.5 0 0 0 1.5-1.5V11"/>
+     <path d="m12 3 6 6m0-6-6 6" stroke="#b44048"/>`,
+  ),
+  previousReview: ribbonIcon(`<path d="M18 10H4m5-5-5 5 5 5" stroke="${ACCENT}"/>`),
+  nextReview: ribbonIcon(`<path d="M2 10h14m-5-5 5 5-5 5" stroke="${ACCENT}"/>`),
+  acceptReview: ribbonIcon(
+    `<path d="M11 18H5V2.5h6l4 4V10m-4-7.5v4h4M7.5 7h1.5m-1.5 3h4"/>
+      <path d="m10 14 2.5 2.5L18 11" stroke="#278257"/>`,
+  ),
+  trackRevisions: ribbonIcon(
+    `<path d="M11 17.5H4.5V2.5h6L15 7v2m-4.5-6.5V7H15M7 8h2.5M7 11h4" fill="${PAGE_FILL}"/>
+      <path d="m9.5 17.5.8-3.2 5.8-5.8 2.4 2.4-5.8 5.8zM14.7 9.9l2.4 2.4" stroke="${ACCENT}" fill="#fff"/>`,
+  ),
+  rejectReview: ribbonIcon(
+    `<path d="M10 18H5V2.5h6l4 4V9m-4-6.5v4h4M7.5 7h1.5m-1.5 3h3"/>
+      <path d="m12 12 5 5m0-5-5 5" stroke="#b44048"/>`,
+  ),
+  wordCount: ribbonIcon(
+    `<path d="M2.75 4.5h14.5M2.75 8h14.5M2.75 11.5h5.5M2.75 15h3.5"/>
+      <text x="8" y="16" font-family="sans-serif" font-size="6.4" font-weight="650" fill="${ACCENT}" stroke="none">123</text>`,
+  ),
   header: ribbonIcon(
     `<path d="M5.6 2.5h8.8a1.4 1.4 0 0 1 1.4 1.4v3.2H4.2V3.9a1.4 1.4 0 0 1 1.4-1.4Z" fill="${PAGE_FILL}" stroke="none"/>
      ${PAGE_FRAME}

@@ -10,14 +10,15 @@ import { Paragraph } from "../../model/block/Paragraph";
 import { Document } from "../../model/document/Document";
 import type { CoverTemplateId } from "../../model/document/CoverPage";
 import type { HeaderFooterType } from "../../model/document/DocumentKind";
-import { labelPages, type PageLabel } from "../../model/document/PageLabel";
+import { formatPageNumber, labelPages, type PageLabel } from "../../model/document/PageLabel";
 import { Section } from "../../model/document/Section";
 import { WordStreamBuilder } from "../../model/flatten/WordStreamBuilder";
 import type { Drawing } from "../../model/inline/Drawing";
 import type { Table, TableCell } from "../../model/table/Table";
+import { tableFormula, TABLE_DIRECTIONS, TABLE_FUNCTIONS } from "../../model/table/TableFormula";
 import { DEFAULT_FONT_SIZE } from "../../layout/LayoutConstants";
 import { pxToPt, twipToPx } from "../../shared/units";
-import { linkLabel, parseLinkInput } from "../../model/field/TextLink";
+import { fieldArgs, linkLabel, parseLinkInput } from "../../model/field/TextLink";
 import { mergeRunStyle, resolveFontFamily, type RunStyle } from "../../model/style/RunStyle";
 import { Clipboard, imageFileFromData, payloadFromData } from "../../edit/Clipboard";
 import { ClipboardPayload } from "../../edit/ClipboardPayload";
@@ -25,6 +26,11 @@ import { CommentCommand } from "../../edit/CommentCommand";
 import { FootnoteCommand } from "../../edit/FootnoteCommand";
 import { HyperlinkCommand } from "../../edit/HyperlinkCommand";
 import { RevisionCommand } from "../../edit/RevisionCommand";
+import { DeleteCommentCommand } from "../../edit/DeleteCommentCommand";
+import { adjacentComment, adjacentRevision, selectedRevisions, type ReviewDirection } from "../../edit/ReviewNavigation";
+import { nextReviewId, sameRevision, type NoteKind, type RevisionMark } from "../../model/review/Review";
+import { bibliographyText, citationTag, citationText, type CitationDetails, type CitationStyle } from "../../model/reference/Citation";
+import { CAPTION_LABELS, captionKind, referenceTargets, type CaptionKind, type CrossReferenceKind } from "../../model/reference/References";
 import { collectStories, findInStories, indexAtOrAfter, indexBefore, type FindHit, type FindQuery, type FindStatus } from "../../edit/Find";
 import { DeleteCommand, type DeleteDirection } from "../../edit/DeleteCommand";
 import { FormatCommand, gapPreset, indentPreset, spacingPreset, type FormatAction } from "../../edit/FormatCommand";
@@ -49,7 +55,11 @@ import { TextBoxFormatCommand, textBoxFormat } from "../../edit/TextBoxFormatCom
 import type { TextBoxDirection, TextBoxFormat } from "../../model/graphic/Shape";
 import { Rect } from "../../shared/geometry/Rect";
 import { TextBoxDrawController } from "./TextBoxDrawController";
+import { TableDrawController } from "./TableDrawController";
+import { cellVisibleRect } from "../../render/table/TableGeometry";
 import { drawingFromFile } from "../../edit/PictureFile";
+import { canEditPicturePixels, editPicturePixels } from "../../edit/PicturePixels";
+import { applyPictureAppearance, centeredPictureCrop, isPictureCrop, type PictureAppearanceAction } from "../../model/graphic/PictureAppearance";
 import {
   applyDrawingAlign,
   applyLayerOrder,
@@ -106,13 +116,25 @@ import {
   TableMetricCommand,
 } from "../../edit/TableResize";
 import { TableStructureCommand } from "../../edit/TableStructureCommand";
+import { SplitTableCommand } from "../../edit/SplitTableCommand";
+import {
+  applyTableDimensions, canMergeCells, inspectTableLayout, tableAxes, tablePlainText,
+  type TableLayoutAction, type TableTarget,
+} from "../../edit/TableLayout";
 import { TocCommand } from "../../edit/TocCommand";
+import { CitationCommand, InsertReferenceField, InsertReferenceParagraphs, OutlineLevelCommand, referenceBlock, type BookmarkAddition } from "../../edit/ReferenceCommands";
+import { outlineLevelOf } from "../../model/toc/Toc";
 import { TableBorderApplier, type TableBorderMode, type TableBorderPen } from "../../edit/TableBorderApplier";
 import { DocxWriter } from "../../io/docx/writer/DocxWriter";
 import type { RibbonState } from "../ribbon/Ribbon";
 import { Draw } from "../../render/canvas/Draw";
 import { Viewport } from "../../render/canvas/Viewport";
 import { SelectionPane, selectionPaneLabel, type SelectionPaneItem } from "./SelectionPane";
+import { NavigationPane, type NavigationTab, type PagePreview } from "./NavigationPane";
+import { WorkspaceRuler } from "./WorkspaceRuler";
+import { indentMarkers, type IndentMarker } from "../../edit/RulerIndent";
+import { buildFieldView } from "../../model/field/FieldDisplay";
+import { CommentMargin } from "./CommentMargin";
 import { PagePainter } from "../../render/page/PagePainter";
 import { PageSetup } from "../../render/page/PageSetup";
 import { drawingRotationRadians } from "../../model/graphic/DrawingTransform";
@@ -138,7 +160,7 @@ import { History } from "../../edit/History";
 import { InputController } from "../../edit/InputController";
 import { Mutator } from "../../edit/Mutator";
 import { Relayout } from "../../edit/Relayout";
-import type { StoryEditor } from "../../editor/StoryEditor";
+import type { PageRange, StoryEditor } from "../../editor/StoryEditor";
 import { printImages } from "./PrintPages";
 import { MAX_ZOOM, MIN_ZOOM, stepZoom } from "./ZoomLevels";
 import { SIDE_PAD, TOP_PAD, pageOriginX, pageOrigins, visiblePageRange } from "./WorkspaceLayout";
@@ -155,11 +177,25 @@ export class Workspace {
   readonly mutator = new Mutator();
   readonly clipboard = new Clipboard();
   pageCount = 1;
-  /** 用户选过缩放后不再随窗口改回“适合宽度”。 */
-  private zoomPinned = false;
+  private zoomMode: "auto" | "manual" | "width" | "page" = "auto";
 
   private readonly hostEl: HTMLElement;
   private readonly selectionPane: SelectionPane;
+  private readonly navigationPane: NavigationPane;
+  private readonly stageFrame: HTMLElement;
+  private readonly ruler: WorkspaceRuler;
+  private readonly exitFocus: HTMLButtonElement;
+  private focusMode = false;
+  private showRuler = false;
+  private showPageGrid = false;
+  private navigationSearch = false;
+  private navigationScroll?: { page: number; top: number };
+  private lastNavigationY?: number;
+  private readonly commentMargin: CommentMargin;
+  private commentDraft?: Pick<Selection, "ranges" | "primary" | "flow">;
+  private reviewHasRevisions?: boolean;
+  private nextRevisionNumber?: number;
+  private typingRevision?: RevisionMark;
   private readonly root: HTMLElement;
   private readonly sizer: HTMLElement;
   private readonly overlay: Draw;
@@ -174,6 +210,7 @@ export class Workspace {
   private readonly pointer: PointerController;
   private readonly pictureTransform: PictureTransformController;
   private readonly textBoxDraw: TextBoxDrawController;
+  private readonly tableDraw: TableDrawController;
   private readonly tableResize: TableResizeController;
   private pictureFocus: PictureBox | null = null;
   private holdingPicture = false;
@@ -185,7 +222,7 @@ export class Workspace {
   private readonly selectionFragment = new SelectionFragment();
   readonly relayout: Relayout;
   private readonly input: InputController;
-  private readonly uiListeners: Array<() => void> = [];
+  private readonly uiListeners: Array<(revealTableLayout?: boolean) => void> = [];
   private readonly statusListeners = new Set<(change: StatusChange) => void>();
   private findRequest?: (replace: boolean) => void;
   private readonly saveListeners: Array<() => void> = [];
@@ -210,8 +247,12 @@ export class Workspace {
     host.classList.add("ho-word-workspace");
     host.replaceChildren();
 
+    this.stageFrame = document.createElement("div");
+    this.stageFrame.className = "ho-word-stage";
     const stage = document.createElement("div");
-    stage.className = "ho-word-stage";
+    stage.className = "ho-word-page-area";
+    this.ruler = new WorkspaceRuler(stage, (marker, position) => this.applyRulerIndent(marker, position));
+    this.stageFrame.append(stage, this.ruler.el);
 
     const scroll = document.createElement("div");
     scroll.className = "ho-word-scroll";
@@ -220,6 +261,8 @@ export class Workspace {
     this.sizer = document.createElement("div");
     this.sizer.className = "ho-word-sizer";
     scroll.appendChild(this.sizer);
+    this.commentMargin = new CommentMargin(this.hit, () => this.stories(), (id) => this.showComment(id));
+    scroll.appendChild(this.commentMargin.el);
 
     const canvas = document.createElement("canvas");
     canvas.className = "ho-word-canvas";
@@ -236,8 +279,31 @@ export class Workspace {
     textBoxHint.hidden = true;
     textBoxHint.textContent = "拖动绘制文本框，单击或按 Enter 放置，Esc 取消";
     stage.appendChild(textBoxHint);
+    const tableDrawHint = textBoxHint.cloneNode(false) as HTMLElement;
+    stage.appendChild(tableDrawHint);
+    this.exitFocus = document.createElement("button");
+    this.exitFocus.type = "button";
+    this.exitFocus.className = "ho-word-focus-exit";
+    this.exitFocus.textContent = "退出专注";
+    this.exitFocus.title = "退出专注 (Esc)";
+    this.exitFocus.hidden = true;
+    this.exitFocus.addEventListener("click", () => this.setFocusMode(false));
+    stage.append(this.exitFocus);
     this.caret = new CaretView(stage);
 
+    this.navigationPane = new NavigationPane({
+      document: () => this.bodyDocument(),
+      pageCount: () => this.pageCount,
+      search: (text) => this.searchFromNavigation(text),
+      resultLocation: (hit) => this.navigationResultLocation(hit),
+      clearSearch: () => this.clearNavigationSearch(),
+      selectResult: (index) => this.showHit(index),
+      jumpHeading: (paragraph) => this.jumpFromNavigation(paragraph),
+      jumpPage: (page) => this.jumpToPage(page),
+      preview: (pages) => this.paintPagePreviews(pages),
+      resize: () => this.resizeViewport(),
+      close: () => this.setNavigationOpen(false),
+    });
     this.selectionPane = new SelectionPane({
       items: () => this.selectionPaneItems(),
       select: (box) => this.selectFromPane(box),
@@ -247,12 +313,16 @@ export class Workspace {
       close: () => this.setSelectionPaneOpen(false),
     });
 
-    host.appendChild(stage);
+    host.appendChild(this.navigationPane.el);
+    host.appendChild(this.stageFrame);
     host.appendChild(this.selectionPane.el);
 
     this.draw = new Draw(canvas);
     this.overlay = new Draw(overlay);
-    this.stopImages = imageCache.onReady(() => this.paint());
+    this.stopImages = imageCache.onReady(() => {
+      this.navigationPane.invalidatePreviews();
+      this.paint();
+    });
     this.root.addEventListener("scroll", this.onScroll, { passive: true });
     this.root.addEventListener("wheel", this.onWheel, { passive: false });
     window.visualViewport?.addEventListener("resize", this.onVisualViewport);
@@ -273,16 +343,68 @@ export class Workspace {
       },
       place: (direction, bounds) => this.placeTextBox(direction, bounds),
     });
+    this.tableDraw = new TableDrawController(this.root, {
+      toWorld: (x, y) => this.clientToWorld(x, y),
+      zoom: () => this.viewport.zoom || 1,
+      boxAt: (point) => {
+        const ctx = this.hitContext();
+        const pos = this.hit.hit(point.x, point.y, ctx);
+        if (pos?.story.slot !== "cell") return undefined;
+        return this.hit.cellBoxes(pos.story.cell, ctx).find((box) => {
+          const rect = cellVisibleRect(box);
+          return point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height;
+        });
+      },
+      redraw: () => this.paintSelection(),
+      modeChanged: () => {
+        tableDrawHint.hidden = !this.tableDraw.mode;
+        tableDrawHint.textContent = this.tableDraw.mode === "draw-table"
+          ? "在单元格内拖动绘制分隔线，Esc 退出"
+          : "单击相邻单元格之间的分隔线进行合并，Esc 退出";
+        this.paintSelection();
+        for (const handler of this.uiListeners) handler();
+      },
+      split: (cell, draft) => {
+        const host = this.relayout.findCellHost(cell);
+        if (!host) return;
+        const horizontal = draft.rows === 2;
+        const sizes = horizontal ? host.table.rowHeights : host.table.columnWidths;
+        const start = horizontal ? cell.rowIndex : cell.colIndex;
+        const span = horizontal ? cell.rowSpan : cell.colSpan;
+        let offset = draft.position;
+        for (let i = start; i < start + span; i += 1) {
+          const size = sizes[i];
+          if (offset <= size + 0.01) {
+            const fraction = (i - start + Math.min(1, offset / size)) / span;
+            this.selection.collapse(new CaretPos({ slot: "cell", cell }, cell.document.words.head, false));
+            this.history.do(new TableStructureCommand(this, host.table, host.parent, cell, {
+              type: "splitInto", cell, rows: draft.rows, columns: draft.columns, fraction,
+            }));
+            return;
+          }
+          offset -= size;
+        }
+      },
+      erase: (first, second) => {
+        const host = this.relayout.findCellHost(first);
+        const cells = [first, second];
+        if (!host || !tableHasDirectCell(host.table, second) || !canMergeCells(cells)) return;
+        this.selection.collapse(new CaretPos({ slot: "cell", cell: first }, first.document.words.head, false));
+        this.history.do(new TableStructureCommand(this, host.table, host.parent, first, { type: "merge", cells }));
+      },
+    });
     this.pointer = new PointerController({
       selection: this.selection,
       hitClient: (x, y) => this.hitClient(x, y),
       cellsInRect: (from, to) => this.cellsInRect(from, to),
       sameFlow: (from, to) => this.sameFlow(from, to),
       followLink: (pos) => this.followLink(pos),
-      onChange: () => {
+      onChange: (selectedWholeTable) => {
+        this.navigationScroll = undefined;
         this.input.resetColumn();
         this.input.clearPending();
-        this.onSelectionChange();
+        if (document.activeElement?.closest(".ho-word-navigation, .ho-word-rulers")) this.input.focus();
+        this.onSelectionChange(false, selectedWholeTable);
       },
       onPointerUp: () => {
         if (this.formatPainterMode !== "off") {
@@ -361,7 +483,7 @@ export class Workspace {
       applyOutline: (action) => this.applyOutline(action),
       applyLink: (raw) => this.applyLink(raw),
       clearLink: () => this.clearLink(),
-      addComment: (text) => this.addComment(text),
+      beginComment: () => this.beginComment(),
       openFind: (replace) => this.requestFind(replace),
     });
     this.contextMenu.attach(host, this.root);
@@ -376,15 +498,23 @@ export class Workspace {
   load(document: Document): void {
     this.pictureTransform.cancel();
     this.textBoxDraw.cancel();
+    this.tableDraw.cancel();
     this.body?.dispose();
     this.disposeBands();
     this.selection.clear();
+    this.commentDraft = undefined;
+    this.reviewHasRevisions = undefined;
+    this.nextRevisionNumber = undefined;
+    this.typingRevision = undefined;
     this.pictureFocus = null;
     this.formatPainterMode = "off";
     this.formatSample = null;
     this.syncFormatPainterClass();
     this.history.clear();
     this.invalidateFind();
+    this.navigationSearch = false;
+    this.navigationScroll = undefined;
+    this.lastNavigationY = undefined;
     this.applyPageSetup(document);
 
     const shared = { draw: this.draw, viewport: this.viewport, pageSetup: this.pageSetup };
@@ -393,6 +523,7 @@ export class Workspace {
 
     this.body = new BodyEditor(shared);
     this.body.attach().load(document).flush();
+    this.commentMargin.reset(document);
     this.syncShowMarks();
 
     this.refreshPageLabels(this.body.pageCount());
@@ -400,6 +531,8 @@ export class Workspace {
     this.input.clearPending();
     this.placeCaret();
     this.onSelectionChange();
+    this.navigationPane.reset();
+    this.syncNavigation(true);
     this.notifyStatus("content");
   }
 
@@ -414,6 +547,7 @@ export class Workspace {
     }
     this.disposeBands();
     this.mountBands(document);
+    this.commentMargin.invalidate();
     if (this.syncBandExtents()) {
       this.relayout.layoutStory({ slot: "body" });
     } else {
@@ -509,6 +643,7 @@ export class Workspace {
     if (tableTarget && tableTarget.cells[0]) {
       const host = this.relayout.findCellHost(tableTarget.cells[0]);
       if (host) {
+        if (tableTarget.table.rows.some((row) => row.cells.some((cell) => cell.rowSpan > 1))) return;
         this.history.do(
           new SortCommand(this, options, {
             table: tableTarget.table,
@@ -646,6 +781,15 @@ export class Workspace {
   }
 
   private onGlobalKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === "Escape" && this.ruler.cancelDrag()) {
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "Escape" && this.focusMode && !event.defaultPrevented && !document.querySelector("dialog[open]")) {
+      event.preventDefault();
+      this.setFocusMode(false);
+      return;
+    }
     if (event.key === "Escape" && this.formatPainterMode !== "off") {
       event.preventDefault();
       this.cancelFormatPainter();
@@ -806,6 +950,111 @@ export class Workspace {
     this.runTableOp((target) => ({ type: "split", cell: target.cells[0] }));
   }
 
+  applyTableLayout(action: TableLayoutAction): void {
+    if (action.type === "gridlines") {
+      this.draw.showTableGridlines = !this.draw.showTableGridlines;
+      this.onSelectionChange(true);
+      return;
+    }
+    const target = this.selectedTable();
+    const availability = action.type === "direction" && action.vertical ? "direction:vertical" : action.type;
+    if (!target || inspectTableLayout(target, this.draw.showTableGridlines).disabled.includes(availability)) return;
+    if (action.type !== "draw-table" && action.type !== "erase-table") this.tableDraw.cancel();
+    switch (action.type) {
+      case "draw-table":
+      case "erase-table":
+        this.cancelFormatPainter();
+        this.textBoxDraw.cancel();
+        this.tableDraw.toggle(action.type);
+        return;
+      case "insert-above": return this.insertTableRow("above");
+      case "insert-below": return this.insertTableRow("below");
+      case "insert-left": return this.insertTableColumn("left");
+      case "insert-right": return this.insertTableColumn("right");
+      case "delete-table": return this.deleteTable();
+      case "merge": return this.mergeTableCells();
+      case "split-cells": return this.splitTableCell();
+      case "split-selection":
+        if ([action.rows, action.columns].every((count) => Number.isInteger(count) && count >= 1 && count <= 12)
+          && action.rows * action.columns > 1) {
+          return this.runTableOp(({ cells }) => ({ type: "splitInto", cell: cells[0], rows: action.rows, columns: action.columns }));
+        }
+        return;
+      case "delete-row":
+        return this.runTableOp(({ cells }) => ({ type: "deleteRows", indexes: tableAxes(cells).rows }));
+      case "delete-column":
+        return this.runTableOp(({ cells }) => ({ type: "deleteColumns", indexes: tableAxes(cells).columns }));
+      case "select":
+        return this.selectTableScope(target, action.scope);
+      case "formula": {
+        if (!TABLE_FUNCTIONS.includes(action.operation) || !TABLE_DIRECTIONS.includes(action.direction)) return;
+        const cell = target.cells[0];
+        const caret = this.selection.caret();
+        if (caret?.story.slot !== "cell" || caret.story.cell !== cell) return;
+        const formulaNode = [caret.node, caret.node?.pre].find((node) =>
+          node?.data.block?.field === "FORMULA" && !node.data.isEnterChar());
+        if (this.selection.isCollapsed() && formulaNode) {
+          this.selection.setRange(new SelRange(caret.story,
+            new CaretPos(caret.story, formulaNode, false), new CaretPos(caret.story, formulaNode, true)));
+        }
+        const result = tableFormula(target.table, cell, action.operation, action.direction);
+        this.history.do(new InsertObjectCommand(this, { type: "formula", instruction: `=${action.operation}(${action.direction})`, result }));
+        return;
+      }
+    }
+
+    const host = this.relayout.findCellHost(target.cells[0]);
+    if (!host) return;
+    if (action.type === "convert" || action.type === "split-table") {
+      const document = this.documentOf(target.story);
+      const node = this.tableWord(target);
+      if (!document || !node) return;
+      if (action.type === "split-table") {
+        this.history.do(new SplitTableCommand(this, document, target.story, host.paragraph, node, tableAxes(target.cells).rows[0]));
+      } else if (action.type === "convert") {
+        this.selection.setRange(new SelRange(target.story, new CaretPos(target.story, node, false), new CaretPos(target.story, node, true)));
+        this.history.do(new InsertCommand(this, tablePlainText(target.table, action.separator)));
+      }
+      return;
+    }
+    const option = action.type === "align" || action.type === "margins" || action.type === "repeat-header" || action.type === "direction"
+      ? action.type : undefined;
+    const before = snapTableMetrics(target.table, option);
+    const width = this.relayout.constraints(target.story).contentWidth;
+    if (applyTableDimensions(target, action, width)) {
+      const after = snapTableMetrics(target.table, option);
+      this.history.do(new TableMetricCommand(this, target.table, target.story, host.paragraph, before, after));
+    }
+  }
+
+  private tableWord(target: TableTarget) {
+    let node = this.documentOf(target.story)?.words.head;
+    while (node && (node.data.kind !== "table" || node.data.table !== target.table)) node = node.next;
+    return node;
+  }
+
+  private selectTableScope(target: TableTarget, scope: "cell" | "row" | "column" | "table"): void {
+    const { cells, table, story } = target;
+    if (scope === "table") {
+      const node = this.tableWord(target);
+      if (node) this.selection.setFlow(new CaretPos(story, node, false), new CaretPos(story, node, true));
+      else this.selection.useRanges(cellsInReadingOrder(table).map((cell) => this.tableCellRange(cell)));
+    } else {
+      const { rows, columns } = tableAxes(cells);
+      const selected = scope === "cell" ? cells : cellsInReadingOrder(table).filter((cell) => scope === "row"
+        ? rows.some((i) => i >= cell.rowIndex && i < cell.rowIndex + cell.rowSpan)
+        : columns.some((i) => i >= cell.colIndex && i < cell.colIndex + cell.colSpan));
+      this.selection.useRanges(selected.map((cell) => this.tableCellRange(cell)));
+    }
+    this.input.focus();
+    this.onSelectionChange();
+  }
+
+  private tableCellRange(cell: TableCell): SelRange {
+    const { story, start, end } = this.selectionText.cellContentRange(cell);
+    return new SelRange(story, start, end, "cell");
+  }
+
   applyLink(raw: string): void {
     const link = parseLinkInput(raw);
     if (!link || !this.body?.document) {
@@ -824,46 +1073,406 @@ export class Workspace {
     this.history.do(new HyperlinkCommand(this, undefined));
   }
 
-  addComment(text: string): void {
-    if (!this.body?.document || !text.trim()) {
+  beginComment(): void {
+    if (this.commentDraft) {
+      this.commentMargin.focusDraft();
       return;
     }
-    if (this.selection.isEmpty()) {
-      this.placeCaret();
-    }
-    this.history.do(new CommentCommand(this, text));
+    if (!this.body?.document) return;
+    if (this.selection.isEmpty()) this.placeCaret();
+    const anchor = this.selection.caret();
+    if (!anchor || !this.hit.caretBox(anchor, this.hitContext())) return;
+
+    const { ranges, primary, flow } = this.selection;
+    this.commentDraft = { ranges: ranges.slice(), primary, flow };
+    this.commentMargin.setSavedVisible(true);
+    this.commentMargin.openDraft(anchor, (text) => this.submitCommentDraft(text), () => this.closeCommentDraft());
+    this.layout();
+    this.commentMargin.focusDraft();
   }
 
-  addFootnote(text: string): void {
+  private submitCommentDraft(text: string): boolean {
+    const draft = this.commentDraft;
+    const model = this.body?.document;
+    if (!draft || !model) return false;
+    const positions = draft.flow ? [draft.flow.anchor, draft.flow.focus] :
+      draft.ranges.flatMap(({ start, end }) => [start, end]);
+    if (!positions.every((pos) => this.commentPositionExists(pos))) return false;
+
+    const { ranges, primary, flow } = this.selection;
+    Object.assign(this.selection, draft);
+    const command = new CommentCommand(this, text);
+    if (!command.canApply()) {
+      Object.assign(this.selection, { ranges, primary, flow });
+      return false;
+    }
+    const count = model.comments.length;
+    this.history.do(command);
+    if (model.comments.length === count) {
+      Object.assign(this.selection, { ranges, primary, flow });
+      return false;
+    }
+    this.closeCommentDraft();
+    return true;
+  }
+
+  private commentPositionExists({ story, node }: CaretPos): boolean {
+    if (story.slot === "cell" && !this.relayout.findCellHost(story.cell)) return false;
+    const words = this.documentOf(story)?.words;
+    return !!words && (!node || words.head === node || node.pre?.next === node);
+  }
+
+  private closeCommentDraft(): void {
+    this.commentDraft = undefined;
+    if (this.commentMargin.closeDraft()) this.layout(false);
+    this.paint();
+    this.input.focus();
+  }
+
+  addFootnote(text: string, kind: NoteKind = "footnote"): void {
     if (!this.body?.document || !text.trim()) {
       return;
     }
     if (this.selection.isEmpty()) {
       this.placeCaret();
     }
-    this.history.do(new FootnoteCommand(this, text));
+    const pos = this.referenceCaret();
+    if (pos && (pos.story.slot === "body" || (pos.story.slot === "cell" && this.flowOwner(pos)?.story.slot === "body"))) {
+      this.history.do(new FootnoteCommand(this, text, kind));
+    }
+  }
+
+  reviewState() {
+    this.reviewHasRevisions ??= this.searchStories().some(({ document }) =>
+      !!document.paragraphs.each(({ data }) => data.blocks.some((block) => !!block.revision)));
+    return {
+      hasComments: !!this.body?.document?.comments.length,
+      commentsVisible: this.commentMargin.savedVisible,
+      canDeleteComment: !!this.currentCommentId(),
+      hasRevisions: this.reviewHasRevisions,
+      canResolveRevision: this.reviewHasRevisions && selectedRevisions(this).length > 0,
+      trackingRevisions: this.trackingRevisions(),
+    };
+  }
+
+  trackingRevisions(): boolean {
+    return !!this.body?.document?.trackRevisions;
+  }
+
+  toggleTrackRevisions(): void {
+    const document = this.body?.document;
+    if (!document) return;
+    document.trackRevisions = !document.trackRevisions;
+    this.typingRevision = undefined;
+    this.invalidateFind();
+    this.paintSelection();
+    this.notifyStatus("view");
+    this.input.focus();
+    for (const handler of this.uiListeners) handler();
+  }
+
+  recordRevision(kind: RevisionMark["kind"], pos?: CaretPos): RevisionMark | undefined {
+    const document = this.body?.document;
+    if (!document?.trackRevisions) return undefined;
+    if (kind === "ins" && this.typingRevision && pos?.node) {
+      const adjacent = pos.after ? pos.node : pos.node.pre;
+      if (adjacent && adjacent.data.paragraph === pos.node.data.paragraph && !adjacent.data.isEnterChar() &&
+        sameRevision(adjacent.data.block?.revision, this.typingRevision)) return this.typingRevision;
+    }
+    if (this.nextRevisionNumber === undefined) {
+      const ids = new Set<string>();
+      for (const { document: story } of this.searchStories()) {
+        story.paragraphs.each(({ data }) => {
+          for (const block of data.blocks) if (block.revision) ids.add(block.revision.id);
+        });
+      }
+      this.nextRevisionNumber = Number(nextReviewId([...ids]));
+    }
+    const revision = {
+      kind,
+      id: String(this.nextRevisionNumber++),
+      author: document.props.creator || "我",
+      date: new Date().toISOString(),
+    };
+    if (kind === "ins") this.typingRevision = revision;
+    return revision;
+  }
+
+  toggleComments(): void {
+    this.commentMargin.setSavedVisible(!this.commentMargin.savedVisible);
+    this.layout();
+  }
+
+  navigateComment(direction: ReviewDirection): void {
+    const id = adjacentComment(
+      this.stories(), this.selection.caret(), direction, this.commentMargin.savedAnchors(), this.currentCommentId(),
+    );
+    if (!id) return;
+    if (!this.commentMargin.savedVisible) this.toggleComments();
+    this.showComment(id);
+    this.commentMargin.reveal(id);
+  }
+
+  deleteComment(): void {
+    const model = this.body?.document;
+    const id = this.currentCommentId();
+    if (!model || !id) return;
+    this.history.do(new DeleteCommentCommand(this, model, this.searchStories(), id, this.commentMargin.anchorFor(id)));
+  }
+
+  private currentCommentId(): string | undefined {
+    const block = this.selection.caret()?.node?.data.block;
+    const id = this.commentMargin.selectedId ?? block?.commentRef ?? block?.commentIds?.at(-1);
+    return id && this.body?.document?.comments.some((comment) => comment.id === id) ? id : undefined;
+  }
+
+  navigateRevision(direction: ReviewDirection): void {
+    const range = adjacentRevision(this.stories(), this.selection.caret(), direction, !this.selection.isCollapsed());
+    if (range) {
+      this.selection.setRange(range);
+      this.onSelectionChange();
+    }
   }
 
   acceptRevision(): void {
-    if (!this.body?.document || this.selection.isEmpty()) {
-      return;
-    }
-    this.history.do(new RevisionCommand(this, "accept"));
+    this.resolveRevision("accept");
   }
 
   rejectRevision(): void {
-    if (!this.body?.document || this.selection.isEmpty()) {
-      return;
-    }
-    this.history.do(new RevisionCommand(this, "reject"));
+    this.resolveRevision("reject");
+  }
+
+  private resolveRevision(action: "accept" | "reject"): void {
+    const targets = selectedRevisions(this);
+    if (targets.length) this.history.do(new RevisionCommand(this, action, targets));
   }
 
   showComment(id: string): void {
-    this.revealReview((block) => !!block.commentIds?.includes(id) || block.commentRef === id);
+    const anchor = this.commentMargin.anchorFor(id);
+    if (anchor) {
+      this.selection.collapse(anchor);
+      this.onSelectionChange();
+    } else {
+      this.revealReview((block) => !!block.commentIds?.includes(id) || block.commentRef === id);
+    }
+    this.commentMargin.select(id);
   }
 
-  showNote(id: string): void {
-    this.revealReview((block) => block.footnoteId === id);
+  showNote(id: string, kind: NoteKind = "footnote"): void {
+    this.revealReview((block) => (kind === "footnote" ? block.footnoteId : block.endnoteId) === id);
+  }
+
+  referenceState() {
+    const document = this.body?.document;
+    const pos = this.selection.caret();
+    const targets = document ? referenceTargets(document) : [];
+    const paragraph = pos?.node?.data.paragraph;
+    return {
+      hasToc: !!document?.paragraphs.each(({ data }) => data.toc?.role === "start"),
+      hasBibliography: !!document?.paragraphs.each(({ data }) => data.bibliography?.start),
+      outlineLevel: document && paragraph ? outlineLevelOf(paragraph, document.styles) ?? 10 : 10,
+      canOutline: pos?.story.slot === "body" && !!paragraph && !paragraph.isTable && !paragraph.toc && !paragraph.bibliography,
+      canInsertField: !pos || (!!pos.node && pos.node.data.kind !== "table" && !paragraph?.toc && !paragraph?.bibliography),
+      canAddNote: !pos || ((pos.story.slot === "body" || pos.story.slot === "cell") && !paragraph?.toc && !paragraph?.bibliography && !paragraph?.isTable),
+      sources: document?.citationSources ?? [],
+      style: document?.citationStyle ?? "APA" as const,
+      targets: targets.map((item) => ({ id: item.paragraph.id, caption: item.caption, text: item.text })),
+      footnotes: document?.footnotes ?? [],
+      endnotes: document?.endnotes ?? [],
+      captionKind: this.selectedTable() || pos?.node?.data.kind === "table" ? "Table" as const : "Figure" as const,
+    };
+  }
+
+  setTocLevel(level: number): void {
+    const target = this.selectedParagraphTarget();
+    if (target?.story.slot !== "body" || ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].includes(level)) return;
+    const paragraphs = target.paragraphs.filter((paragraph) => !paragraph.toc && !paragraph.bibliography && !paragraph.isTable);
+    if (paragraphs.length) this.history.do(new OutlineLevelCommand(this, paragraphs, level));
+  }
+
+  setCitationStyle(style: CitationStyle): void {
+    const document = this.body?.document;
+    if (!document || style === document.citationStyle) return;
+    this.history.do(new CitationCommand(this, document, this.searchStories(), style, document.citationSources));
+  }
+
+  insertCitation(source: string | CitationDetails): boolean {
+    const document = this.body?.document;
+    const pos = this.referenceCaret();
+    if (!document || !pos) return false;
+    const existing = typeof source === "string" ? document.citationSources.find((item) => item.tag === source) : undefined;
+    const draft = typeof source !== "string" ? source : undefined;
+    if (!existing && !draft?.title.trim()) return false;
+    const tag = existing?.tag ?? this.nextCitationTag(document);
+    const citation = existing ?? { ...draft!, tag, title: draft!.title.trim() };
+    const sources = existing ? document.citationSources : [...document.citationSources, citation];
+    const text = citationText(citation, document.citationStyle, sources);
+    const field = new InsertReferenceField(this, pos, text, "CITATION", 'CITATION "' + tag.replace(/"/g, "") + '" \\l 2052');
+    if (existing) this.history.do(field);
+    else this.history.do(new CitationCommand(this, document, this.searchStories(), document.citationStyle, sources, field));
+    this.input.focus();
+    return true;
+  }
+
+  private nextCitationTag(document: Document): string {
+    const tags = new Set(document.citationSources.map((item) => item.tag));
+    let id = tags.size + 1;
+    while (tags.has("Ref" + id)) id += 1;
+    return "Ref" + id;
+  }
+
+  insertBibliography(): boolean {
+    const document = this.body?.document;
+    if (!document) return false;
+    const cited = new Set<string>();
+    for (const { document: story } of this.searchStories()) {
+      story.paragraphs.each(({ data }) => {
+        for (const block of data.blocks) {
+          const tag = block.field === "CITATION" && block.revision?.kind !== "del" && citationTag(block.fieldInstr ?? "");
+          if (tag) cited.add(tag);
+        }
+      });
+    }
+    const sources = document.citationSources.filter(({ tag }) => cited.has(tag)).sort((a, b) =>
+      a.author.localeCompare(b.author) || a.year.localeCompare(b.year) || a.title.localeCompare(b.title));
+    if (!sources.length) return false;
+    const current = document.paragraphs.toArray();
+    const start = current.findIndex((paragraph) => paragraph.bibliography?.start);
+    const end = start < 0 ? -1 : current.findIndex((paragraph, index) => index >= start && paragraph.bibliography?.end);
+    const replacing = end >= start && start >= 0;
+    const rows = this.referenceParagraphs(document, sources.map((source) => [
+      referenceBlock(bibliographyText(source, document.citationStyle, document.citationSources)),
+    ]));
+    rows.forEach((row, index) => { row.bibliography = { start: index === 0, end: index === rows.length - 1 }; });
+    const title = referenceBlock("参考文献");
+    title.style = { bold: true, fontSizePx: 18 };
+    if (!replacing) {
+      const heading = new Paragraph(rows[rows.length - 1].id + 1);
+      heading.blocks = [title];
+      heading.attrs = { before: "180", after: "100", keepNext: "1" };
+      heading.bibliography = { start: false, end: false };
+      rows.unshift(heading);
+    }
+    this.history.do(new InsertReferenceParagraphs(
+      this, document, replacing ? current[start - 1] ?? null : this.referenceParagraph(),
+      rows, [], replacing ? current.slice(start, end + 1) : [],
+    ));
+    this.input.focus();
+    return true;
+  }
+
+  insertCaption(kind: CaptionKind, text: string): boolean {
+    const document = this.body?.document;
+    if (!document || !text.trim()) return false;
+    const anchor = this.referenceParagraph();
+    let index = 1;
+    document.paragraphs.each(({ data }) => {
+      if (captionKind(data) === kind) index += 1;
+      return data === anchor;
+    });
+    this.addReferenceParagraphs(document, anchor, [[
+      referenceBlock(CAPTION_LABELS[kind] + " "),
+      referenceBlock(String(index), "SEQ", "SEQ " + kind + " \\* ARABIC"),
+      referenceBlock(" " + text.trim()),
+    ]]);
+    return true;
+  }
+
+  insertFigureList(): boolean {
+    const document = this.body?.document;
+    if (!document) return false;
+    const targets = referenceTargets(document).filter(({ caption }) => caption);
+    if (!targets.length) return false;
+    const title = referenceBlock("图表目录");
+    title.style = { bold: true, fontSizePx: 18 };
+    const marks: BookmarkAddition[] = [];
+    const items = targets.map(({ paragraph, text }) => {
+      const target = this.referenceBookmark(paragraph);
+      if (target.add) marks.push(target.add);
+      return [
+        referenceBlock(text, "REF", "REF " + target.name + " \\h"), referenceBlock("\t"),
+        referenceBlock(this.referencePage(paragraph), "PAGEREF", "PAGEREF " + target.name + " \\h"),
+      ];
+    });
+    const paragraphs = this.referenceParagraphs(document, [[title], ...items]);
+    paragraphs[0].attrs = { before: "180", after: "100", keepNext: "1" };
+    for (const item of paragraphs.slice(1)) {
+      item.attrs.tabs = [{ posPx: Math.max(24, this.pageSetup.contentWidth - 4), val: "right", leader: "dot" }];
+    }
+    this.history.do(new InsertReferenceParagraphs(this, document, this.referenceParagraph(), paragraphs, marks));
+    this.input.focus();
+    return true;
+  }
+
+  insertCrossReference(id: number, kind: CrossReferenceKind): boolean {
+    const document = this.body?.document;
+    const pos = this.referenceCaret();
+    const target = document && referenceTargets(document).find(({ paragraph }) => paragraph.id === id);
+    if (!target || !pos || pos.node?.data.paragraph === target.paragraph) return false;
+    const bookmark = this.referenceBookmark(target.paragraph);
+    const field = kind === "page" ? "PAGEREF" : "REF";
+    const text = kind === "page" ? this.referencePage(target.paragraph) : target.text;
+    this.history.do(new InsertReferenceField(this, pos, text, field, field + " " + bookmark.name + " \\h", bookmark.add));
+    this.input.focus();
+    return true;
+  }
+
+  private referenceBookmark(paragraph: Paragraph): { name: string; add?: BookmarkAddition } {
+    const existing = paragraph.bookmarks.find((name) => /^[_\p{L}][\p{L}\p{N}_]*$/u.test(name));
+    if (existing) return { name: existing };
+    const base = "_HoRef" + paragraph.id;
+    let name = base;
+    for (let i = 2; this.findBookmark(name); i += 1) name = base + "_" + i;
+    return { name, add: { paragraph, name } };
+  }
+
+  private referencePage(paragraph: Paragraph): string {
+    const line = paragraph.lines[0];
+    const page = line?.pageIndex ?? Math.floor((line?.top ?? 0) / this.pageSetup.contentHeight);
+    const label = this.labelAt(page);
+    return formatPageNumber(label.pageNumber, label.fmt);
+  }
+
+  private referenceCaret(): CaretPos | undefined {
+    if (this.selection.isEmpty()) this.placeCaret();
+    const pos = this.selection.caret();
+    if (!pos?.node || pos.node.data.kind === "table" || pos.node.data.paragraph?.toc || pos.node.data.paragraph?.bibliography) return undefined;
+    return pos.after && pos.node.data.isEnterChar() ? new CaretPos(pos.story, pos.node) : pos;
+  }
+
+  private referenceParagraph(): Paragraph | null {
+    const table = this.selectedTable();
+    const tableHost = table && this.relayout.findCellHost(table.cells[0]);
+    if (tableHost?.parent.slot === "body") return tableHost.paragraph;
+    const picture = this.selectedPicture();
+    if (picture?.story.slot === "body") return picture.paragraph;
+    const pos = this.selection.caret();
+    const paragraph = pos?.story.slot === "body" ? pos.node?.data.paragraph : undefined;
+    if (paragraph?.toc) {
+      let end = paragraph;
+      while (end.getNextParagraph()?.toc) end = end.getNextParagraph()!;
+      return end;
+    }
+    if (paragraph?.bibliography) {
+      let end = paragraph;
+      while (!end.bibliography?.end && end.getNextParagraph()?.bibliography) end = end.getNextParagraph()!;
+      return end;
+    }
+    return paragraph ?? this.body?.document?.paragraphs.tail?.data ?? null;
+  }
+
+  private addReferenceParagraphs(document: Document, anchor: Paragraph | null, blocks: Block[][], bookmarks: BookmarkAddition[] = []): void {
+    this.history.do(new InsertReferenceParagraphs(this, document, anchor, this.referenceParagraphs(document, blocks), bookmarks));
+    this.input.focus();
+  }
+
+  private referenceParagraphs(document: Document, blocks: Block[][]): Paragraph[] {
+    const id = document.nextParagraphId();
+    return blocks.map((items, index) => {
+      const paragraph = new Paragraph(id + index);
+      paragraph.blocks = items;
+      return paragraph;
+    });
   }
 
   insertToc(): void {
@@ -930,6 +1539,7 @@ export class Workspace {
   drawTextBox(direction: TextBoxDirection): void {
     if (this.body?.document) {
       this.cancelFormatPainter();
+      this.tableDraw.cancel();
       this.textBoxDraw.start(direction);
       this.input.focus();
     }
@@ -1000,6 +1610,50 @@ export class Workspace {
       return;
     }
     this.commitPictureChange(hit, () => applyPictureSize(hit.drawing, widthPx, heightPx, lockAspect));
+  }
+
+  applyPictureAppearance(action: PictureAppearanceAction): void {
+    const hit = this.selectedPicture();
+    if (!hit || hit.drawing.shape || !hit.drawing.url) return;
+    this.commitPictureChange(hit, () => applyPictureAppearance(hit.drawing, action));
+  }
+
+  async replacePictureFile(file: File, target: Drawing | undefined): Promise<boolean> {
+    const hit = this.selectedPicture();
+    if (!hit || hit.drawing !== target || hit.drawing.shape || !hit.drawing.url) return false;
+    const original = hit.drawing.url;
+    try {
+      const image = await drawingFromFile(file, this.pageSetup.contentWidth, this.pageSetup.contentHeight);
+      if (hit.drawing.url !== original || !this.pictureStillThere(hit)) return false;
+      this.commitPictureChange(hit, () => {
+        const { drawing } = hit;
+        const crop = centeredPictureCrop(image.width, image.height, drawing.width / drawing.height);
+        drawing.url = image.url;
+        drawing.sourceUrl = image.sourceUrl;
+        const appearance = { ...drawing.pictureAppearance, crop: isPictureCrop(crop) && Object.values(crop).some(Boolean) ? crop : undefined };
+        drawing.pictureAppearance = Object.values(appearance).some((value) => value !== undefined) ? appearance : undefined;
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async applyPicturePixels(action: "compress" | "remove-background"): Promise<boolean> {
+    const hit = this.selectedPicture();
+    if (!hit || hit.drawing.shape || !canEditPicturePixels(hit.drawing.sourceUrl ?? hit.drawing.url)) return false;
+    const original = hit.drawing.url;
+    try {
+      const url = await editPicturePixels(hit.drawing, action);
+      if (!url || hit.drawing.url !== original || !this.pictureStillThere(hit)) return false;
+      this.commitPictureChange(hit, () => {
+        hit.drawing.url = url;
+        hit.drawing.sourceUrl = url;
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   applyTextBoxFormat(change: TextBoxFormat): void {
@@ -1105,6 +1759,154 @@ export class Workspace {
     this.selectionPane.setOpen(open);
     this.layout();
     this.notifyUi();
+  }
+
+  viewState() {
+    return {
+      navigationOpen: this.navigationPane.isOpen(),
+      focusMode: this.focusMode,
+      ruler: this.showRuler,
+      grid: this.showPageGrid,
+      zoom: this.viewport.zoom || 1,
+      zoomMode: this.zoomMode,
+    };
+  }
+
+  setNavigationOpen(open: boolean, tab?: NavigationTab, focusSearch = false): void {
+    if (open && this.focusMode) this.setFocusMode(false);
+    if (this.navigationPane.isOpen() === open && !tab && !focusSearch) return;
+    const changed = this.navigationPane.isOpen() !== open;
+    this.navigationPane.setOpen(open, tab, focusSearch);
+    if (changed) this.resizeViewport();
+    this.syncNavigation(true);
+    this.notifyUi();
+    if (!open) this.input.focus();
+  }
+
+  toggleNavigationPane(): void {
+    this.setNavigationOpen(!this.navigationPane.isOpen());
+  }
+
+  openNavigationSearch(): void {
+    this.setNavigationOpen(true, "results", true);
+  }
+
+  showNavigationHeadings(): void {
+    this.setNavigationOpen(true, "headings");
+  }
+
+  togglePageGrid(): void {
+    this.showPageGrid = !this.showPageGrid;
+    this.paint();
+    this.notifyUi();
+  }
+
+  toggleRuler(): void {
+    this.showRuler = !this.showRuler;
+    this.syncRulerVisibility();
+    this.resizeViewport();
+    this.notifyUi();
+  }
+
+  private syncRulerVisibility(): void {
+    const visible = this.showRuler && !this.focusMode;
+    this.stageFrame.classList.toggle("has-rulers", visible);
+    this.ruler.setVisible(visible);
+  }
+
+  setFocusMode(active: boolean): void {
+    if (this.focusMode === active) return;
+    this.focusMode = active;
+    this.hostEl.closest(".ho-word-app")?.classList.toggle("is-focus-mode", active);
+    this.hostEl.classList.toggle("is-focused-view", active);
+    this.exitFocus.hidden = !active;
+    this.syncRulerVisibility();
+    this.resizeViewport();
+    this.notifyUi();
+    this.input.focus();
+  }
+
+  resizeViewport(): void {
+    const top = this.viewport.scrollY / (this.viewport.zoom || 1);
+    const target = this.navigationScroll?.top === this.viewport.scrollY ? this.navigationScroll.page : undefined;
+    this.layout(false);
+    if (target) this.positionNavigationPage(target);
+    else this.root.scrollTop = top * (this.viewport.zoom || 1);
+    this.paint();
+  }
+
+  private jumpToPage(page: number): void {
+    this.positionNavigationPage(page);
+    this.paint();
+  }
+
+  private positionNavigationPage(page: number): void {
+    const zoom = this.viewport.zoom || 1;
+    const top = TOP_PAD + (page - 1) * (this.pageSetup.height + this.pageSetup.pageGap);
+    this.root.scrollTop = Math.max(0, top * zoom - Math.max(0, (this.root.clientHeight - this.pageSetup.height * zoom) / 2));
+    this.navigationScroll = { page, top: this.root.scrollTop };
+  }
+
+  private jumpFromNavigation(paragraph: Paragraph): void {
+    this.navigationScroll = undefined;
+    const line = paragraph.lines[0];
+    if (line?.startNode?.data.paragraph === paragraph) {
+      this.selection.collapse(new CaretPos({ slot: "body" }, line.startNode));
+    } else if (!this.jumpToParagraph(paragraph)) return;
+    this.root.scrollTop = Math.max(0, this.headingTop(paragraph) * this.viewport.zoom - 24);
+    this.onSelectionChange();
+  }
+
+  private headingTop(paragraph: Paragraph): number {
+    const line = paragraph.lines[0];
+    if (!line) return Infinity;
+    const pageHeight = this.pageSetup.contentHeight;
+    const page = line.pageIndex ?? Math.floor(line.top / pageHeight);
+    return TOP_PAD + page * (this.pageSetup.height + this.pageSetup.pageGap) +
+      this.pageSetup.contentTop() + line.top - page * pageHeight;
+  }
+
+  private syncNavigation(force = false): void {
+    if (!this.navigationPane.isOpen() || this.focusMode) return;
+    const top = this.viewport.cssToWorld(0, 36).y;
+    const changed = force || top !== this.lastNavigationY;
+    this.lastNavigationY = top;
+    const headings = this.navigationPane.headingList();
+    let low = 0;
+    let high = changed ? headings.length : 0;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (this.headingTop(headings[mid].paragraph) <= top) low = mid + 1;
+      else high = mid;
+    }
+    this.navigationPane.viewportChanged(this.viewportPage(), changed ? headings[low - 1]?.paragraph ?? null : undefined);
+  }
+
+  private searchFromNavigation(text: string): FindHit[] {
+    this.navigationSearch = true;
+    const hits = this.ensureHits({ text, matchCase: false });
+    this.findIndex = -1;
+    this.paintSelection();
+    return hits;
+  }
+
+  private navigationResultLocation(hit: FindHit): string | undefined {
+    const labels = { cell: "表格", textbox: "文本框", header: "页眉", footer: "页脚" } as const;
+    if (hit.story.slot !== "body") return labels[hit.story.slot];
+    const paragraph = hit.start.data.paragraph;
+    for (const line of paragraph?.lines ?? []) {
+      let node = line.startNode;
+      for (let offset = 0; node && offset < line.length; offset += 1, node = node.next) {
+        if (node !== hit.start) continue;
+        const page = (line.pageIndex ?? Math.floor(line.top / this.pageSetup.contentHeight)) + 1;
+        return (paragraph?.toc ? "目录 · " : "") + "第 " + page + " 页";
+      }
+    }
+    return undefined;
+  }
+
+  private clearNavigationSearch(): void {
+    if (this.navigationSearch) this.closeFind();
   }
 
   private distributeCandidates(document: Document, hit: PictureBox) {
@@ -1283,13 +2085,7 @@ export class Workspace {
       currentList: numbering ? currentListPreview(numbering, activeParagraph) : undefined,
       multilevelId: numbering ? activeMultilevelPresetId(numbering, activeParagraph) : undefined,
       link: linkLabel(pos?.node?.data.block?.link),
-      comments: (this.body?.document?.comments ?? []).map((comment) => ({
-        id: comment.id,
-        author: comment.author || "批注",
-        text: comment.text,
-      })),
       notes: (this.body?.document?.footnotes ?? []).map((note) => ({ id: note.id, text: note.text })),
-      revision: pos?.node?.data.block?.revision?.kind,
       canUndo: this.history.canUndo(),
       canRedo: this.history.canRedo(),
       hasDoc: !!this.body?.document,
@@ -1297,8 +2093,13 @@ export class Workspace {
       drawingTextBox: this.textBoxDraw.direction,
       caption,
       inTable: !!selected,
+      tableLayout: selected ? { ...inspectTableLayout(selected, this.draw.showTableGridlines), drawing: this.tableDraw.mode } : undefined,
       inPicture: !!picture,
       pictureIsTextBox: !!shape?.text,
+      pictureImageUrl: picture && !shape ? picture.drawing.url : undefined,
+      pictureAppearance: picture && !shape ? picture.drawing.pictureAppearance : undefined,
+      pictureDescription: picture && !shape ? picture.drawing.description : undefined,
+      pictureCanEditPixels: !!picture && !shape && canEditPicturePixels(picture.drawing.sourceUrl ?? picture.drawing.url),
       textBoxFormat: shape ? textBoxFormat(shape) : undefined,
       pictureWrap: picture ? pictureWrapOf(picture.drawing) : undefined,
       picturePlace: picture ? picturePlaceOf(picture.drawing) : undefined,
@@ -1374,7 +2175,7 @@ export class Workspace {
     }
     const only = target.cells.length === 1 ? target.cells[0] : null;
     return {
-      canMerge: target.cells.length > 1,
+      canMerge: canMergeCells(target.cells),
       canSplit: !!only && (only.rowSpan > 1 || only.colSpan > 1),
       canDeleteRow: target.table.rows.length > 1,
       canDeleteCol: this.tableColumnCount(target.table) > 1,
@@ -1820,7 +2621,7 @@ export class Workspace {
           const unique = [...new Set(cells)];
           if (unique.length) {
             const table = this.hit.findTable(unique[0], this.hitContext());
-            if (table && unique.every((cell) => tableHasDirectCell(table, cell))) {
+            if (table && tableHasDirectCells(table, unique)) {
               const host = this.relayout.findCellHost(unique[0]);
               return { table, cells: unique, story: host?.parent ?? { slot: "body" } };
             }
@@ -1839,7 +2640,7 @@ export class Workspace {
       return null;
     }
     const table = this.hit.findTable(cells[0], this.hitContext());
-    if (!table) {
+    if (!table || !tableHasDirectCells(table, cells)) {
       return null;
     }
     const host = this.relayout.findCellHost(cells[0]);
@@ -1854,7 +2655,7 @@ export class Workspace {
     this.input.setPendingStyle(style);
   }
 
-  onUi(handler: () => void): () => void {
+  onUi(handler: (revealTableLayout?: boolean) => void): () => void {
     this.uiListeners.push(handler);
     return () => {
       const index = this.uiListeners.indexOf(handler);
@@ -1870,6 +2671,10 @@ export class Workspace {
   }
 
   viewportPage(): number {
+    if (this.navigationScroll?.top === this.root.scrollTop && this.navigationScroll.page <= this.pageCount) {
+      return this.navigationScroll.page;
+    }
+    this.navigationScroll = undefined;
     const center = this.viewport.cssToWorld(0, this.draw.cssHeight / 2).y;
     const stride = this.pageSetup.height + this.pageSetup.pageGap;
     const page = Math.floor((center - TOP_PAD + this.pageSetup.pageGap / 2) / stride) + 1;
@@ -1899,10 +2704,20 @@ export class Workspace {
   }
 
   setZoom(zoom: number): void {
-    this.zoomPinned = true;
+    this.zoomMode = "manual";
+    this.changeViewZoom(zoom);
+  }
+
+  fitView(mode: "width" | "page"): void {
+    this.zoomMode = mode;
+    this.changeViewZoom(this.fitZoom() ?? (this.viewport.zoom || 1));
+  }
+
+  private changeViewZoom(zoom: number): void {
     const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom || 1));
     const prev = this.viewport.zoom || 1;
     if (Math.abs(next - prev) < 0.001) {
+      this.notifyUi();
       return;
     }
     const width = this.root.clientWidth;
@@ -1940,14 +2755,17 @@ export class Workspace {
   }
 
   findNext(query: FindQuery): FindStatus {
+    this.navigationSearch = false;
     return this.moveFind(query, 1);
   }
 
   findPrev(query: FindQuery): FindStatus {
+    this.navigationSearch = false;
     return this.moveFind(query, -1);
   }
 
   replaceMatch(query: FindQuery, replacement: string): FindStatus {
+    this.navigationSearch = false;
     const hits = this.ensureHits(query);
     if (!hits.length) {
       this.findIndex = -1;
@@ -1964,6 +2782,7 @@ export class Workspace {
   }
 
   replaceAllMatches(query: FindQuery, replacement: string): FindStatus {
+    this.navigationSearch = false;
     const hits = [...this.ensureHits(query)];
     if (!hits.length) {
       this.findIndex = -1;
@@ -1977,6 +2796,7 @@ export class Workspace {
   }
 
   closeFind(): void {
+    this.navigationSearch = false;
     this.invalidateFind();
     this.paintSelection();
   }
@@ -2029,6 +2849,7 @@ export class Workspace {
     this.beginWorldPaint(draw);
     for (let i = range.start; i < range.end; i += 1) {
       this.painter.paint(draw, pageSetup, origins[i].x, origins[i].y, i);
+      if (this.showPageGrid) this.painter.paintGrid(draw, pageSetup, origins[i].x, origins[i].y);
     }
     this.body?.paintOnPages(origins, this.pageLabels, draw, range);
     for (let i = range.start; i < range.end; i += 1) {
@@ -2039,17 +2860,20 @@ export class Workspace {
       this.footerBands[footer.sectionIndex]?.paintPage(origins[i], footer.type, label);
     }
     draw.restore();
-    this.paintSelection(origins);
+    this.paintSelection(origins, range);
+    this.commentMargin.paint(this.hitContext(origins), range, viewport.zoom || 1, this.root.clientWidth);
+    this.syncNavigation();
     this.notifyStatus("view");
   }
 
-  private paintSelection(origins = this.pageOrigins()): void {
+  private paintSelection(origins = this.pageOrigins(), visiblePages?: PageRange): void {
     this.cancelPictureMoveFrame();
     const draw = this.overlay;
     draw.clear();
     this.beginWorldPaint(draw);
     const ctx = this.hitContext(origins);
-    this.findPainter.paint(draw, this.findHits, ctx);
+    const hit = this.navigationSearch ? this.findHits[this.findIndex] : undefined;
+    this.findPainter.paint(draw, this.navigationSearch ? hit ? [hit] : [] : this.findHits, ctx);
     this.selectionPainter.paint(draw, this.selection, ctx);
     this.selectionPainter.paintTableHandles(draw, ctx);
     const picture = this.pictureMovePreview ?? this.selectedPicture();
@@ -2066,12 +2890,51 @@ export class Workspace {
       draw.setLineDash([4 / zoom, 3 / zoom]);
       draw.strokeRect(preview.x, preview.y, preview.width, preview.height);
     }
+    const tableLine = this.tableDraw.preview;
+    if (tableLine) {
+      const zoom = this.viewport.zoom || 1;
+      draw.setStroke(this.tableDraw.mode === "erase-table" ? "#bd425a" : "#285f9b", 2 / zoom);
+      draw.setLineDash([4 / zoom, 3 / zoom]);
+      draw.beginPath();
+      draw.moveTo(tableLine.from.x, tableLine.from.y);
+      draw.lineTo(tableLine.to.x, tableLine.to.y);
+      draw.stroke();
+    }
     draw.restore();
     if (!picture && !this.textBoxDraw.direction) {
       this.caret.sync(this.selection, ctx, this.viewport);
     } else {
       this.caret.el.hidden = true;
     }
+    if (!this.ruler.el.hidden) {
+      const { zoom, scrollX, scrollY } = this.viewport;
+      const { cssWidth, cssHeight } = this.draw;
+      const range = visiblePages ?? visiblePageRange(this.pageSetup, this.pageCount, scrollY / zoom, (scrollY + cssHeight) / zoom);
+      const paragraph = this.rulerParagraph();
+      this.ruler.sync({
+        width: cssWidth,
+        height: cssHeight,
+        zoom,
+        pageX: (origins[0]?.x ?? 0) * zoom - scrollX,
+        pageTops: origins.slice(range.start, range.end).map((origin) => origin.y * zoom - scrollY),
+        setup: this.pageSetup,
+        paragraph,
+        positions: paragraph && indentMarkers(paragraph, this.pageSetup.contentWidth),
+      });
+    }
+  }
+
+  private rulerParagraph(): Paragraph | undefined {
+    const caret = this.selection.caret();
+    const paragraph = caret?.node?.data.paragraph;
+    return caret?.story.slot === "body" && !this.pictureFocus && paragraph && !paragraph.isTable && !paragraph.toc
+      ? paragraph : undefined;
+  }
+
+  private applyRulerIndent(marker: IndentMarker, position: number): void {
+    if (!this.rulerParagraph()) return;
+    const { contentWidth: width, leftMargin, rightMargin } = this.pageSetup;
+    this.applyFormat({ type: "rulerIndent", marker, position, bounds: { width, leftMargin, rightMargin } });
   }
 
   private beginWorldPaint(draw: Draw): void {
@@ -2194,8 +3057,14 @@ export class Workspace {
   }
 
   afterEdit(impact: EditImpact): void {
+    if (impact.dirty.length || impact.structure !== "none") {
+      this.reviewHasRevisions = impact.dirty.some((paragraph) =>
+        !!paragraph.node && paragraph.blocks.some((block) => !!block.revision)) ? true : undefined;
+    }
+    if (this.commentMargin.afterEdit(impact)) this.layout(false);
     if (impact.dirty.length) {
       this.invalidateFind();
+      this.navigationPane.contentChanged();
       this.body?.emit(EditorEvents.documentChange, impact);
       this.notifyStatus("content");
     }
@@ -2236,12 +3105,15 @@ export class Workspace {
 
   dispose(): void {
     this.cancelScrollPaint();
+    this.navigationPane.dispose();
+    this.hostEl.closest(".ho-word-app")?.classList.remove("is-focus-mode");
     this.root.removeEventListener("scroll", this.onScroll);
     this.root.removeEventListener("wheel", this.onWheel);
     window.visualViewport?.removeEventListener("resize", this.onVisualViewport);
     window.visualViewport?.removeEventListener("scroll", this.onVisualViewport);
     document.removeEventListener("keydown", this.onGlobalKeyDown);
     this.textBoxDraw.detach();
+    this.tableDraw.detach();
     this.pictureTransform.detach();
     this.input.detach();
     this.tableResize.detach();
@@ -2272,6 +3144,7 @@ export class Workspace {
     const draw = new Draw(canvas);
     draw.resize(width, height, 2);
     const origins = this.pageOrigins();
+    const fields = this.snapshotFields();
     const images: string[] = [];
     for (let i = 0; i < origins.length; i += 1) {
       draw.clear();
@@ -2279,19 +3152,50 @@ export class Workspace {
       draw.fillRect(0, 0, width, height);
       draw.save();
       draw.translate(-origins[i].x, -origins[i].y);
-      draw.beginPath();
-      draw.rect(origins[i].x, origins[i].y, this.pageSetup.width, this.pageSetup.height);
-      draw.clip();
-      this.body?.paintOnPages(origins, this.pageLabels, draw, { start: i, end: i + 1 });
-      const label = this.labelAt(i);
-      const header = this.bandAt("header", i);
-      const footer = this.bandAt("footer", i);
-      this.headerBands[header.sectionIndex]?.paintPage(origins[i], header.type, label, draw);
-      this.footerBands[footer.sectionIndex]?.paintPage(origins[i], footer.type, label, draw);
+      this.drawPageSnapshot(draw, origins, i, fields);
       draw.restore();
       images.push(canvas.toDataURL("image/png"));
     }
     return images;
+  }
+
+  private paintPagePreviews(previews: PagePreview[]): void {
+    const origins = this.pageOrigins();
+    const fields = this.snapshotFields();
+    const scale = Math.min(86 / this.pageSetup.width, 100 / this.pageSetup.height);
+    for (const { page, canvas } of previews) {
+      const index = page - 1;
+      const origin = origins[index];
+      if (!origin) continue;
+      const draw = new Draw(canvas);
+      draw.resize(this.pageSetup.width * scale, this.pageSetup.height * scale);
+      draw.setFill("#fff");
+      draw.fillRect(0, 0, draw.cssWidth, draw.cssHeight);
+      draw.save();
+      draw.scale(scale);
+      draw.translate(-origin.x, -origin.y);
+      this.drawPageSnapshot(draw, origins, index, fields);
+      draw.restore();
+    }
+  }
+
+  private snapshotFields(): Map<Block, string> | undefined {
+    const body = this.body;
+    if (!body?.document) return undefined;
+    return buildFieldView(body.document, body.lines, this.pageLabels, this.pageSetup.contentHeight).text;
+  }
+
+  private drawPageSnapshot(draw: Draw, origins: ReturnType<Workspace["pageOrigins"]>, page: number, fields?: Map<Block, string>): void {
+    const origin = origins[page];
+    draw.beginPath();
+    draw.rect(origin.x, origin.y, this.pageSetup.width, this.pageSetup.height);
+    draw.clip();
+    this.body?.paintOnPages(origins, this.pageLabels, draw, { start: page, end: page + 1 }, fields);
+    const label = this.labelAt(page);
+    const header = this.bandAt("header", page);
+    const footer = this.bandAt("footer", page);
+    this.headerBands[header.sectionIndex]?.paintPage(origin, header.type, label, draw);
+    this.footerBands[footer.sectionIndex]?.paintPage(origin, footer.type, label, draw);
   }
 
   private moveFind(query: FindQuery, direction: -1 | 1): FindStatus {
@@ -2330,7 +3234,7 @@ export class Workspace {
     const key = `${query.matchCase ? "1" : "0"}\n${query.text}`;
     if (key !== this.findQueryKey) {
       this.findQueryKey = key;
-      this.findHits = query.text ? findInStories(this.searchStories(), query) : [];
+      this.findHits = query.text ? findInStories(this.searchStories(), query, this.trackingRevisions()) : [];
       this.findIndex = -1;
     }
     return this.findHits;
@@ -2341,6 +3245,7 @@ export class Workspace {
     if (!hit) {
       return;
     }
+    this.navigationScroll = undefined;
     this.findIndex = index;
     const start = new CaretPos(hit.story, hit.start, false);
     const end = new CaretPos(hit.story, hit.end, true);
@@ -2366,7 +3271,13 @@ export class Workspace {
     if (this.formatPainterMode !== "off") {
       return false;
     }
-    const link = pos.node?.data.block?.link;
+    const block = pos.node?.data.block;
+    if ((block?.field === "REF" || block?.field === "PAGEREF") && block.fieldInstr) {
+      const field = fieldArgs(block.fieldInstr);
+      const paragraph = field.switches.has("h") ? this.findBookmark(field.args[0] ?? "") : undefined;
+      if (paragraph && this.jumpToParagraph(paragraph)) return true;
+    }
+    const link = block?.link;
     if (link?.url) {
       if (!/^javascript:/i.test(link.url)) {
         window.open(link.url, "_blank", "noopener,noreferrer");
@@ -2402,18 +3313,14 @@ export class Workspace {
   }
 
   private revealReview(match: (block: Block) => boolean): void {
-    const document = this.body?.document;
-    if (!document) {
-      return;
-    }
-    let node = document.words.head;
-    while (node) {
-      if (node.data.block && match(node.data.block)) {
-        this.selection.collapse(new CaretPos({ slot: "body" }, node, false));
-        this.onSelectionChange();
-        return;
+    for (const { document, story } of this.searchStories()) {
+      for (let node = document.words.head; node; node = node.next) {
+        if (!node.data.isEnterChar() && node.data.block && match(node.data.block)) {
+          this.selection.collapse(new CaretPos(story, node, false));
+          this.onSelectionChange();
+          return;
+        }
       }
-      node = node.next;
     }
   }
 
@@ -2493,7 +3400,7 @@ export class Workspace {
     }
   }
 
-  onSelectionChange(repaintDocument = false): void {
+  onSelectionChange(repaintDocument = false, revealTableLayout = false): void {
     if (!this.holdingPicture) {
       const focus = this.pictureFocus;
       const keepTextBox =
@@ -2501,6 +3408,8 @@ export class Workspace {
       this.pictureFocus = this.pictureFromRange() ?? (keepTextBox ? focus : null);
     }
     this.body?.emit(EditorEvents.selectionChange, this.selection);
+    const block = this.selection.caret()?.node?.data.block;
+    this.commentMargin.select(block?.commentRef ?? block?.commentIds?.at(-1));
     const scrollChanged = this.syncScroll();
     const caretScrolled = this.ensureCaretVisible();
     if (repaintDocument || scrollChanged || caretScrolled || this.scrollFrame !== null) {
@@ -2512,17 +3421,21 @@ export class Workspace {
     const active = document.activeElement;
     if (
       !(active instanceof HTMLElement) ||
-      (!active.closest(".ho-word-findbar") && !active.closest(".ho-word-selection-pane"))
+      !active.closest(".ho-word-findbar, .ho-word-navigation, .ho-word-rulers, .ho-word-selection-pane, [data-comment-form]")
     ) {
       this.input.focus();
     }
     this.selectionPane.sync();
+    const selected = this.selection.caret();
+    if (selected?.story.slot === "body") this.navigationPane.selectionChanged(selected.node?.data.paragraph ?? undefined);
     for (const handler of this.uiListeners) {
-      handler();
+      handler(revealTableLayout);
     }
   }
 
   private readonly onVisualViewport = (): void => {
+    if (document.activeElement?.closest(".ho-word-navigation, .ho-word-rulers, [data-comment-form]") ||
+      this.navigationScroll?.top === this.root.scrollTop) return;
     if (this.ensureCaretVisible()) {
       this.paint();
     }
@@ -2692,7 +3605,7 @@ export class Workspace {
 
   private layout(repaint = true): void {
     const before = this.viewport.zoom || 1;
-    if (!this.zoomPinned) {
+    if (this.zoomMode !== "manual") {
       const fit = this.fitZoom();
       if (fit != null) {
         this.viewport.zoom = fit;
@@ -2719,13 +3632,19 @@ export class Workspace {
     }
   }
 
-  /** 纸张放不进窗口时缩小到刚好放下；放得下就回到 100%。宽度还没量到时不改。 */
+  /** 默认适应窄窗口，显式适应页宽或单页时也允许放大。 */
   private fitZoom(): number | null {
     const width = this.root.clientWidth;
     if (width < 64) {
       return null;
     }
-    const room = width - 20;
+    const room = width - 20 - this.commentMargin.gutterWidth(width);
+    if (this.zoomMode === "page" || this.zoomMode === "width") {
+      const widthFit = room / this.pageSetup.width;
+      const heightFit = (this.root.clientHeight - TOP_PAD * 2) / this.pageSetup.height;
+      const fit = this.zoomMode === "page" ? Math.min(widthFit, heightFit) : widthFit;
+      return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, fit));
+    }
     if (room >= this.pageSetup.width) {
       return 1;
     }
@@ -2734,7 +3653,8 @@ export class Workspace {
 
   private sidePad(): number {
     const zoom = this.viewport.zoom || 1;
-    const world = this.root.clientWidth / zoom;
+    const width = this.root.clientWidth;
+    const world = (width - this.commentMargin.gutterWidth(width)) / zoom;
     if (world >= this.pageSetup.width + SIDE_PAD * 2) {
       return SIDE_PAD;
     }
@@ -2768,11 +3688,14 @@ export class Workspace {
 
   private pageOriginX(): number {
     const zoom = this.viewport.zoom || 1;
-    return pageOriginX(this.root.clientWidth / zoom, this.pageSetup.width, this.sidePad());
+    const width = this.root.clientWidth;
+    const remaining = width - this.commentMargin.gutterWidth(width);
+    return pageOriginX(remaining / zoom, this.pageSetup.width, this.sidePad());
   }
 
   private contentWidth(): number {
-    return this.pageOriginX() + this.pageSetup.width + this.sidePad();
+    const gutter = this.commentMargin.gutterWidth(this.root.clientWidth) / (this.viewport.zoom || 1);
+    return this.pageOriginX() + this.pageSetup.width + gutter + this.sidePad();
   }
 
   private contentHeight(): number {
@@ -2790,6 +3713,12 @@ function listLevelOf(paragraph: { isTable?: boolean; attrs: { numId?: string; il
 
 function tableHasDirectCell(table: Table, target: TableCell): boolean {
   return table.rows.some((row) => row.cells.includes(target));
+}
+
+function tableHasDirectCells(table: Table, cells: TableCell[]): boolean {
+  if (cells.length <= 1) return true;
+  const direct = new Set(cellsInReadingOrder(table));
+  return cells.every((cell) => direct.has(cell));
 }
 
 function tableContainsTable(outer: Table, target: Table): boolean {

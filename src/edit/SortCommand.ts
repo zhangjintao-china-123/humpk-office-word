@@ -8,6 +8,7 @@ import type { EditCommand } from "./EditCommand";
 import type { EditContext } from "./EditContext";
 import { EditImpact } from "./EditImpact";
 import { renumberStory } from "./OutlineNumbering";
+import { headerRowCount } from "../layout/table/TableMetrics";
 
 export type SortOrder = "asc" | "desc";
 export type SortKind = "text" | "number" | "date";
@@ -24,6 +25,7 @@ export interface SortTargetInfo {
   count: number;
   columnCount: number;
   activeColumn: number;
+  headerRows?: number;
 }
 
 const zhCollator = new Intl.Collator("zh-CN-u-co-pinyin", { numeric: true, sensitivity: "base" });
@@ -33,8 +35,9 @@ export function inspectSortTarget(ctx: EditContext, tableTarget?: { table: Table
     return {
       mode: "table",
       count: tableTarget.table.rows.length,
-      columnCount: Math.max(1, tableTarget.table.columns.length || tableTarget.table.rows[0]?.cells.length || 1),
+      columnCount: Math.max(1, tableTarget.table.columnWidths.length || tableTarget.table.columns.length),
       activeColumn: tableTarget.colIndex,
+      headerRows: headerRowCount(tableTarget.table),
     };
   }
   const range = ctx.selection.primaryRange()?.normalized();
@@ -81,15 +84,16 @@ export class SortCommand implements EditCommand {
 
     if (this.tableArg) {
       const { table, story, paragraph, colIndex } = this.tableArg;
-      if (table.rows.length < 2) {
+      if (table.rows.length < 2 || table.rows.some((row) => row.cells.some((cell) => cell.rowSpan > 1))) {
         return;
       }
       this.tableHost = { table, story, paragraph };
       this.beforeRows = table.rows.slice();
-      const headCount = this.options.hasHeader ? 1 : 0;
+      const headCount = Math.max(headerRowCount(table), Number(!!this.options.hasHeader));
       const head = table.rows.slice(0, headCount);
       const body = table.rows.slice(headCount);
-      const col = Math.max(0, Math.min(this.options.columnIndex ?? colIndex, (table.rows[0]?.cells.length ?? 1) - 1));
+      const columnCount = table.columnWidths.length || table.columns.length;
+      const col = Math.max(0, Math.min(this.options.columnIndex ?? colIndex, columnCount - 1));
       const sortedBody = [...body].sort((a, b) =>
         compareSortValues(rowCellText(a, col), rowCellText(b, col), this.options.kind, this.options.order),
       );
@@ -156,10 +160,6 @@ export class SortCommand implements EditCommand {
         cell.rowIndex = rIdx;
       });
     });
-    const doc = this.ctx.documentOf(story);
-    if (doc) {
-      new WordStreamBuilder().build(doc);
-    }
     paragraph.changed = true;
     const impact = new EditImpact(story, [paragraph], "split");
     this.ctx.relayout.apply(impact);
@@ -253,7 +253,7 @@ function extractDateMs(raw: string): number | null {
 }
 
 function rowCellText(row: TableRow, colIndex: number): string {
-  const cell = row.cells[colIndex];
+  const cell = row.cells.find((item) => item.colIndex <= colIndex && colIndex < item.colIndex + item.colSpan);
   if (!cell) {
     return "";
   }

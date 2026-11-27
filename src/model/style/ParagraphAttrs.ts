@@ -61,7 +61,7 @@ export interface ParagraphAttrs {
   resolvedStyleId?: string;
   numId?: string;
   ilvl?: string;
-  /** 大纲级别 1–9。对应 w:outlineLvl 的 0–8。 */
+  /** 大纲级别 1–9，10 表示正文级。对应 w:outlineLvl 的 0–9。 */
   outlineLevel?: number;
   titleSerial?: TitleSerial;
   tabs?: TabStop[];

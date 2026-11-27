@@ -5,6 +5,7 @@ import { parseNumber, ptToPx } from "../../../../shared/units";
 import { attr, children, first, descendants, matchesName, textOf } from "../../ooxml/XmlQuery";
 import type { ParseContext } from "../ParseContext";
 import { resolveImage } from "./RasterImage";
+import { readPictureFormat } from "../../ooxml/PictureFormatXml";
 
 function readBoolean(value: string | undefined): boolean | undefined {
   return value === undefined ? undefined : value === "1" || value === "true";
@@ -67,6 +68,7 @@ export class DrawingParser {
     drawing.height = ctx.units.emuToPx(attr(extent, "cy")) ?? 0;
     const docPr = first(node, "wp:docPr");
     const docName = attr(docPr, "name");
+    drawing.description = attr(docPr, "descr") || undefined;
     if (docName) {
       drawing.name = docName;
     }
@@ -79,6 +81,12 @@ export class DrawingParser {
     this.attachRel(drawing, attr(blip, "r:embed") ?? attr(blip, "r:link"), ctx, "primary");
     const svg = blip ? descendants(blip, "asvg:svgBlip")[0] : undefined;
     this.attachRel(drawing, attr(svg ?? null, "r:embed"), ctx, "display");
+    const picture = descendants(node, "pic:pic")[0];
+    if (picture && (drawing.url || drawing.sourceUrl)) {
+      drawing.pictureAppearance = readPictureFormat(picture);
+      const locks = first(first(first(picture, "pic:nvPicPr"), "pic:cNvPicPr"), "a:picLocks");
+      drawing.lockAspect = readBoolean(attr(locks, "noChangeAspect")) ?? drawing.lockAspect;
+    }
     const wsp = !drawing.url && !drawing.sourceUrl ? descendants(node, "wps:wsp")[0] : undefined;
     if (!drawing.url && !drawing.sourceUrl) {
       if (!wsp) {

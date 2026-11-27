@@ -16,6 +16,7 @@ import type { EditCommand } from "./EditCommand";
 import type { EditContext } from "./EditContext";
 import { EditImpact } from "./EditImpact";
 import { renumberStory } from "./OutlineNumbering";
+import { rulerIndentPatch, type IndentBounds, type IndentMarker } from "./RulerIndent";
 
 export type FormatAction =
   | { type: "bold" }
@@ -33,6 +34,7 @@ export type FormatAction =
   | { type: "style"; value: GalleryStyleKey }
   | { type: "indent"; value: "none" | "first2" | "hang2" | "left2" | "right2" }
   | { type: "indentStep"; value: 1 | -1 }
+  | { type: "rulerIndent"; marker: IndentMarker; position: number; bounds: IndentBounds }
   | { type: "lineSpacing"; value: "1" | "1.5" | "2" | "exact28" }
   | { type: "paraGap"; value: "0" | "before6" | "after6" | "both6" }
   | { type: "clear" };
@@ -77,10 +79,12 @@ export class FormatCommand implements EditCommand {
       this.action.type === "align" ||
       this.action.type === "indent" ||
       this.action.type === "indentStep" ||
+      this.action.type === "rulerIndent" ||
       this.action.type === "lineSpacing" ||
       this.action.type === "paraGap";
     if (paragraphAction) {
       for (const range of ranges) {
+        if (this.action.type === "rulerIndent" && range.story.slot !== "body") continue;
         this.applyParagraphFormat(range);
       }
       return;
@@ -138,14 +142,14 @@ export class FormatCommand implements EditCommand {
     }
     this.story = range.story;
     const action = this.action;
-    const patch =
-      action.type === "align"
-        ? { textAlign: action.value }
-        : action.type === "indentStep"
-          ? (attrs: ParagraphAttrs) => indentStepPatch(attrs, action.value)
-          : action.type === "indent" || action.type === "lineSpacing" || action.type === "paraGap"
-            ? paragraphPatch(action)
-            : {};
+    let patch: Partial<ParagraphAttrs> | ((attrs: ParagraphAttrs, paragraph: Paragraph) => Partial<ParagraphAttrs>) = {};
+    if (action.type === "align") patch = { textAlign: action.value };
+    else if (action.type === "indentStep") patch = (attrs) => indentStepPatch(attrs, action.value);
+    else if (action.type === "rulerIndent") {
+      patch = (_attrs, paragraph) => rulerIndentPatch(paragraph, action.marker, action.position, action.bounds);
+    } else if (action.type === "indent" || action.type === "lineSpacing" || action.type === "paraGap") {
+      patch = paragraphPatch(action);
+    }
     const before = this.ctx.mutator.applyParagraphAttrs(document, range, patch);
     for (const item of before) {
       const inherited = item.paragraph.inheritedRunStyle;

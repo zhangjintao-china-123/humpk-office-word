@@ -15,6 +15,7 @@ export interface DocNote {
   id: string;
   text: string;
 }
+export type NoteKind = "footnote" | "endnote";
 
 /** 插入或删除修订。 */
 export interface RevisionMark {
@@ -48,20 +49,28 @@ export function nextReviewId(ids: string[]): string {
 /** 给脚注和批注引用填上可见序号，并标成上标。 */
 export function numberNotes(document: Document): void {
   const notes = new Map(document.footnotes.map((note, index) => [note.id, String(index + 1)]));
+  const endnotes = new Map(document.endnotes.map((note, index) => [note.id, String(index + 1)]));
   const comments = new Map(document.comments.map((comment, index) => [comment.id, String(index + 1)]));
-  eachBlock(document, (block) => {
+  const numberBlock = (block: Block): void => {
     if (block.footnoteId) {
       block.text = notes.get(block.footnoteId) ?? block.footnoteId;
+      block.style = { ...block.style, color: block.style.color ?? "#1F4E79", fontSizePx: block.style.fontSizePx ?? 11 };
+    }
+    if (block.endnoteId) {
+      block.text = endnotes.get(block.endnoteId) ?? block.endnoteId;
       block.style = { ...block.style, color: block.style.color ?? "#1F4E79", fontSizePx: block.style.fontSizePx ?? 11 };
     }
     if (block.commentRef) {
       block.text = comments.get(block.commentRef) ?? block.commentRef;
       block.style = { ...block.style, color: block.style.color ?? "#C45911", fontSizePx: block.style.fontSizePx ?? 11 };
     }
-    if (block.commentIds?.length && !block.style.backgroundColor) {
-      block.style = { ...block.style, backgroundColor: "#FFF2CC" };
-    }
-  });
+    const textbox = block.drawing?.shape?.text;
+    if (textbox) eachBlock(textbox, numberBlock);
+  };
+  eachBlock(document, numberBlock);
+  for (const section of document.sections) {
+    for (const part of [...section.headers.values(), ...section.footers.values()]) eachBlock(part, numberBlock);
+  }
 }
 
 export function eachBlock(document: Document, visit: (block: Block) => void): void {

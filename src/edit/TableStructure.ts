@@ -188,6 +188,72 @@ export class TableStructure {
     }
     return true;
   }
+
+  splitInto(table: Table, target: TableCell, rowParts: number, colParts: number, fraction?: number): void {
+    const originalRows = table.rows.slice();
+    const originalCells = originalRows.flatMap((row) => row.cells);
+    const originalWidths = table.columnWidths.slice();
+    const originalRules = originalRows.map((row) => row.heightRule);
+    const rowGrid = subdividedGrid(originalRows.length, target.rowIndex, target.rowSpan, rowParts, fraction);
+    const colGrid = subdividedGrid(originalWidths.length, target.colIndex, target.colSpan, colParts, fraction);
+    const originalHeights = originalRows.map((row) => row.height);
+
+    table.rows = rowGrid.edges.slice(0, -1).map((position, index) => {
+      const source = originalRows[Math.floor(position)];
+      const row = Number.isInteger(position) ? source : Object.assign(new TableRow(), source);
+      row.cells = [];
+      const i = Math.floor(position);
+      const share = rowGrid.edges[index + 1] - position;
+      if (fraction !== undefined && share < 1) {
+        row.height = (table.rowHeights[i] ?? originalHeights[i]) * share;
+        row.heightRule = originalRules[i] === "exact" ? "exact" : "atLeast";
+      } else {
+        row.height = originalHeights[i] * share;
+        row.heightRule = originalRules[i];
+      }
+      return row;
+    });
+    const widths = colGrid.edges.slice(0, -1).map((position, index) => originalWidths[Math.floor(position)] * (colGrid.edges[index + 1] - position));
+    if (widths.length !== originalWidths.length) {
+      table.columns = widths.map((width) => Object.assign(new TableColumn(), { width }));
+    }
+
+    for (const cell of originalCells) {
+      if (cell === target) continue;
+      const row = rowGrid.originalIndexes[cell.rowIndex];
+      const col = colGrid.originalIndexes[cell.colIndex];
+      cell.rowSpan = rowGrid.originalIndexes[cell.rowIndex + cell.rowSpan] - row;
+      cell.colSpan = colGrid.originalIndexes[cell.colIndex + cell.colSpan] - col;
+      cell.rowIndex = row;
+      cell.colIndex = col;
+      table.rows[row].cells.push(cell);
+    }
+    for (let r = 0; r < rowParts; r += 1) {
+      for (let c = 0; c < colParts; c += 1) {
+        const row = rowGrid.partIndexes[r];
+        const col = colGrid.partIndexes[c];
+        const cell = r === 0 && c === 0 ? target : blankCell(row, col);
+        cell.rowSpan = rowGrid.partIndexes[r + 1] - row;
+        cell.colSpan = colGrid.partIndexes[c + 1] - col;
+        cell.width = { type: "dxa", value: widths.slice(col, col + cell.colSpan).reduce((sum, width) => sum + width, 0) };
+        cell.vAlign = target.vAlign;
+        cell.textDirection = target.textDirection;
+        cell.margin = target.margin;
+        cell.fill = target.fill;
+        table.rows[row].cells.push(cell);
+      }
+    }
+    for (const row of table.rows) row.cells.sort((a, b) => a.colIndex - b.colIndex);
+  }
+}
+
+function subdividedGrid(size: number, start: number, span: number, parts: number, fraction?: number) {
+  const partEdges = Array.from({ length: parts + 1 }, (_, i) =>
+    start + span * (parts === 2 && i === 1 && fraction !== undefined ? fraction : i / parts));
+  const originals = Array.from({ length: size + 1 }, (_, i) => i);
+  const edges = [...new Set([...originals, ...partEdges])].sort((a, b) => a - b);
+  const indexes = new Map(edges.map((edge, index) => [edge, index]));
+  return { edges, partIndexes: partEdges.map((edge) => indexes.get(edge)!), originalIndexes: originals.map((edge) => indexes.get(edge)!) };
 }
 
 function columnCount(table: Table): number {

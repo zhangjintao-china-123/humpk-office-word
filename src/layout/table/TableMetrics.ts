@@ -56,6 +56,18 @@ export function cellContentOrigin(
   return { x: box.x + margin.left, y };
 }
 
+export function cellFlowOrigin(
+  table: Table | undefined,
+  box: { x: number; y: number; width: number; height: number; cell: TableCell },
+  contentHeight: number,
+): { x: number; y: number; vertical: boolean } {
+  if (!box.cell.textDirection) return { ...cellContentOrigin(table, box, contentHeight), vertical: false };
+  const margin = cellInsets(table, box.cell);
+  const free = Math.max(0, box.width - margin.left - margin.right - contentHeight);
+  const shift = box.cell.vAlign === "bottom" ? free : box.cell.vAlign === "center" ? free / 2 : 0;
+  return { x: box.x + box.width - margin.right - shift, y: box.y + margin.top, vertical: true };
+}
+
 export function tableOffset(table: Table, contentWidth: number): number {
   const width = table.columnWidths.reduce((sum, column) => sum + column, 0);
   const indent = lengthPx(table.indent, contentWidth);

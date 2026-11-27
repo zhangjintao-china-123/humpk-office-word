@@ -3,6 +3,7 @@ import { Word } from "../inline/Word";
 import type { Block } from "../block/Block";
 import type { Paragraph } from "../block/Paragraph";
 import type { LinkedNode } from "../list/LinkedList";
+import { isReferenceField } from "../document/PageLabel";
 
 export function paragraphStartWord(anchor: LinkedNode<Word>): LinkedNode<Word> {
   let first = anchor;
@@ -46,7 +47,7 @@ export class WordStreamBuilder {
     this.buildShapeStories(document);
   }
 
-  private appendParagraph(document: Document, paragraph: Paragraph): void {
+  appendParagraph(document: Document, paragraph: Paragraph): void {
     if (paragraph.isTable) {
       if (!paragraph.hasAnchor && paragraph.table) {
         const word = new Word();
@@ -77,7 +78,8 @@ export class WordStreamBuilder {
         word.block = block;
         word.paragraph = paragraph;
         document.words.append(word);
-      } else if ((block.enclosed || block.asianLayout) && block.text) {
+      } else if ((block.enclosed || block.asianLayout || block.field === "FORMULA" || isReferenceField(block.field)
+        || block.commentRef || block.footnoteId || block.endnoteId) && block.text) {
         const word = new Word();
         word.char = block.text;
         word.intChar = block.text.codePointAt(0) ?? block.text.charCodeAt(0);

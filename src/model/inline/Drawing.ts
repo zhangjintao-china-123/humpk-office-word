@@ -1,4 +1,5 @@
 import type { GraphicShape } from "../graphic/Shape";
+import type { PictureAppearance } from "../graphic/PictureAppearance";
 
 export type WrapType = "none" | "square" | "tight" | "through" | "nowrap";
 export type WrapSide = "both" | "left" | "right" | "largest";
@@ -52,6 +53,8 @@ export class Drawing {
   flipV?: boolean;
   /** 对象名称（选择窗格与 OOXML wp:docPr 显示）。 */
   name?: string;
+  description?: string;
+  pictureAppearance?: PictureAppearance;
   /** 是否在选择窗格中隐藏。 */
   hidden?: boolean;
   /** 预设形状或文本框。没有 url 时按形状画，不再画灰块。 */

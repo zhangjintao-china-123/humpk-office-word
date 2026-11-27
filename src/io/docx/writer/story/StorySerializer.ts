@@ -5,17 +5,15 @@ import { COVER_BREAK_TAG, COVER_TAG_PREFIX } from "../../ooxml/CoverPageTag";
 import { escapeXml } from "../../ooxml/XmlEscape";
 import type { PartAssets } from "../package/PartAssets";
 import { ParagraphSerializer } from "../paragraph/ParagraphSerializer";
+import { commentBoundaries } from "../review/ReviewSerializer";
 
 export class StorySerializer {
-  private readonly paragraphs: ParagraphSerializer;
-
-  constructor(assets?: PartAssets) {
-    this.paragraphs = new ParagraphSerializer(assets);
-  }
+  constructor(private readonly assets?: PartAssets) {}
 
   serializeBody(document: Document, sectPrFor?: (paragraph: Paragraph) => string): string {
     const cover = document.kind === "body" ? leadingCover(document) : [];
-    const serialize = (paragraph: Paragraph): string => this.paragraphs.serialize(paragraph, sectPrFor?.(paragraph) ?? "");
+    const paragraphs = new ParagraphSerializer(commentBoundaries(document), this.assets);
+    const serialize = (paragraph: Paragraph): string => paragraphs.serialize(paragraph, sectPrFor?.(paragraph) ?? "");
     const body = document.paragraphs.toArray().slice(cover.length).map(serialize).join("") || "<w:p/>";
     const id = cover[0]?.coverTemplate;
     if (!id) {

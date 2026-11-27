@@ -64,6 +64,7 @@ export class TableCell {
   /** 单元格首选宽度，盖过同一列的网格宽。 */
   width?: TableLength;
   vAlign?: "top" | "center" | "bottom";
+  textDirection?: "tbRl" | "tbRlV";
   /** 有 tcMar 时整组替换表级边距。 */
   margin?: TableInsets;
 
@@ -93,6 +94,7 @@ export class Table {
   anchorSet?: TableAnchor;
   /** 缺省按网格宽，超出版心再缩小。 */
   width?: TableLength;
+  layout?: "fixed" | "autofit";
   align?: string;
   indent?: TableLength;
   /** 缺省时左右 108 twip、上下 0，和 Word 的单元格边距一致。 */

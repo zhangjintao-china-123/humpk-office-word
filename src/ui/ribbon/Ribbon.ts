@@ -29,7 +29,9 @@ import {
   type NumberingPreset,
 } from "../../edit/OutlineNumbering";
 import type { PicturePlace, PictureWrap } from "../../edit/PictureTransform";
+import { isPictureCrop, NO_CROP, PICTURE_STYLES, type PictureAppearance, type PictureAppearanceAction } from "../../model/graphic/PictureAppearance";
 import type { TableBorderFlags, TableBorderMode, TableBorderPen } from "../../edit/TableBorderApplier";
+import type { TableLayoutAction, TableLayoutState } from "../../edit/TableLayout";
 import { isGalleryStyle, STYLE_GALLERY, type GalleryStyleKey } from "../../model/style/StyleGallery";
 import { isCoverTemplate, type CoverTemplateId } from "../../model/document/CoverPage";
 import {
@@ -55,11 +57,19 @@ import { SortDialog } from "./SortDialog";
 import { normalizeColor, shadingColorPaletteMarkup, textColorPaletteMarkup } from "./ColorPalette";
 import { fontSelectMarkup, isListedFont } from "./FontList";
 import { iconButton, RibbonIcons } from "./RibbonIcons";
+import { REVIEW_STATS, reviewMarkup, wordCountMarkup, type ReviewState, type ReviewStats } from "./ReviewMarkup";
+import { referenceMarkup, ReferenceTools, type ReferenceHost } from "./ReferenceTools";
+import { viewMarkup, ViewTools, type ViewHost } from "./ViewTools";
+import type { ReviewDirection } from "../../edit/ReviewNavigation";
 import { styleGalleryMarkup } from "./StyleGalleryMarkup";
 import { paintTableGrid, tableGridMarkup } from "./TableGrid";
+import { pictureAdjustmentMarkup, pictureCropMarkup, pictureStylesMarkup, readPictureFormatAction } from "./PictureToolsMarkup";
+import { readTableAction, tableLayoutMarkup } from "./TableLayoutMarkup";
 import { textBoxToolsMarkup } from "./TextBoxToolsMarkup";
 
 export interface RibbonHost {
+  view?: ViewHost;
+  references?: ReferenceHost;
   applyFormat(action: FormatAction): void;
   applyCase?(mode: CaseMode): void;
   applyEnclosed?(action: EnclosedAction): void;
@@ -89,6 +99,9 @@ export interface RibbonHost {
   applyPictureWrap(wrap: PictureWrap): void;
   applyPicturePlace(place: PicturePlace): void;
   applyPictureSize(widthPx: number, heightPx: number, lockAspect: boolean): void;
+  applyPictureAppearance?(action: PictureAppearanceAction): void;
+  applyPicturePixels?(action: "compress" | "remove-background"): Promise<boolean>;
+  replacePicture?(): void;
   applyTextBoxFormat(change: TextBoxFormat): void;
   applyLayerOrder?(action: LayerOrderAction): void;
   applyAlign?(action: AlignAction, reference: AlignReference): void;
@@ -103,13 +116,20 @@ export interface RibbonHost {
   deleteTableColumn(): void;
   mergeTableCells(): void;
   splitTableCell(): void;
+  applyTableLayout?(action: TableLayoutAction): void;
   insertToc(): void;
   insertPageNumber(): void;
   applyLink(raw: string): void;
   clearLink(): void;
-  addComment(text: string): void;
+  beginComment(): void;
+  reviewState?(): ReviewState;
+  reviewStats?(): ReviewStats | undefined;
+  navigateComment?(direction: ReviewDirection): void;
+  deleteComment?(): void;
+  toggleComments?(): void;
+  navigateRevision?(direction: ReviewDirection): void;
+  toggleTrackRevisions?(): void;
   addFootnote(text: string): void;
-  showComment(id: string): void;
   showNote(id: string): void;
   acceptRevision(): void;
   rejectRevision(): void;
@@ -158,8 +178,13 @@ export interface RibbonState {
   drawingTextBox?: TextBoxDirection;
   caption: string;
   inTable: boolean;
+  tableLayout?: TableLayoutState;
   inPicture: boolean;
   pictureIsTextBox?: boolean;
+  pictureImageUrl?: string;
+  pictureAppearance?: PictureAppearance;
+  pictureDescription?: string;
+  pictureCanEditPixels?: boolean;
   textBoxFormat?: TextBoxFormat;
   pictureWrap?: PictureWrap;
   picturePlace?: PicturePlace | "custom";
@@ -190,9 +215,7 @@ export interface RibbonState {
   /** 当前命中的多级列表预设 ID。 */
   multilevelId?: string;
   link?: string;
-  comments?: { id: string; author: string; text: string }[];
   notes?: { id: string; text: string }[];
-  revision?: "ins" | "del";
   formatPainter?: FormatPainterMode;
   zoom: number;
 }
@@ -200,11 +223,13 @@ export interface RibbonState {
 const SIZES = [8, 9, 10, 10.5, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72];
 const HIGHLIGHTS = ["#FFFF00", "#00FF00", "#00FFFF", "#FF00FF", "#0000FF", "#FF0000", "#000080", "#008080", "#008000", "#800080", "#800000", "#808000", "#808080", "#C0C0C0"];
 
-type RibbonPage = "home" | "insert" | "table" | "picture";
+type RibbonPage = "home" | "insert" | "references" | "review" | "view" | "table" | "picture";
 
 let nextGalleryId = 0;
 
 export class Ribbon {
+  private readonly view: ViewTools;
+  private readonly references: ReferenceTools;
   private readonly galleryId = ++nextGalleryId;
   readonly el: HTMLElement;
   private readonly asianDialog = new AsianLayoutDialog();
@@ -221,20 +246,25 @@ export class Ribbon {
   private customMultilevel?: MultilevelLevelSpec[];
   private page: RibbonPage = "home";
   private hadPicture = false;
+  private pictureFeedbackTimer?: number;
   private alignReference: AlignReference = "margin";
 
   constructor(host: HTMLElement, private readonly actions: RibbonHost) {
     this.el = host;
     host.classList.add("ho-word-ribbon");
     host.innerHTML = this.markup();
+    this.view = new ViewTools(host, actions.view);
+    this.references = new ReferenceTools(host, actions.references);
     host.addEventListener("mousedown", this.onMouseDown);
     host.addEventListener("click", this.onClick);
     host.addEventListener("dblclick", this.onDoubleClick);
     host.addEventListener("mouseover", this.onTableGridHover);
     host.addEventListener("change", this.onChange);
+    host.addEventListener("submit", this.onTableFormSubmit);
+    host.addEventListener("submit", this.onPictureFormSubmit);
     host.addEventListener("keydown", this.onKeyDown);
     host.addEventListener("scroll", this.onRibbonScroll, true);
-    window.addEventListener("resize", this.placeGallery);
+    window.addEventListener("resize", this.placeOpenMenus);
     document.addEventListener("pointerdown", this.onDocumentDown, true);
     document.addEventListener("mousedown", this.onDocumentDown, true);
     document.addEventListener("keydown", this.onDocumentKeyDown, true);
@@ -242,14 +272,20 @@ export class Ribbon {
   }
 
   destroy(): void {
+    this.view.destroy();
+    this.references.destroy();
+    this.el.querySelector<HTMLDialogElement>(".ho-word-review-stats[open]")?.close();
     this.el.removeEventListener("mousedown", this.onMouseDown);
     this.el.removeEventListener("click", this.onClick);
     this.el.removeEventListener("dblclick", this.onDoubleClick);
     this.el.removeEventListener("mouseover", this.onTableGridHover);
     this.el.removeEventListener("change", this.onChange);
+    this.el.removeEventListener("submit", this.onTableFormSubmit);
+    this.el.removeEventListener("submit", this.onPictureFormSubmit);
+    window.clearTimeout(this.pictureFeedbackTimer);
     this.el.removeEventListener("keydown", this.onKeyDown);
     this.el.removeEventListener("scroll", this.onRibbonScroll, true);
-    window.removeEventListener("resize", this.placeGallery);
+    window.removeEventListener("resize", this.placeOpenMenus);
     document.removeEventListener("pointerdown", this.onDocumentDown, true);
     document.removeEventListener("mousedown", this.onDocumentDown, true);
     document.removeEventListener("keydown", this.onDocumentKeyDown, true);
@@ -280,9 +316,9 @@ export class Ribbon {
 
   private onDocumentKeyDown = (event: KeyboardEvent): void => {
     if (event.key === "Escape" && this.el.querySelector(".ho-word-drop.is-open")) {
-      const gallery = this.el.querySelector(".ho-word-drop.is-open:has(> [data-ribbon-gallery])");
-      if (gallery?.contains(document.activeElement)) {
-        gallery.querySelector<HTMLButtonElement>("[data-drop-toggle]")?.focus();
+      const popover = this.el.querySelector(".ho-word-drop.is-open:is(.ho-table-drop, .ho-picture-drop, :has(> [data-ribbon-gallery]))");
+      if (popover?.contains(document.activeElement)) {
+        popover.querySelector<HTMLButtonElement>("[data-drop-toggle]")?.focus();
         event.preventDefault();
       }
       this.closeDrops();
@@ -297,7 +333,7 @@ export class Ribbon {
     event.preventDefault();
   };
 
-  sync(): void {
+  sync(revealTableLayout = false): void {
     const state = this.actions.formatState();
     this.toggle("bold", state.bold);
     this.toggle("italic", state.italic);
@@ -382,19 +418,13 @@ export class Ribbon {
     if (link && document.activeElement !== link) {
       link.value = state.link ?? "";
     }
-    const comments = this.el.querySelector("[data-comment-list]");
-    if (comments) {
-      comments.innerHTML = reviewList(state.comments ?? [], "comment");
-    }
+    this.el.querySelectorAll<HTMLButtonElement>("[data-act=new-comment]").forEach((comment) => {
+      comment.disabled = !state.hasDoc;
+    });
     const notes = this.el.querySelector("[data-note-list]");
     if (notes) {
-      notes.innerHTML = reviewList(
-        (state.notes ?? []).map((note, index) => ({ id: note.id, author: String(index + 1), text: note.text })),
-        "note",
-      );
+      notes.innerHTML = noteList(state.notes ?? []);
     }
-    this.toggle("accept-revision", state.revision === "ins");
-    this.toggle("reject-revision", state.revision === "del");
     const tableTab = this.el.querySelector<HTMLButtonElement>("[data-tab=table]");
     if (tableTab) {
       tableTab.hidden = !state.inTable;
@@ -410,9 +440,18 @@ export class Ribbon {
       this.showPage("home");
     }
     this.hadPicture = state.inPicture;
-    if (!state.inTable && this.page === "table") {
+    if (revealTableLayout && state.inTable && this.page !== "table") {
+      this.closeDrops();
+      this.showPage("table");
+    } else if (!state.inTable && this.page === "table") {
+      this.closeDrops();
       this.showPage("home");
     }
+    if (this.page === "table" && state.tableLayout) this.syncTableLayout(state.tableLayout);
+    if (this.page === "picture") this.syncPictureAppearance(state);
+    if (this.page === "review") this.syncReview(state.hasDoc);
+    if (this.page === "references") this.references.sync(state.hasDoc);
+    if (this.page === "view") this.view.sync(state.hasDoc);
     this.el.querySelectorAll<HTMLElement>("[data-picture-wrap]").forEach((button) => {
       button.classList.toggle("is-on", button.dataset.pictureWrap === state.pictureWrap);
     });
@@ -639,6 +678,33 @@ export class Ribbon {
 
   private onClick = (event: Event): void => {
     const el = event.target as HTMLElement;
+    const pictureTool = el.closest<HTMLButtonElement>("[data-picture-format]");
+    if (pictureTool) {
+      event.preventDefault();
+      this.runPictureFormat(pictureTool);
+      return;
+    }
+    const pictureFile = el.closest<HTMLButtonElement>("[data-picture-file]");
+    if (pictureFile) {
+      this.closeDrops();
+      const action = pictureFile.dataset.pictureFile;
+      if (action === "replace") this.actions.replacePicture?.();
+      if (action === "compress" || action === "remove-background") void this.runPicturePixels(action);
+      return;
+    }
+    if (el.closest(".ho-picture-form")) return;
+    const tableTool = el.closest<HTMLButtonElement>("[data-table-tool]");
+    if (tableTool) {
+      event.preventDefault();
+      this.runTableTool(tableTool);
+      return;
+    }
+    const moreSection = el.closest<HTMLButtonElement>("[data-table-more-section]");
+    if (moreSection) {
+      this.toggleTableMoreSection(moreSection);
+      return;
+    }
+    if (el.closest(".ho-table-form, .ho-table-more-panel")) return;
     if (this.onTextBoxFormatClick(el)) {
       return;
     }
@@ -840,13 +906,6 @@ export class Ribbon {
       });
       return;
     }
-    const commentId = el.closest<HTMLElement>("[data-comment-id]")?.dataset.commentId;
-    if (commentId) {
-      this.actions.showComment(commentId);
-      this.closeDrops();
-      this.sync();
-      return;
-    }
     const noteId = el.closest<HTMLElement>("[data-note-id]")?.dataset.noteId;
     if (noteId) {
       this.actions.showNote(noteId);
@@ -867,6 +926,10 @@ export class Ribbon {
       this.closeDrops();
       drop?.classList.toggle("is-open", !open);
       if (drop && !open) {
+        if (drop.classList.contains("ho-picture-drop")) this.preparePictureForm(drop);
+        if (drop.classList.contains("ho-table-drop") && !drop.hasAttribute("data-table-more")) {
+          this.prepareTableForm(drop);
+        }
         const gallery = drop.querySelector("[data-ribbon-gallery]");
         if (gallery || toggle.hasAttribute("aria-expanded")) {
           toggle.setAttribute("aria-expanded", "true");
@@ -932,9 +995,11 @@ export class Ribbon {
       return;
     }
     const tab = el.closest<HTMLElement>("[data-tab]");
-    if (tab?.dataset.tab === "home" || tab?.dataset.tab === "insert" || tab?.dataset.tab === "table" || tab?.dataset.tab === "picture") {
+    const page = tab?.dataset.tab;
+    if (page === "home" || page === "insert" || page === "references" || page === "review" || page === "view" || page === "table" || page === "picture") {
       this.closeDrops();
-      this.showPage(tab.dataset.tab);
+      this.showPage(page);
+      if (page !== "home" && page !== "insert") this.sync();
       return;
     }
     this.closeDrops();
@@ -999,12 +1064,21 @@ export class Ribbon {
       this.actions.applyLink(input?.value ?? "");
     } else if (act === "clear-link") {
       this.actions.clearLink();
-    } else if (act === "add-comment") {
-      const input = this.el.querySelector<HTMLTextAreaElement>("[data-comment-text]");
-      this.actions.addComment(input?.value ?? "");
-      if (input) {
-        input.value = "";
-      }
+    } else if (act === "new-comment") {
+      this.actions.beginComment();
+    } else if (act === "delete-comment") {
+      this.actions.deleteComment?.();
+    } else if (act === "previous-comment" || act === "next-comment") {
+      this.actions.navigateComment?.(act === "previous-comment" ? -1 : 1);
+    } else if (act === "show-comments") {
+      this.actions.toggleComments?.();
+    } else if (act === "previous-revision" || act === "next-revision") {
+      this.actions.navigateRevision?.(act === "previous-revision" ? -1 : 1);
+    } else if (act === "track-revisions") {
+      this.actions.toggleTrackRevisions?.();
+    } else if (act === "word-count") {
+      this.openWordCount();
+      return;
     } else if (act === "add-note") {
       const input = this.el.querySelector<HTMLInputElement>("[data-note-text]");
       this.actions.addFootnote(input?.value ?? "");
@@ -1100,14 +1174,26 @@ export class Ribbon {
     this.el.querySelectorAll<HTMLElement>(".ho-word-drop.is-open").forEach((drop) => {
       drop.classList.remove("is-open");
       drop.querySelector("[data-drop-toggle][aria-expanded]")?.setAttribute("aria-expanded", "false");
+      if (drop.hasAttribute("data-table-more")) {
+        drop.querySelectorAll<HTMLElement>("[data-table-more-section][aria-expanded=true]").forEach((section) => {
+          section.setAttribute("aria-expanded", "false");
+          (section.nextElementSibling as HTMLElement).hidden = true;
+        });
+      }
       this.clearDropPosition(drop);
     });
   }
 
   private onRibbonScroll = (event: Event): void => {
     if (event.target instanceof Element && event.target.matches(".ho-word-ribbon-page")) {
-      this.placeGallery();
+      this.placeOpenMenus();
     }
+  };
+
+  private placeOpenMenus = (): void => {
+    this.placeGallery();
+    const open = this.el.querySelector<HTMLElement>(".ho-word-drop.is-open:not(:has(> [data-ribbon-gallery]))");
+    if (open) this.placeOpenDrop(open);
   };
 
   private placeGallery = (): void => {
@@ -1143,18 +1229,29 @@ export class Ribbon {
     if (!menu) {
       return;
     }
-    if (window.innerWidth > 900) {
+    if (window.innerWidth > 900 && !drop.closest('.ho-word-table-layout, [data-page="picture"]')) {
       this.clearDropPosition(drop);
       return;
     }
     const anchor = drop.querySelector("[data-drop-toggle]") ?? drop;
     const rect = anchor.getBoundingClientRect();
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+    if (rect.width && (rect.right <= 0 || rect.left >= viewportWidth)) {
+      this.closeDrops();
+      return;
+    }
     menu.style.position = "fixed";
     menu.style.zIndex = "40";
-    menu.style.maxHeight = `${Math.max(160, window.innerHeight - rect.bottom - 12)}px`;
-    const width = menu.offsetWidth || 220;
-    menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
-    menu.style.top = `${rect.bottom + 4}px`;
+    menu.style.maxHeight = "";
+    const size = menu.getBoundingClientRect();
+    const below = Math.max(0, window.innerHeight - rect.bottom - 12);
+    const above = Math.max(0, rect.top - 12);
+    const openAbove = size.height > below && above > below;
+    const height = openAbove ? above : below;
+    menu.style.maxHeight = `${height}px`;
+    const width = size.width || 220;
+    menu.style.left = `${Math.max(8, Math.min(rect.left, viewportWidth - width - 8))}px`;
+    menu.style.top = `${openAbove ? rect.top - 4 - Math.min(size.height, height) : rect.bottom + 4}px`;
   }
 
   private clearDropPosition(drop: HTMLElement): void {
@@ -1169,8 +1266,181 @@ export class Ribbon {
     menu.style.maxHeight = "";
   }
 
+  private runTableTool(button: HTMLButtonElement): void {
+    if (button.disabled) return;
+    const action = readTableAction(button);
+    if (!action) return;
+    this.closeDrops();
+    this.actions.applyTableLayout?.(action);
+    this.sync();
+  }
+
+  private preparePictureForm(drop: HTMLElement): void {
+    const form = drop.querySelector<HTMLFormElement>(".ho-picture-form");
+    if (!form) return;
+    const state = this.actions.formatState();
+    if (form.dataset.pictureForm === "description") {
+      const text = form.elements.namedItem("text") as HTMLTextAreaElement;
+      text.value = state.pictureDescription ?? "";
+    } else {
+      const crop = state.pictureAppearance?.crop ?? NO_CROP;
+      for (const [side, value] of Object.entries(crop)) {
+        const field = form.elements.namedItem(side) as HTMLInputElement;
+        field.value = String(Number((value * 100).toFixed(2)));
+      }
+    }
+  }
+
+  private runPictureFormat(button: HTMLButtonElement): void {
+    if (button.disabled) return;
+    const action = readPictureFormatAction(button);
+    if (!action) return;
+    if (action.type === "crop" && !isPictureCrop(action.crop)) {
+      this.showPictureFeedback("每个方向至少保留 5% 的图片。");
+      return;
+    }
+    this.closeDrops();
+    this.actions.applyPictureAppearance?.(action);
+    this.sync();
+  }
+
+  private onPictureFormSubmit = (event: Event): void => {
+    const form = event.target as HTMLFormElement;
+    if (!form.matches(".ho-picture-form")) return;
+    event.preventDefault();
+    const button = form.querySelector<HTMLButtonElement>("[data-picture-format]");
+    if (button) this.runPictureFormat(button);
+  };
+
+  private async runPicturePixels(action: "compress" | "remove-background"): Promise<void> {
+    this.showPictureFeedback(action === "compress" ? "正在压缩图片…" : "正在识别纯色背景…");
+    const changed = await this.actions.applyPicturePixels?.(action);
+    const message = action === "compress"
+      ? changed ? "图片已压缩。" : "当前图片无需压缩，或无法进一步缩小。"
+      : changed ? "已删除与图片边缘相连的纯色背景。" : "未找到可移除的纯色背景。";
+    this.showPictureFeedback(message);
+  }
+
+  showPictureFeedback(message: string): void {
+    const status = this.el.querySelector<HTMLElement>("[data-picture-feedback]");
+    if (!status) return;
+    window.clearTimeout(this.pictureFeedbackTimer);
+    status.textContent = message;
+    status.hidden = false;
+    this.pictureFeedbackTimer = window.setTimeout(() => { status.hidden = true; }, 3200);
+  }
+
+  private syncPictureAppearance(state: RibbonState): void {
+    const url = state.pictureImageUrl;
+    this.el.querySelectorAll<HTMLElement>("[data-picture-image-tool]").forEach((item) => {
+      item.hidden = !url;
+    });
+    if (!url) return;
+    const format = state.pictureAppearance ?? {};
+    this.el.querySelectorAll<HTMLButtonElement>('[data-picture-format][aria-pressed]').forEach((button) => {
+      const action = readPictureFormatAction(button);
+      if (!action) return;
+      const pressed = pictureFormatPressed(action, format);
+      button.classList.toggle("is-on", pressed);
+      button.setAttribute("aria-pressed", String(pressed));
+      const img = button.querySelector("img");
+      if (img && img.getAttribute("src") !== url) img.src = url;
+    });
+    this.el.querySelectorAll<HTMLButtonElement>('[data-picture-file]:not([data-picture-file="replace"])').forEach((button) => {
+      button.disabled = !state.pictureCanEditPixels;
+    });
+  }
+
+  private onTableFormSubmit = (event: Event): void => {
+    const form = event.target as HTMLFormElement;
+    if (!form.matches(".ho-table-form")) return;
+    event.preventDefault();
+    const button = form.querySelector<HTMLButtonElement>("[data-table-tool]");
+    if (button) this.runTableTool(button);
+  };
+
+  private toggleTableMoreSection(button: HTMLButtonElement): void {
+    const drop = button.closest<HTMLElement>("[data-table-more]");
+    if (!drop || button.disabled) return;
+    const opening = button.getAttribute("aria-expanded") !== "true";
+    drop.querySelectorAll<HTMLButtonElement>("[data-table-more-section]").forEach((section) => {
+      const expanded = opening && section === button;
+      const panel = section.nextElementSibling as HTMLElement;
+      section.setAttribute("aria-expanded", String(expanded));
+      panel.hidden = !expanded;
+      if (expanded) this.prepareTableForm(panel);
+    });
+    this.placeOpenDrop(drop);
+  }
+
+  private prepareTableForm(drop: HTMLElement): void {
+    const form = drop.querySelector<HTMLFormElement>(".ho-table-form");
+    const state = form && this.actions.formatState().tableLayout;
+    if (!form || !state) return;
+    const set = (name: string, value: string): void => {
+      const control = form.elements.namedItem(name);
+      if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement) {
+        control.value = value;
+        control.dataset.initial = value;
+      }
+    };
+    if (form.dataset.tableForm === "margins") {
+      for (const [side, value] of Object.entries(state.margins)) set(side, cmText(value));
+    } else if (form.dataset.tableForm === "split") {
+      set("rows", String(state.splitRows));
+      set("columns", String(state.splitColumns));
+    } else if (form.dataset.tableForm === "formula") {
+      set("operation", state.formula?.operation ?? "SUM");
+      set("direction", state.formula?.direction ?? "ABOVE");
+    } else {
+      set("align", state.tableAlign);
+      set("width", state.tableWidth ? cmText(state.tableWidth) : "");
+      set("height", state.rowHeight || state.height ? cmText(state.rowHeight ?? state.height) : "");
+      set("rule", state.rowHeightRule);
+      const height = form.elements.namedItem("height") as HTMLInputElement;
+      height.required = !(height.disabled = state.rowHeightRule === "auto");
+    }
+  }
+
+  private syncTableLayout(state: TableLayoutState): void {
+    this.el.querySelectorAll<HTMLButtonElement>(".ho-word-table-layout :is([data-table-tool], [data-table-availability])").forEach((button) => {
+      const action = button.dataset.tableTool ?? button.dataset.tableAvailability ?? "";
+      button.disabled = state.disabled.includes(action);
+      if (!button.hasAttribute("aria-pressed")) return;
+      const pressed = action === "gridlines" ? state.gridlines
+        : action === "repeat-header" ? state.repeatHeader
+        : action === "draw-table" || action === "erase-table" ? action === state.drawing
+        : action === "direction:horizontal" ? state.verticalText === false
+        : action === "direction:vertical" ? state.verticalText === true
+        : action === `align:${state.horizontal}:${state.vertical}`;
+      button.setAttribute("aria-pressed", String(pressed));
+      button.classList.toggle("is-on", pressed);
+    });
+    this.el.querySelectorAll<HTMLInputElement>("[data-table-dimension]").forEach((input) => {
+      const value = input.dataset.tableDimension === "height" ? state.height : state.width;
+      if (input !== document.activeElement) {
+        input.value = value ? cmText(value) : "";
+        input.placeholder = value === undefined ? "混合" : "";
+      }
+    });
+  }
+
   private onChange = (event: Event): void => {
     const select = event.target as HTMLSelectElement;
+    const dimension = select.dataset.tableDimension;
+    if (dimension === "width" || dimension === "height") {
+      const value = Number(select.value);
+      if (value > 0 && Number.isFinite(value)) {
+        this.actions.applyTableLayout?.({ type: dimension, pixels: cmToPx(value) });
+      }
+      select.blur();
+      this.sync();
+      return;
+    }
+    if (select.matches('.ho-table-form [name="rule"]')) {
+      const height = select.form?.querySelector<HTMLInputElement>('[name="height"]');
+      if (height) height.required = !(height.disabled = select.value === "auto");
+    }
     if (select.dataset.select === "font") {
       this.actions.applyFormat({ type: "fontFamily", value: select.value });
     }
@@ -1209,11 +1479,58 @@ export class Ribbon {
     });
   }
 
+  private syncReview(hasDoc: boolean): void {
+    const state = this.actions.reviewState?.();
+    const enabled = {
+      "word-count": hasDoc && !!this.actions.reviewStats,
+      "delete-comment": !!state?.canDeleteComment,
+      "previous-comment": !!state?.hasComments,
+      "next-comment": !!state?.hasComments,
+      "show-comments": !!state?.hasComments,
+      "track-revisions": hasDoc && !!this.actions.toggleTrackRevisions,
+      "previous-revision": !!state?.hasRevisions,
+      "next-revision": !!state?.hasRevisions,
+      "accept-revision": !!state?.canResolveRevision,
+      "reject-revision": !!state?.canResolveRevision,
+    };
+    for (const [action, active] of Object.entries(enabled)) {
+      const button = this.el.querySelector<HTMLButtonElement>(`[data-page=review] [data-act="${action}"]`);
+      if (button) button.disabled = !active;
+    }
+    const visible = !!(state?.hasComments && state.commentsVisible);
+    this.toggle("show-comments", visible);
+    this.el.querySelector('[data-act="show-comments"]')?.setAttribute("aria-pressed", String(visible));
+    const tracking = !!state?.trackingRevisions;
+    this.toggle("track-revisions", tracking);
+    const trackButton = this.el.querySelector<HTMLButtonElement>('[data-act="track-revisions"]');
+    if (trackButton) {
+      trackButton.setAttribute("aria-pressed", String(tracking));
+      trackButton.title = tracking ? "关闭修订" : "开启修订";
+    }
+  }
+
+  private openWordCount(): void {
+    const stats = this.actions.reviewStats?.();
+    const dialog = this.el.querySelector<HTMLDialogElement>(".ho-word-review-stats");
+    if (!stats || !dialog || dialog.open) return;
+    for (const key of REVIEW_STATS) {
+      const value = dialog.querySelector(`[data-review-stat="${key}"]`);
+      if (value) value.textContent = stats[key].toLocaleString("zh-CN");
+    }
+    dialog.showModal();
+  }
+
   openFind(focusReplace = false): void {
     const bar = this.el.querySelector<HTMLElement>("[data-findbar]");
+    if (!focusReplace && this.actions.view) {
+      if (bar && !bar.hidden) this.closeFind();
+      this.actions.view.openNavigationSearch();
+      return;
+    }
     if (!bar) {
       return;
     }
+    if (this.actions.view?.viewState().focusMode) this.actions.view.setFocusMode(false);
     bar.hidden = false;
     const input = this.el.querySelector<HTMLInputElement>(focusReplace ? "[data-replace]" : "[data-find]");
     input?.focus();
@@ -1234,6 +1551,11 @@ export class Ribbon {
 
   private onKeyDown = (event: KeyboardEvent): void => {
     const target = event.target as HTMLElement | null;
+    if (event.key === "Enter" && target instanceof HTMLInputElement && target.dataset.tableDimension) {
+      event.preventDefault();
+      target.dispatchEvent(new Event("change", { bubbles: true }));
+      return;
+    }
     if (!target?.closest("[data-findbar]")) {
       return;
     }
@@ -1377,18 +1699,6 @@ export class Ribbon {
       </div>`;
   }
 
-  private commentMarkup(): string {
-    return `
-      <div class="ho-word-drop">
-        <button type="button" class="ho-word-big" data-drop-toggle title="新建批注">${RibbonIcons.comment}<span>批注${RibbonIcons.chevronDown}</span></button>
-        <div class="ho-word-outline-menu ho-word-review-menu">
-          <textarea data-comment-text data-keep-drop placeholder="批注内容"></textarea>
-          <button type="button" data-act="add-comment">插入批注</button>
-          <div class="ho-word-review-list" data-comment-list></div>
-        </div>
-      </div>`;
-  }
-
   private headerMarkup(): string {
     return `
       <div class="ho-word-drop">
@@ -1453,60 +1763,41 @@ export class Ribbon {
     </div>`;
   }
 
-  private bringForwardMarkup(): string {
+  private pictureArrangeMarkup(): string {
     return `<div class="ho-word-drop">
-      <button type="button" class="ho-word-big" data-drop-toggle title="上移一层">${RibbonIcons.bringForward}<span>上移一层${RibbonIcons.chevronDown}</span></button>
-      <div class="ho-word-outline-menu">
-        <button type="button" data-picture-layer="bringForward">上移一层</button>
-        <button type="button" data-picture-layer="bringToFront">置于顶层</button>
-        <button type="button" data-picture-layer="inFrontOfText">浮于文字上方</button>
-      </div>
-    </div>`;
-  }
-
-  private sendBackwardMarkup(): string {
-    return `<div class="ho-word-drop">
-      <button type="button" class="ho-word-big" data-drop-toggle title="下移一层">${RibbonIcons.sendBackward}<span>下移一层${RibbonIcons.chevronDown}</span></button>
-      <div class="ho-word-outline-menu">
-        <button type="button" data-picture-layer="sendBackward">下移一层</button>
-        <button type="button" data-picture-layer="sendToBack">置于底层</button>
-        <button type="button" data-picture-layer="behindText">衬于文字下方</button>
-      </div>
-    </div>`;
-  }
-
-  private alignObjectsMarkup(): string {
-    return `<div class="ho-word-drop">
-      <button type="button" class="ho-word-big" data-drop-toggle title="对齐对象">${RibbonIcons.alignObjects}<span>对齐${RibbonIcons.chevronDown}</span></button>
-      <div class="ho-word-outline-menu">
-        <button type="button" data-picture-align="left">左对齐</button>
-        <button type="button" data-picture-align="center">水平居中</button>
-        <button type="button" data-picture-align="right">右对齐</button>
-        <div class="ho-word-border-split"></div>
-        <button type="button" data-picture-align="top">顶端对齐</button>
-        <button type="button" data-picture-align="middle">垂直居中</button>
-        <button type="button" data-picture-align="bottom">底端对齐</button>
-        <div class="ho-word-border-split"></div>
-        <button type="button" data-picture-distribute="distributeH">横向分布</button>
-        <button type="button" data-picture-distribute="distributeV">纵向分布</button>
-        <div class="ho-word-border-split"></div>
-        <button type="button" data-align-ref="page">对齐页面</button>
-        <button type="button" data-align-ref="margin">对齐页边距</button>
-      </div>
-    </div>`;
-  }
-
-  private rotateObjectMarkup(): string {
-    return `<div class="ho-word-drop">
-      <button type="button" class="ho-word-big" data-drop-toggle title="旋转与翻转">${RibbonIcons.rotateObject}<span>旋转${RibbonIcons.chevronDown}</span></button>
-      <div class="ho-word-outline-menu">
-        <button type="button" data-picture-rotate="rotate90">向右旋转 90°</button>
-        <button type="button" data-picture-rotate="rotate-90">向左旋转 90°</button>
-        <div class="ho-word-border-split"></div>
-        <button type="button" data-picture-rotate="flipV">垂直翻转</button>
-        <button type="button" data-picture-rotate="flipH">水平翻转</button>
-        <div class="ho-word-border-split"></div>
-        <button type="button" data-picture-rotate="reset">重置旋转与翻转</button>
+      <button type="button" class="ho-word-big" data-drop-toggle aria-expanded="false" title="层次、对齐与旋转">${RibbonIcons.alignObjects}<span>排列${RibbonIcons.chevronDown}</span></button>
+      <div class="ho-word-outline-menu ho-picture-menu ho-picture-arrange">
+        <div class="ho-picture-arrange-grid">
+          <section aria-label="层次和旋转">
+            <div>层次</div>
+            <button type="button" data-picture-layer="bringForward">上移一层</button>
+            <button type="button" data-picture-layer="bringToFront">置于顶层</button>
+            <button type="button" data-picture-layer="sendBackward">下移一层</button>
+            <button type="button" data-picture-layer="sendToBack">置于底层</button>
+            <button type="button" data-picture-layer="inFrontOfText">浮于文字上方</button>
+            <button type="button" data-picture-layer="behindText">衬于文字下方</button>
+            <div>旋转与翻转</div>
+            <button type="button" data-picture-rotate="rotate90">向右旋转 90°</button>
+            <button type="button" data-picture-rotate="rotate-90">向左旋转 90°</button>
+            <button type="button" data-picture-rotate="flipV">垂直翻转</button>
+            <button type="button" data-picture-rotate="flipH">水平翻转</button>
+            <button type="button" data-picture-rotate="reset">重置旋转与翻转</button>
+          </section>
+          <section aria-label="对齐和分布">
+            <div>对齐与分布</div>
+            <button type="button" data-picture-align="left">左对齐</button>
+            <button type="button" data-picture-align="center">水平居中</button>
+            <button type="button" data-picture-align="right">右对齐</button>
+            <button type="button" data-picture-align="top">顶端对齐</button>
+            <button type="button" data-picture-align="middle">垂直居中</button>
+            <button type="button" data-picture-align="bottom">底端对齐</button>
+            <button type="button" data-picture-distribute="distributeH">横向分布</button>
+            <button type="button" data-picture-distribute="distributeV">纵向分布</button>
+            <div>参照位置</div>
+            <button type="button" data-align-ref="page">对齐页面</button>
+            <button type="button" data-align-ref="margin">对齐页边距</button>
+          </section>
+        </div>
       </div>
     </div>`;
   }
@@ -1721,7 +2012,10 @@ export class Ribbon {
         <div class="ho-word-tabs">
           <button type="button" data-tab="home" class="is-on">开始</button>
           <button type="button" data-tab="insert">插入</button>
-          <button type="button" data-tab="table" hidden>表格工具</button>
+          <button type="button" data-tab="references">引用</button>
+          <button type="button" data-tab="review">审阅</button>
+          <button type="button" data-tab="view">视图</button>
+          <button type="button" data-tab="table" hidden>表格布局</button>
           <button type="button" data-tab="picture" hidden>图片工具</button>
         </div>
         <div class="ho-word-qat">
@@ -1871,7 +2165,7 @@ export class Ribbon {
         </section>
         <section class="ho-word-group">
           <div class="ho-word-group-body ho-word-insert">
-            ${this.commentMarkup()}
+            <button type="button" class="ho-word-big" data-act="new-comment" title="新建批注">${RibbonIcons.comment}<span>批注</span></button>
           </div>
           <span>批注</span>
         </section>
@@ -1888,43 +2182,37 @@ export class Ribbon {
           <span>文本</span>
         </section>
       </div>
-      <div class="ho-word-ribbon-page" data-page="picture" hidden>
+      ${referenceMarkup()}
+      ${reviewMarkup()}
+      ${viewMarkup()}
+      ${wordCountMarkup()}
+      <div class="ho-word-ribbon-page ho-picture-page" data-page="picture" hidden>
         ${textBoxToolsMarkup()}
-        <section class="ho-word-group">
-          <div class="ho-word-group-body ho-word-insert">
+        ${pictureAdjustmentMarkup()}
+        ${pictureStylesMarkup()}
+        <section class="ho-word-group ho-picture-group">
+          <div class="ho-word-group-body ho-word-insert ho-picture-position-tools">
             ${this.picturePlaceMarkup()}
             ${this.pictureWrapMarkup()}
-            ${this.bringForwardMarkup()}
-            ${this.sendBackwardMarkup()}
+            ${this.pictureArrangeMarkup()}
             <button type="button" class="ho-word-big" data-act="selection-pane" title="选择窗格">${RibbonIcons.selectionPane}<span>选择窗格</span></button>
-            ${this.alignObjectsMarkup()}
-            ${this.rotateObjectMarkup()}
           </div>
           <span>排列</span>
         </section>
-        <section class="ho-word-group">
-          <div class="ho-word-group-body ho-word-picture-size">
-            <label>宽度<input type="number" min="0.2" step="0.1" data-picture-size="width" title="宽度（厘米）" /></label>
-            <label>高度<input type="number" min="0.2" step="0.1" data-picture-size="height" title="高度（厘米）" /></label>
-            <label class="ho-word-picture-lock"><input type="checkbox" data-picture-lock checked />锁定纵横比</label>
+        <section class="ho-word-group ho-picture-group">
+          <div class="ho-word-group-body">
+            ${pictureCropMarkup()}
+            <div class="ho-word-picture-size">
+              <label>宽度<input type="number" min="0.2" step="0.01" data-picture-size="width" aria-label="宽度（厘米）" /><span>cm</span></label>
+              <label>高度<input type="number" min="0.2" step="0.01" data-picture-size="height" aria-label="高度（厘米）" /><span>cm</span></label>
+              <label class="ho-word-picture-lock"><input type="checkbox" data-picture-lock checked />锁定纵横比</label>
+            </div>
           </div>
           <span>大小</span>
         </section>
       </div>
-      <div class="ho-word-ribbon-page" data-page="table" hidden>
-        <section class="ho-word-group">
-          <div class="ho-word-group-body">
-            <button type="button" data-act="insert-row" title="在下方插入行">插入行</button>
-            <button type="button" data-act="delete-row" title="删除行">删除行</button>
-            <button type="button" data-act="insert-col" title="在右侧插入列">插入列</button>
-            <button type="button" data-act="delete-col" title="删除列">删除列</button>
-            <button type="button" data-act="merge-cells" title="合并单元格">合并</button>
-            <button type="button" data-act="split-cell" title="拆分单元格">拆分</button>
-            ${this.borders.markup()}
-          </div>
-          <span>布局</span>
-        </section>
-      </div>
+      <div class="ho-picture-feedback" data-picture-feedback role="status" hidden></div>
+      ${tableLayoutMarkup(this.borders.markup())}
       <div class="ho-word-findbar" data-findbar hidden>
         <input type="text" data-find placeholder="查找" />
         <input type="text" data-replace placeholder="替换为" />
@@ -1948,13 +2236,12 @@ function firstLineKind(indent: RibbonState["indent"]): "none" | "first2" | "hang
   return indent === "first2" || indent === "hang2" ? indent : "none";
 }
 
-function reviewList(items: { id: string; author: string; text: string }[], kind: "comment" | "note"): string {
+function noteList(items: { id: string; text: string }[]): string {
   if (!items.length) {
-    return `<span class="ho-word-review-empty">暂无${kind === "comment" ? "批注" : "脚注"}</span>`;
+    return '<span class="ho-word-review-empty">暂无脚注</span>';
   }
-  const attr = kind === "comment" ? "data-comment-id" : "data-note-id";
   return items
-    .map((item) => `<button type="button" ${attr}="${escapeHtml(item.id)}">${escapeHtml(item.author)}：${escapeHtml(item.text)}</button>`)
+    .map((item, index) => `<button type="button" data-note-id="${escapeHtml(item.id)}">${index + 1}：${escapeHtml(item.text)}</button>`)
     .join("");
 }
 
@@ -2086,4 +2373,24 @@ function multilevelRowsInnerMarkup(rows: MultilevelPreviewRow[]): string {
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch] ?? ch);
+}
+
+function pictureFormatPressed(action: PictureAppearanceAction, format: PictureAppearance): boolean {
+  switch (action.type) {
+    case "style": {
+      const style: Partial<PictureAppearance> = PICTURE_STYLES[action.style].format;
+      return samePictureBorder(style.border, format.border) && !!style.rounded === !!format.rounded && !!style.shadow === !!format.shadow;
+    }
+    case "border": return samePictureBorder(action.border, format.border);
+    case "correction": return action.brightness === (format.brightness ?? 0) && action.contrast === (format.contrast ?? 0);
+    case "color": return action.color === format.color;
+    case "opacity": return Math.abs(action.opacity - (format.opacity ?? 1)) < 0.001;
+    case "shadow": return action.enabled === !!format.shadow;
+    default: return false;
+  }
+}
+
+function samePictureBorder(a?: PictureAppearance["border"], b?: PictureAppearance["border"]): boolean {
+  if (!a || !b) return a === b;
+  return a.color.toLowerCase() === b.color.toLowerCase() && Math.abs(a.width - b.width) < 0.05;
 }

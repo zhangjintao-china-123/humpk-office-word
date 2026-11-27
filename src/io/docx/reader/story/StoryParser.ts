@@ -28,7 +28,13 @@ export class StoryParser {
     document.styles = ctx.styles;
     document.numbering = ctx.numbering;
     if (root) {
-      this.parseChildren(root, ctx, document);
+      const previous = ctx.openCommentIds;
+      if (kind !== "cell") ctx.openCommentIds = [];
+      try {
+        this.parseChildren(root, ctx, document);
+      } finally {
+        ctx.openCommentIds = previous;
+      }
     }
     bindDocumentToc(document);
     return document;

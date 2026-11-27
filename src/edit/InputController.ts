@@ -12,7 +12,7 @@ import type { Table, TableCell } from "../model/table/Table";
 import { CaretPos } from "../selection/CaretPos";
 import type { CaretBox, HitContext, HitTester } from "../selection/HitTester";
 import { SelectionText } from "../selection/SelectionText";
-import { isVerticalTextBox, type StoryRef } from "../selection/StoryRef";
+import { isVerticalTextStory, type StoryRef } from "../selection/StoryRef";
 import type { RunStyle } from "../model/style/RunStyle";
 
 const VERTICAL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown"]);
@@ -298,7 +298,7 @@ export class InputController {
     if (!pos?.node) {
       return false;
     }
-    const key = isVerticalTextBox(pos.story) ? TEXT_BOX_ARROWS[pressed] ?? pressed : pressed;
+    const key = isVerticalTextStory(pos.story) ? TEXT_BOX_ARROWS[pressed] ?? pressed : pressed;
     if (!shift && primary && !primary.collapsed() && primary.mode === "text") {
       const norm = primary.normalized();
       if (key === "ArrowLeft") {
@@ -360,7 +360,7 @@ export class InputController {
     if (!box) {
       return pos;
     }
-    this.preferredX ??= isVerticalTextBox(pos.story) ? box.y : box.x;
+    this.preferredX ??= isVerticalTextStory(pos.story) ? box.y : box.x;
     const dir: -1 | 1 = key === "ArrowUp" || key === "PageUp" ? -1 : 1;
     const hit = this.host.hitTester;
     const ctx = this.host.hitContext();

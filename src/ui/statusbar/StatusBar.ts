@@ -1,27 +1,12 @@
-import { collectStories } from "../../edit/Find";
+import { countCharacters } from "../../edit/DocumentStats";
 import type { Document } from "../../model/document/Document";
 import type { Workspace } from "../workspace/Workspace";
 import { MAX_ZOOM, MIN_ZOOM, stepZoom } from "../workspace/ZoomLevels";
 
-function countCharacters(document: Document): number {
-  let count = 0;
-  for (const story of collectStories([{ document, story: { slot: "body" } }])) {
-    story.document.paragraphs.each(({ data: paragraph }) => {
-      for (const block of paragraph.blocks) {
-        for (const char of block.text) {
-          if (/\S/u.test(char)) {
-            count += 1;
-          }
-        }
-      }
-    });
-  }
-  return count;
-}
-
 export class StatusBar {
   private readonly page: HTMLElement;
   private readonly characters: HTMLElement;
+  private readonly tracking: HTMLElement;
   private readonly range: HTMLInputElement;
   private readonly decrease: HTMLButtonElement;
   private readonly increase: HTMLButtonElement;
@@ -36,6 +21,7 @@ export class StatusBar {
     host.innerHTML = `
       <span class="ho-word-statusbar-page"></span>
       <span class="ho-word-statusbar-count" title="正文、表格和文本框中不含空白的字符数"></span>
+      <span class="ho-word-statusbar-tracking" role="status" hidden>修订已开启</span>
       <div class="ho-word-statusbar-zoom" role="group" aria-label="文档缩放">
         <button type="button" data-zoom="out" aria-label="缩小" title="缩小">−</button>
         <input type="range" aria-label="缩放比例" min="${MIN_ZOOM * 100}" max="${MAX_ZOOM * 100}" step="1">
@@ -45,6 +31,7 @@ export class StatusBar {
     `;
     this.page = host.querySelector(".ho-word-statusbar-page")!;
     this.characters = host.querySelector(".ho-word-statusbar-count")!;
+    this.tracking = host.querySelector(".ho-word-statusbar-tracking")!;
     this.range = host.querySelector("input")!;
     this.decrease = host.querySelector('[data-zoom="out"]')!;
     this.increase = host.querySelector('[data-zoom="in"]')!;
@@ -55,11 +42,8 @@ export class StatusBar {
     this.reset.addEventListener("click", () => this.setZoom(1));
     this.range.addEventListener("input", () => this.scheduleZoom());
     this.unsubscribe = workspace.onStatusChange((change) => {
-      if (change === "view") {
-        this.syncView();
-      } else {
-        this.updateCount();
-      }
+      this.syncView();
+      if (change === "content") this.updateCount();
     });
     this.syncView();
     this.syncCount(workspace.bodyDocument());
@@ -77,6 +61,7 @@ export class StatusBar {
     if (this.page.textContent !== text) {
       this.page.textContent = text;
     }
+    this.tracking.hidden = !this.workspace.trackingRevisions();
     const zoom = this.workspace.viewport.zoom;
     const percent = Math.round(zoom * 100);
     const label = `${percent}%`;
